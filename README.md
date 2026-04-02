@@ -41,7 +41,7 @@ The charge/discharge logic is the core of the templating.
 I take no responsibility for the use of the charging/discharging logic!
 
 
-Big thanks to:
+# Big thanks to:
 @ryanm101 (https://github.com/ryanm101)
 @wilcodeforcats (https://github.com/WillCodeForCats)
 @kipe (https://github.com/kipe)
