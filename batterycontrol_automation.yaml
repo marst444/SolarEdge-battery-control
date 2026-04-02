@@ -1,0 +1,282 @@
+automation:
+
+  - id: ev_charging_discharge_control
+    alias: "EV Charging Discharge Control"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.ev_charging_on
+    action:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.ev_charging_on
+                state: "on"
+            sequence:
+              - service: script.set_storage_discharge_limit100
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.ev_charging_on
+                state: "off"
+            sequence:
+              - service: script.set_dynamic_storage_discharge_limit
+              - delay: "00:00:02"
+
+  - id: update_dynamic_discharge_helper_from_sensor
+    alias: "Update Dynamic Discharge Helper from Sensor"
+    trigger:
+      - platform: state
+        entity_id: sensor.dynamic_storage_discharge_limit
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.dynamic_discharge_limit
+        data:
+          value: "{{ states('sensor.dynamic_storage_discharge_limit') | float(states('input_number.last_discharge_limit') | float(3300)) }}"
+
+  - id: update_dynamic_charge_helper_from_sensor
+    alias: "Update Dynamic Charge Helper from Sensor"
+    trigger:
+      - platform: state
+        entity_id: sensor.dynamic_storage_charge_limit
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.dynamic_charge_limit
+        data:
+          value: "{{ states('sensor.dynamic_storage_charge_limit') | float(states('input_number.last_charge_limit') | float(3300)) }}"
+
+  - id: update_last_charge_limit
+    alias: "Update Last Charge Limit"
+    trigger:
+      - platform: state
+        entity_id: input_number.dynamic_charge_limit
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.last_charge_limit
+        data:
+          value: "{{ states('sensor.dynamic_storage_charge_limit') | float(states('input_number.last_charge_limit') | float(0)) }}"
+  
+  - id: update_last_discharge_limit
+    alias: "Update Last Discharge Limit"
+    trigger:
+      - platform: state
+        entity_id: input_number.dynamic_discharge_limit
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.last_discharge_limit
+        data:
+          value: "{{ states('sensor.dynamic_storage_discharge_limit') | float(states('input_number.last_discharge_limit') | float(0)) }}"
+
+
+  - id: update_soc_target_from_next_forecast
+    alias: "Update SOC Target from Next Forecast"
+    description: "Updates input_number.soc_target from battery forecast every minute, using the forecast closest to current time, fallback to last known value"
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.soc_target
+        data:
+          value: >
+            {% set forecasts = state_attr('sensor.soc_batt_forecast', 'battery_scheduled_soc') %}
+            {% set last_value = states('input_number.soc_target') | float(30) %}
+            {% set now = now() %}
+            {% if forecasts %}
+              {% set upcoming = forecasts 
+                 | selectattr('date', '>=', now.isoformat()) 
+                 | list %}
+              {% if upcoming %}
+                {{ upcoming[0].soc_batt_forecast | float(last_value) }}
+              {% else %}
+                {{ states('sensor.soc_batt_forecast') | float(last_value) }}
+              {% endif %}
+            {% else %}
+              {{ last_value }}
+            {% endif %}
+
+
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.grid_charge_price_total
+        data:
+          value: 0
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.grid_charge_intervals
+        data:
+          value: 0
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.avarage_last_chargingprice
+        data:
+          value: 0
+
+
+
+  - id: emhass_battery_forecast_control
+    alias: "EMHASS Forecast Driven Battery Control"
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+        seconds: 0
+    condition:
+      - condition: state
+        entity_id: select.solaredge_i1_storage_control_mode
+        state: "Remote Control"
+    action:
+      - service: script.set_value_storage_command_timeout15m
+      - variables:
+          soc: "{{ (states('sensor.solaredge_b1_state_of_energy') | float(0)) }}"
+          target: "{{ (states('sensor.soc_batt_forecast_smooth') | float(0)) }}"
+          db: "{{ (states('input_number.soc_deadband') | float(0)) }}"
+          below: "{{ soc < (target - db) }}"
+          above: "{{ soc > (target + db) }}"
+          maintain: "{{ soc >= (target - db) and soc <= (target + db) }}"
+          pv: "{{ (states('sensor.solar_panel_production_w') | float(0)) }}"
+          ac_lim: "{{ (states('input_number.ac_maxpower') | float(0)) }}"
+          batt_fc: "{{ (states('sensor.p_batt_forecast') | float(0)) }}"
+          grid_fc: "{{ (states('sensor.p_grid_forecast') | float(0)) }}"
+          house_load: "{{ (states('sensor.power_myhouse_load_no_var_loads') | float(0)) }}"
+          ev: "{{ (states('binary_sensor.ev_charging_on')) }}"
+          soc_max: "{{ (states('input_number.maximum_state_of_charge') | float(90)) }}"
+          soc_min: "{{ (states('input_number.minimum_state_of_charge') | float(20)) }}"
+          
+#############################################################################
+#p_pv: > 0 when pv energy available
+#p_batt_forecast: <0 when charging =0 when stable SOC, >0 when discharging
+#p_grid_forecast: >0 when import, =0 when self consumption, <0 when export to grid
+#
+      - choose:
+
+          # ===== CLIPPED SOLAR =====
+          - conditions:
+              - condition: template
+                value_template: "{{ pv > ac_lim }}"
+              - condition: template
+                value_template: "{{ states('sensor.solaredge_b1_state_of_energy') | float(0) < soc_max }}"
+            sequence:
+              - service: script.set_dynamic_storage_charge_limit
+              - delay: "00:00:02"
+              - service: script.charge_from_clipped_solar_script
+
+          # ===== BELOW-SOC / Charging logic =====
+          - conditions:
+              - condition: template
+                value_template: "{{ below and (states('sensor.solaredge_b1_state_of_energy') | float(0) < soc_max) }}"
+            sequence:
+              - choose:
+                 
+                  # Solar > load: maximize self-consumption
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv > house_load and grid_fc >=0 }}"
+                    sequence:
+                      - service: script.set_storage_charge_limit5000
+                      - service: script.set_dynamic_storage_discharge_limit
+                      - delay: "00:00:02"
+                      - service: script.maximize_self_consumption_script
+
+## Add when forecast says export and pv>house, set charge_limit to 0
+
+                  # Solar <= load and BattForecast is charging: charge from solar+grid
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv <= house_load and pv > 0 and batt_fc < 0 }}"
+                    sequence:
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
+                      - service: script.charge_from_solar_power_and_grid_script
+
+                  # No PV, BattForecast is charging and GridForecast is import
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv == 0 and batt_fc < 0 and grid_fc > 0 }}"
+                    sequence:
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
+                      - service: script.charge_from_solar_power_and_grid_script
+                      
+                  # No PV, BattForecast is 0, grid is import and Prices have not gone up >20%      
+                  # ===== PRICE-BASED FALLBACK (LAST) =====
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv == 0 and (states('sensor.total_import_price') | float(0) <= (states('input_number.avarage_last_chargingprice') | float(0) * 1.2)) }}"
+                    sequence:
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
+                      - service: script.charge_from_solar_power_and_grid_script       
+
+                  # No PV, BattForecast is 0, SOC below target, and prices up >20% fallback to solar-only (off)
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv == 0 and batt_fc == 0 and grid_fc > 0 }}"
+                    sequence:
+                      - service: script.solar_power_only_script
+                      - delay: "00:00:02"
+
+
+          # ===== DISCHARGE MAX EXPORT =====
+          # EV is off, GridForecast is export, BattForecast is discharge
+          - conditions:
+              - condition: template
+                value_template: "{{ (maintain or above) and (soc > soc_min) and (grid_fc < 0) and (batt_fc > 0) }}"
+            sequence:
+              - service: script.set_dynamic_storage_discharge_limit
+              - delay: "00:00:02"
+              - service: script.discharge_to_maximize_export_script
+
+          # ===== DISCHARGE MIN IMPORT / MAX SELF-CONSUMPTION =====
+          - conditions:
+              - condition: template
+                value_template: "{{ above and (grid_fc >= 0) and (batt_fc <= 0) and (soc > soc_min) }}"
+            sequence:
+              - service: script.set_dynamic_storage_discharge_limit
+              - service: script.set_dynamic_storage_charge_limit
+              - delay: "00:00:02"
+              - service: script.maximize_self_consumption_script
+
+          # ===== MAINTAIN ZONE =====
+          - conditions:
+              - condition: template
+                value_template: "{{ maintain }}"
+            sequence:
+              - choose:
+
+                  # PV > load: allow max charge, dynamic discharge (EV charging allowed)
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv > house_load }}"
+                    sequence:
+                      - service: script.set_dynamic_storage_discharge_limit
+                      - delay: "00:00:02"
+                      - service: script.set_storage_charge_limit5000
+                      - delay: "00:00:02"
+                      - service: script.maximize_self_consumption_script
+                      - delay: "00:00:02"
+
+                  # Normal maintain zone: dynamic charge and discharge limits
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv <= house_load or batt_fc < 0 }}"
+                    sequence:
+                      - service: script.set_dynamic_storage_discharge_limit
+                      - delay: "00:00:02"
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
+                      - service: script.maximize_self_consumption_script
+                      - delay: "00:00:02"
+
+                  # Fallback: solar power only
+                  - conditions: []
+                    sequence:
+                      - service: script.solar_power_only_script
+                      - delay: "00:00:02"
