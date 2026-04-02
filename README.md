@@ -38,6 +38,8 @@ The modbus queue hinders multiple commands to be sent over the modbus simultaneo
 The charge/discharge logic is the core of the templating. 
 - EMHASS publish sensors for forecast of battery and grid charge/discharge
 - The template evaluate these 
+- A dynamic storage discharge limit sensor is created and updated for the logic to control and follow the forecasted chargecurve
+
 I take no responsibility for the use of the charging/discharging logic!
 
 
