@@ -1,0 +1,191 @@
+#######################################################
+#. Valid options: 
+#  Solar Power Only (Off) 
+#. Charge from Clipped Solar Power
+#. Charge from Solar Power
+#. Charge from Solar Power and Grid
+#. Discharge to Maximize Export
+#. Discharge to Minimize Import
+#. Maximize Self Consumption
+#
+########################################################
+
+
+input_boolean:
+  modbus_busy:
+    name: Modbus Busy
+    initial: off
+
+script:
+  modbus_queue:
+    alias: Modbus Queue
+    description: Handles queued Modbus commands to avoid communication errors
+    fields:
+      queue_service:
+        description: "Service to call"
+        example: "set_ac_charge_limit"
+      queue_value:
+        description: "Value to send"
+        example: 70
+    sequence:
+      # Log incoming command
+      - service: system_log.write
+        data:
+          message: "[{{ now() }}] Modbus Queue → Received command: {{ queue_service }}, Value: {{ queue_value }}, Modbus Busy: {{ states('input_boolean.modbus_busy') }}"
+          level: info
+
+      # Wait until Modbus is free
+      - wait_template: "{{ not is_state('input_boolean.modbus_busy', 'on') }}"
+        timeout: "00:00:10"
+        continue_on_timeout: true
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.modbus_busy
+
+      # Execute the desired Modbus command
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'set_storage_command_timeout' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.solaredge_i1_storage_command_timeout
+                data:
+                  value: "{{ queue_value | int }}"
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'charge_from_solar_power_and_grid' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Charge from Solar Power and Grid
+              - delay: "00:00:02"
+          
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'maximize_self_consumption' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Maximize Self Consumption
+              - delay: "00:00:02"
+              
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'charge_from_solar_power' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Charge from Solar Power
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'charge_from_clipped_solar_power' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Charge from Clipped Solar Power
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'discharge_to_maximize_export' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Discharge to Maximize Export
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'discharge_to_minimize_import' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Discharge to Minimize Import
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'solar_power_only' }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.solaredge_i1_storage_command_mode
+                data:
+                  option: Solar Power Only (Off)
+              - delay: "00:00:02"
+
+          - conditions: 
+              - condition: template
+                value_template: "{{ queue_service == 'set_storage_charge_limit' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.solaredge_i1_storage_charge_limit
+                data:
+                  value: "{{ queue_value | int }}"
+              - delay: "00:00:02"
+        
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'set_storage_discharge_limit' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.solaredge_i1_storage_discharge_limit
+                data:
+                  value: "{{ queue_value | int }}"
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'set_dynamic_storage_discharge_limit' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.solaredge_i1_storage_discharge_limit
+                data:
+                  value: "{{ queue_value | float }}"
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'set_dynamic_storage_charge_limit' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.solaredge_i1_storage_charge_limit
+                data:
+                  value: "{{ queue_value | float }}"
+              - delay: "00:00:02"
+
+      # Release Modbus lock
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.modbus_busy
+
+      # Log lock release
+      - service: system_log.write
+        data:
+          message: "[{{ now() }}] Modbus Queue → Lock released, command {{ queue_service }} completed"
+          level: info
+
+    mode: queued
+    max: 10
