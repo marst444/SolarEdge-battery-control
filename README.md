@@ -39,6 +39,7 @@ The charge/discharge logic is the core of the templating.
 - EMHASS publish sensors for forecast of battery and grid charge/discharge
 - Some battery control sensors and helpers are created for the logic to control and follow the forecasted chargecurve (https://github.com/marst444/SolarEdge-battery-control/blob/main/batterycontrol_sensors.yaml)
 - Scripts are created to send commands to the modbus queue (inverter)
+(https://github.com/marst444/SolarEdge-battery-control/blob/main/batterycontrol_scripts.yaml)
 - An automation to evaluate current PV production/ EVcharging and the EMHASS forecast is needed.
 (https://github.com/marst444/SolarEdge-battery-control/blob/main/batterycontrol_automation.yaml)
   
