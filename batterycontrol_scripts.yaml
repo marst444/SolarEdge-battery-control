@@ -1,0 +1,106 @@
+script:
+
+  maximize_self_consumption_script:
+    alias: Maximize self consumption
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: maximize_self_consumption
+          queue_value: 0
+  
+  charge_from_solar_power_and_grid_script:
+    alias: Charge from solar power and grid
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: charge_from_solar_power_and_grid
+          queue_value: 0
+
+  charge_from_solar_power_script:
+    alias: Charge from solar power
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: charge_from_solar_power
+          queue_value: 0
+
+  charge_from_clipped_solar_script:
+    alias: Charge from clipped solar power
+    sequence: 
+      - service: script.modbus_queue
+        data:
+          queue_service: charge_from_clipped_solar_power
+          queue_value: 0
+
+  discharge_to_maximize_export_script:
+    alias: Discharge to maximize export
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: discharge_to_maximize_export
+          queue_value: 0
+
+  discharge_to_minimize_import_script:
+    alias: Discharge to minimize import
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: discharge_to_minimize_import
+          queue_value: 0
+
+  solar_power_only_script:
+    alias: Solar power only
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: solar_power_only
+          queue_value: 0
+
+  set_value_storage_command_timeout15m:
+    alias: Set storage command timeout 15 min
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_command_timeout
+          queue_value: 900
+
+  set_storage_discharge_limit100:
+    alias: Set storage discharge limit 100
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_discharge_limit
+          queue_value: 100
+          
+  set_storage_discharge_limit3000:
+    alias: Set storage discharge limit 3000
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_discharge_limit
+          queue_value: 3000
+  
+  set_storage_charge_limit5000:
+    alias: Set Storage Charge Limit 5000
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_charge_limit
+          queue_value: 5000
+          
+  set_dynamic_storage_discharge_limit:
+    alias: Set Dynamic Storage Discharge Limit
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_dynamic_storage_discharge_limit
+          queue_value: "{{ states('input_number.dynamic_discharge_limit') | int }}"
+
+  set_dynamic_storage_charge_limit:
+    alias: Set Dynamic Storage Charge Limit
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_dynamic_storage_charge_limit
+          queue_value: "{{ states('input_number.dynamic_charge_limit') | int }}"
+
