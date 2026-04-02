@@ -32,7 +32,7 @@ We need:
   - Automation to run the dayahead optimization and publish back to Home assistant
 
 # Template a modbus queue
-The modbus queue hinders multiple commands to be sent over the modbus simultaneously, but rather be passed one by one https://github.com/marst444/SolarEdge-battery-control/edit/main/README.md#:~:text=solaredge_modbus.yaml
+The modbus queue hinders multiple commands to be sent over the modbus simultaneously, but rather be passed one by one [https://github.com/marst444/SolarEdge-battery-control/edit/main/README.md#:~:text=solaredge_modbus.yaml](https://github.com/marst444/SolarEdge-battery-control/blob/main/solaredge_modbus.yaml#:~:text=solaredge_modbus.yaml)
 
 # Template a charge/discharge logic
 The charge/discharge logic is the core of the templating. 
