@@ -1,8 +1,17 @@
 # SolarEdge-battery-control
 Battery management for SolarEdge using EMHASS and ModbusMulti
 
-Using forecast from EMHASS to control a SolarEdge Inverter with photovoltaic and battery for battery management.
-I have only a basic setup for EMHASS using day ahead optimization and naive forecast. More advanced features are available.
+Aim: Optimize the use of PV (photovoltaic) power generation and battery usage from a profit point. The Optimization by EMHASS based on:
+
+a) energy price forecast (using Nordpool spotprices 15min)
+b) solar PV generation forecast (using Solcast)
+c) energy usage in the home (energy usage history)
+
+EMHASS creates an optimization blueprint for battery charge/discharge and grid import/export.
+
+The charge/discharge logic take into account actual load, PV generation and battery SOC(state of charge) and follows the blueprint.
+
+Commands to inverter/ battery are fed through a modbus queue and are using the powercontrol options in the SolarEdge modbus multi.
 
 Prerequisits: 
 
