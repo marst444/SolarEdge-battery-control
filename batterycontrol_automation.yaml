@@ -100,7 +100,55 @@ automation:
               {{ last_value }}
             {% endif %}
 
+  
+  
+  - id: update_grid_charge_average
+    alias: "Update Grid Charging Average Price"
+    trigger:
+      - platform: template
+        value_template: "{{ states('sensor.p_batt_forecast') | float(0) < 0 }}"
+      - platform: time_pattern
+        minutes: "/15"
+    condition:
+      - condition: template
+        value_template: "{{ states('sensor.p_batt_forecast') | float(0) < 0 }}"
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.grid_charge_price_total
+        data:
+          value: >
+            {% set total = states('input_number.grid_charge_price_total') | float(0) %}
+            {% set price = states('sensor.total_import_price') | float(0) %}
+            {{ total + price }}
 
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.grid_charge_intervals
+        data:
+          value: >
+            {{ (states('input_number.grid_charge_intervals') | int(0)) + 1 }}
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.avarage_last_chargingprice
+        data:
+          value: >
+            {% set total = states('input_number.grid_charge_price_total') | float(0) %}
+            {% set intervals = states('input_number.grid_charge_intervals') | int(0) %}
+            {% if intervals > 0 %}
+              {{ (total / intervals) | round(2) }}
+            {% else %}
+              0
+            {% endif %}
+
+  - id: reset_grid_charge_average
+    alias: "Reset Grid Charge Average on New Session"
+    trigger:
+      - platform: template
+        value_template: >
+          {{ (states('sensor.p_batt_forecast') | float(0)) < 0 and
+             (states('sensor.p_batt_forecast') | float(0) | round(1)) >= 0 }}
     action:
       - service: input_number.set_value
         target:
@@ -156,7 +204,21 @@ automation:
 #p_grid_forecast: >0 when import, =0 when self consumption, <0 when export to grid
 #
       - choose:
-
+          # ===== Battery MAX/MIN limits =====
+          - conditions:
+              - condition: template
+                value_template: "{{ soc > soc_max }}"
+            sequence:
+              - service: script.set_storage_charge_limit0
+              - delay: "00:00:02"
+        
+          - conditions:
+              - condition: template
+                value_template: "{{ soc < soc_min }}"
+            sequence:
+              - service: script.set_storage_discharge_limit0
+              - delay: "00:00:02"                
+              
           # ===== CLIPPED SOLAR =====
           - conditions:
               - condition: template
@@ -164,9 +226,12 @@ automation:
               - condition: template
                 value_template: "{{ states('sensor.solaredge_b1_state_of_energy') | float(0) < soc_max }}"
             sequence:
+              - service: script.charge_from_clipped_solar_script
+              - delay: "00:00:02"
               - service: script.set_dynamic_storage_charge_limit
               - delay: "00:00:02"
-              - service: script.charge_from_clipped_solar_script
+
+
 
           # ===== BELOW-SOC / Charging logic =====
           - conditions:
@@ -175,35 +240,53 @@ automation:
             sequence:
               - choose:
                  
-                  # Solar > load: maximize self-consumption
+                  # PV > house load AND grid_forecast >=0 (no export/import): maximize self-consumption
                   - conditions:
                       - condition: template
                         value_template: "{{ pv > house_load and grid_fc >=0 }}"
                     sequence:
-                      - service: script.set_storage_charge_limit5000
+                      - service: script.maximize_self_consumption_script
+                      - delay: "00:00:02"
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
                       - service: script.set_dynamic_storage_discharge_limit
                       - delay: "00:00:02"
-                      - service: script.maximize_self_consumption_script
+                      
+                  # PV > house load AND grid forecast <0 (export): set charglimit to 0
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ pv > house_load and grid_fc <0 }}"
+                    sequence:
+                      - service: script.discharge_to_maximize_export_script
+                      - delay: "00:00:02"
+                      - service: script.set_dynamic_storage_discharge_limit
+                      - delay: "00:00:02"
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
 
-## Add when forecast says export and pv>house, set charge_limit to 0
-
-                  # Solar <= load and BattForecast is charging: charge from solar+grid
+                  # PV <= load and BattForecast is charging: charge from solar+grid
                   - conditions:
                       - condition: template
                         value_template: "{{ pv <= house_load and pv > 0 and batt_fc < 0 }}"
                     sequence:
+                      - service: script.charge_from_solar_power_and_grid_script
+                      - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
-                      - service: script.charge_from_solar_power_and_grid_script
+                      
+                      
 
                   # No PV, BattForecast is charging and GridForecast is import
                   - conditions:
                       - condition: template
                         value_template: "{{ pv == 0 and batt_fc < 0 and grid_fc > 0 }}"
                     sequence:
+                      - service: script.charge_from_solar_power_and_grid_script
+                      - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
-                      - service: script.charge_from_solar_power_and_grid_script
+                      
+                      
                       
                   # No PV, BattForecast is 0, grid is import and Prices have not gone up >20%      
                   # ===== PRICE-BASED FALLBACK (LAST) =====
@@ -211,9 +294,12 @@ automation:
                       - condition: template
                         value_template: "{{ pv == 0 and (states('sensor.total_import_price') | float(0) <= (states('input_number.avarage_last_chargingprice') | float(0) * 1.2)) }}"
                     sequence:
+                      - service: script.charge_from_solar_power_and_grid_script
+                      - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
-                      - service: script.charge_from_solar_power_and_grid_script       
+                      
+                            
 
                   # No PV, BattForecast is 0, SOC below target, and prices up >20% fallback to solar-only (off)
                   - conditions:
@@ -222,7 +308,10 @@ automation:
                     sequence:
                       - service: script.solar_power_only_script
                       - delay: "00:00:02"
-
+                      - service: script.set_dynamic_storage_discharge_limit
+                      - delay: "00:00:02"
+                      - service: script.set_dynamic_storage_charge_limit
+                      - delay: "00:00:02"
 
           # ===== DISCHARGE MAX EXPORT =====
           # EV is off, GridForecast is export, BattForecast is discharge
@@ -230,19 +319,26 @@ automation:
               - condition: template
                 value_template: "{{ (maintain or above) and (soc > soc_min) and (grid_fc < 0) and (batt_fc > 0) }}"
             sequence:
+              - service: script.discharge_to_maximize_export_script
+              - delay: "00:00:02"
               - service: script.set_dynamic_storage_discharge_limit
               - delay: "00:00:02"
-              - service: script.discharge_to_maximize_export_script
+              
+              
 
           # ===== DISCHARGE MIN IMPORT / MAX SELF-CONSUMPTION =====
           - conditions:
               - condition: template
                 value_template: "{{ above and (grid_fc >= 0) and (batt_fc <= 0) and (soc > soc_min) }}"
             sequence:
+              - service: script.maximize_self_consumption_script
+              - delay: "00:00:02"
               - service: script.set_dynamic_storage_discharge_limit
+              - delay: "00:00:02"
               - service: script.set_dynamic_storage_charge_limit
               - delay: "00:00:02"
-              - service: script.maximize_self_consumption_script
+              
+              
 
           # ===== MAINTAIN ZONE =====
           - conditions:
@@ -254,29 +350,36 @@ automation:
                   # PV > load: allow max charge, dynamic discharge (EV charging allowed)
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv > house_load }}"
+                        value_template: "{{ (pv > house_load) and (soc < (target + db)) }}"
                     sequence:
+                      - service: script.maximize_self_consumption_script
+                      - delay: "00:00:02"
                       - service: script.set_dynamic_storage_discharge_limit
                       - delay: "00:00:02"
                       - service: script.set_storage_charge_limit5000
                       - delay: "00:00:02"
-                      - service: script.maximize_self_consumption_script
-                      - delay: "00:00:02"
+                      
 
                   # Normal maintain zone: dynamic charge and discharge limits
                   - conditions:
                       - condition: template
                         value_template: "{{ pv <= house_load or batt_fc < 0 }}"
                     sequence:
+                      - service: script.maximize_self_consumption_script
+                      - delay: "00:00:02"
                       - service: script.set_dynamic_storage_discharge_limit
                       - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
-                      - service: script.maximize_self_consumption_script
-                      - delay: "00:00:02"
+                      
 
                   # Fallback: solar power only
                   - conditions: []
                     sequence:
                       - service: script.solar_power_only_script
                       - delay: "00:00:02"
+                      
+
+                      
+                      
+            
