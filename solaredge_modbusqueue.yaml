@@ -10,7 +10,6 @@
 #
 ########################################################
 
-
 input_boolean:
   modbus_busy:
     name: Modbus Busy
@@ -23,30 +22,58 @@ script:
     fields:
       queue_service:
         description: "Service to call"
-        example: "set_ac_charge_limit"
       queue_value:
         description: "Value to send"
-        example: 70
+
     sequence:
+
       # Log incoming command
       - service: system_log.write
         data:
           message: "[{{ now() }}] Modbus Queue → Received command: {{ queue_service }}, Value: {{ queue_value }}, Modbus Busy: {{ states('input_boolean.modbus_busy') }}"
           level: warning
 
+      # DEBUG START
+      - service: system_log.write
+        data:
+          message: >
+            DEBUG START →
+            queue_service="{{ queue_service }}",
+            queue_value="{{ queue_value }}",
+            busy="{{ states('input_boolean.modbus_busy') }}"
+          level: warning
+
       # Wait until Modbus is free
       - wait_template: "{{ not is_state('input_boolean.modbus_busy', 'on') }}"
         timeout: "00:00:10"
-        continue_on_timeout: false
+        continue_on_timeout: true
+
       - service: input_boolean.turn_on
         target:
           entity_id: input_boolean.modbus_busy
 
-      # Execute the desired Modbus command
+      # DEBUG LOCK
+      - service: system_log.write
+        data:
+          message: >
+            DEBUG LOCK ACQUIRED →
+            queue_service="{{ queue_service }}"
+          level: warning
+
+      # DEBUG BEFORE CHOOSE
+      - service: system_log.write
+        data:
+          message: >
+            DEBUG BEFORE CHOOSE →
+            queue_service="{{ queue_service }}"
+          level: warning
+
+      # CHOOSE BLOCK
       - choose:
+
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'set_storage_command_timeout' }}"
+                value_template: "{{ 'set_storage_command_timeout' in queue_service }}"
             sequence:
               - service: number.set_value
                 target:
@@ -54,10 +81,10 @@ script:
                 data:
                   value: "{{ queue_value | int }}"
               - delay: "00:00:02"
-
+# Charge from solar power and grid
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'charge_from_solar_power_and_grid' }}"
+                value_template: "{{ 'charge_from_solar_power_and_grid' in queue_service }}"
             sequence:
               - service: system_log.write
                 data:
@@ -69,17 +96,10 @@ script:
                 data:
                   option: Charge from Solar Power and Grid
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-          
+# Maxmize self consumption
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'maximize_self_consumption' }}"
+                value_template: "{{ 'maximize_self_consumption' in queue_service }}"
             sequence:
               - service: system_log.write
                 data:
@@ -91,179 +111,91 @@ script:
                 data:
                   option: Maximize Self Consumption
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning              
-              
+# Charge from solar power
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'charge_from_solar_power' }}"
+                value_template: "{{ 'charge_from_solar_power' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → SET MODE = Charge from Solar Power"
-                  level: warning
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Charge from Solar Power
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-                  
+# Charge from clipped colar power
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'charge_from_clipped_solar_power' }}"
+                value_template: "{{ 'charge_from_clipped_solar_power' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → SET MODE = Charge from Clipped Solar Power"
-                  level: warning
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Charge from Clipped Solar Power
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-
+# discharge to maximize export
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'discharge_to_maximize_export' }}"
+                value_template: "{{ 'discharge_to_maximize_export' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → SET MODE = Disharge to Maximize Export"
-                  level: warning
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Discharge to Maximize Export
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-
+# Discharge to minimize import
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'discharge_to_minimize_import' }}"
+                value_template: "{{ 'discharge_to_minimize_import' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → SET MODE = Disharge to Minimize Import"
-                  level: warning
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Discharge to Minimize Import
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-
+# solar power only
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'solar_power_only' }}"
+                value_template: "{{ 'solar_power_only' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → SET MODE = Solar Power Only(OFF)"
-                  level: warning
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Solar Power Only (Off)
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] AFTER MODE →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-
-          - conditions: 
-              - condition: template
-                value_template: "{{ queue_service == 'set_storage_charge_limit' }}"
-            sequence:
               
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → APPLY charge_limit = {{ queue_value }} W (RAW)"
-                  level: warning
+# charge limit
+          - conditions:
+              - condition: template
+                value_template: "{{ 'set_storage_charge_limit' in queue_service }}"
+            sequence:
               - service: number.set_value
                 target:
                   entity_id: number.solaredge_i1_storage_charge_limit
                 data:
                   value: "{{ queue_value | int }}"
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] READBACK →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-        
+              
+# discharge limit
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'set_storage_discharge_limit' }}"
+                value_template: "{{ 'set_storage_discharge_limit' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → APPLY discharge_limit = {{ queue_value }} W"
-                  level: warning
-
               - service: number.set_value
                 target:
                   entity_id: number.solaredge_i1_storage_discharge_limit
                 data:
                   value: "{{ queue_value | int }}"
               - delay: "00:00:02"
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] READBACK →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-
+              
+# dynamic discharge limit
           - conditions:
               - condition: template
-                value_template: "{{ queue_service == 'set_dynamic_storage_discharge_limit' }}"
+                value_template: "{{ 'set_dynamic_storage_discharge_limit' in queue_service }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → Apply Dynamic Discharge Limit = {{ queue_value }} W"
-                  level: warning
-
               - service: number.set_value
                 target:
                   entity_id: number.solaredge_i1_storage_discharge_limit
@@ -271,45 +203,40 @@ script:
                   value: "{{ queue_value | float }}"
               - delay: "00:00:02"
               
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] READBACK →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
-
+# dynamic charge limit
           - conditions:
               - condition: template
                 value_template: "{{ queue_service == 'set_dynamic_storage_charge_limit' }}"
             sequence:
-              - service: system_log.write
-                data:
-                  message: "[{{ now() }}] Modbus Queue → Apply Dynamic Charge Limit = {{ queue_value }} W"
-                  level: warning
-                
               - service: number.set_value
                 target:
                   entity_id: number.solaredge_i1_storage_charge_limit
                 data:
                   value: "{{ queue_value | float }}"
               - delay: "00:00:02"
-              
-              - service: system_log.write
-                data:
-                  message: >
-                    [{{ now() }}] READBACK →
-                    charge_limit={{ states('number.solaredge_i1_storage_charge_limit') }},
-                    discharge_limit={{ states('number.solaredge_i1_storage_discharge_limit') }}
-                  level: warning
 
+        # ✅ THIS IS THE KEY FIX
+        default:
+          - service: system_log.write
+            data:
+              message: >
+                ❌ DEBUG ERROR →
+                No matching queue_service="{{ queue_service }}"
+              level: error
+
+      # DEBUG END
+      - service: system_log.write
+        data:
+          message: >
+            DEBUG END →
+            queue_service="{{ queue_service }}"
+          level: warning
 
       # Release Modbus lock
       - service: input_boolean.turn_off
         target:
           entity_id: input_boolean.modbus_busy
 
-      # Log lock release
       - service: system_log.write
         data:
           message: "[{{ now() }}] Modbus Queue → Lock released, command {{ queue_service }} completed"
