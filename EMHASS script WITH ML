@@ -10,7 +10,7 @@
 #    Current power = solar panel production W
 #    electricity_price: Sek/kWh
 #
-#
+#    The plan uses a forecast produced by EMHASS using ML predict and publish to sensor.p_load_forecast_ml 
 #
 #
 ####################################################
@@ -31,8 +31,8 @@ script:
           optimization_time_step: 15
           weight_battery_charge: 0.02
           weight_battery_discharge: 0.02
-          sensor_prefix: mpc_
-          sensor_name_prefix: 'MPC'
+          sensor_prefix: mpc-pv_
+          sensor_name_prefix: 'MPC-PV'
         alias: Configure secondary settings
       - variables:
 
@@ -128,13 +128,13 @@ script:
               {% endfor %}
               {{ ns.output }}
             load_power_forecast: |-
-              {% set ml = state_attr('sensor.p_load_forecast_ml', 'scheduled_forecast') or [] %}
+              {% set ml = state_attr('sensor.p_load_forecast_ml-pv', 'scheduled_forecast') or [] %}
               {% set ns = namespace(output={
                 now_iso: (states(sensors.consumed_power) | float(0)) | round(0)
               }) %}
               {% for item in ml %}
                 {% set ns.output = ns.output | combine({
-                  item.date: (item.p_load_forecast_ml | float(0)) | round(0)
+                  item.date: (item.p_load_forecast_ml-pv | float(0)) | round(0)
                 }) %}
               {% endfor %}
               {{ ns.output }}
