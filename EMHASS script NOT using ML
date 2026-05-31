@@ -1,5 +1,5 @@
 #####################################################
-#    Sensors in "Generate EMHASS energy plan mpc"
+#    Sensors in "Generate EMHASS energy plan mpc_pv"
 #
 #.   Sensors:   
 #    Energy_capacity: kWh
@@ -17,8 +17,8 @@
 
 script:
 
-  generate_emhass_energy_plan_mpc:
-    alias: "generate EMHASS energy plan MPC"
+  generate_emhass_energy_plan_mpc_pv:
+    alias: "generate EMHASS energy plan MPC_PV"
     sequence:
       - variables:
           costfun: profit
@@ -31,8 +31,8 @@ script:
           optimization_time_step: 15
           weight_battery_charge: 0.02
           weight_battery_discharge: 0.02
-          sensor_prefix: mpc_
-          sensor_name_prefix: 'MPC'
+          sensor_prefix: mpc_pv_
+          sensor_name_prefix: 'MPC_PV'
         alias: Configure secondary settings
       - variables:
 
@@ -214,5 +214,5 @@ script:
           payload: >
             {{ dict(common, **payload) | to_json }}
         alias: Publish Energy Plan to HA
-  alias: Generate EMHASS Energy Plan (MPC)
+  alias: Generate EMHASS Energy Plan (MPC_PV)
   description: Runs EMHASS MPC optimizer, generating an optimal energy plan
