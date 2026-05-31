@@ -1,0 +1,206 @@
+#####################################################
+#    Sensors in "Generate EMHASS energy plan mpc"
+#
+#.   Sensors:   
+#    Energy_capacity: kWh
+#    Chargin/discharging_power: W
+#    Max inverter power: kw
+#    Battery SOC: %
+#    Consumed power = sensor no load var loads W
+#    Current power = solar panel production W
+#    electricity_price: Sek/kWh
+#
+#
+#
+#
+####################################################
+
+script:
+
+  generate_emhass_energy_plan_mpc:
+    alias: "generate EMHASS energy plan MPC"
+    sequence:
+      - variables:
+          costfun: profit
+          maximum_power_from_grid: 15000
+          maximum_power_to_grid: 5000
+          battery_minimum_percent: 20
+        alias: Configure critical settings
+      - variables:
+          num_prediction_days: 2
+          optimization_time_step: 15
+          weight_battery_charge: 0.02
+          weight_battery_discharge: 0.02
+          sensor_prefix: mpc_
+          sensor_name_prefix: 'MPC'
+        alias: Configure secondary settings
+      - variables:
+
+          sensors:
+            energy_capacity: sensor.solaredge_b1_maximum_energy
+            charging_power: sensor.solaredge_b1_max_charge_power 
+            discharging_power: sensor.solaredge_b1_max_discharge_power 
+            max_inverter_power: sensor.max_active_power_1
+            battery_soc: sensor.solaredge_b1_state_of_energy 
+            consumed_power: sensor.power_myhouse_load_no_var_loads 
+            solar:
+              current_power: sensor.solar_panel_production_w 
+              forecasts:
+              - sensor.solcast_pv_forecast_forecast_today
+              - sensor.solcast_pv_forecast_forecast_tomorrow
+              - sensor.solcast_pv_forecast_forecast_day_3
+            prices:
+              import: sensor.nordpool_se3_total_costs_import
+              export: sensor.nordpool_se3_total_revenue_export
+        alias: Configure sensor entities
+
+      - variables:
+          num_forecasts: '{{ (60 / optimization_time_step * 24 * num_prediction_days) | int }}'
+          soc_init: '{{ (states(sensors.battery_soc) | float(0) / 100) | round(3) }}'
+          soc_final: '{{ battery_minimum_percent / 100 }}'
+          now_iso: '{{ now().replace(microsecond=0).isoformat() }}'
+          max_inverter_power: '{{ (states(sensors.max_inverter_power) | float(0) * 1000) | round }}'
+          common:
+            costfun: '{{ costfun }}'
+            prediction_horizon: '{{ num_forecasts }}'
+            optimization_time_step: '{{ optimization_time_step }}'
+            delta_forecast_daily: '{{ num_prediction_days }}'
+            set_use_adjusted_pv: false
+            set_use_pv: true
+            set_use_battery: true
+            inverter_is_hybrid: true
+            number_of_deferrable_loads: 0
+            set_nodischarge_to_grid: false
+            pv_power_forecast_method: 'list'
+            load_cost_forecast_method: 'list'
+            production_price_forecast_method: 'list'
+          payload:
+            weight_battery_charge: '{{ weight_battery_charge }}'
+            weight_battery_discharge: '{{ weight_battery_discharge }}'
+            battery_minimum_state_of_charge: '{{ battery_minimum_percent / 100 }}'
+            battery_maximum_state_of_charge: 0.9
+            battery_nominal_energy_capacity: '{{ (states(sensors.energy_capacity) | float(0) * 1000) | round }}'
+            battery_charge_power_max: '{{ (states(sensors.charging_power) | float(0)) | round }}'
+            battery_discharge_power_max: '{{ (states(sensors.discharging_power) | float(0)) | round }}'
+            maximum_power_from_grid: '{{ maximum_power_from_grid }}'
+            maximum_power_to_grid: '{{ maximum_power_to_grid }}'
+            inverter_ac_output_max: '{{ max_inverter_power }}'
+            inverter_ac_input_max: '{{ max_inverter_power }}'
+            soc_init: '{{ soc_init }}'
+            soc_final: '{{ soc_final }}'
+            load_cost_forecast: |-
+              {% set ns = namespace(output={}) %}
+              {% for day in range(num_prediction_days) %}
+                {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
+                  {% set start = (forecast.ts.split(' - ')[0] | as_datetime | as_local + timedelta(days=day)).isoformat() %}
+                  {% set price = forecast.price | float(0) %}
+                  {% set ns.output = ns.output | combine({ start: price }) %}
+                {% endfor %}
+              {% endfor %}
+              {{ ns.output }}
+
+            prod_price_forecast: |-
+              {% set ns = namespace(output={}) %}
+              {% for day in range(num_prediction_days) %}
+                {% for forecast in (state_attr(sensors.prices.export, 'forecast_merged') or []) %}
+                  {% set start = (forecast.ts.split(' - ')[0] | as_datetime | as_local + timedelta(days=day)).isoformat() %}
+                  {% set price = forecast.price | float(0) %}
+                  {% set ns.output = ns.output | combine({ start: price }) %}
+                {% endfor %}
+              {% endfor %}
+              {{ ns.output }}
+
+            pv_power_forecast: |-
+              {% set ns = namespace(
+                input=sensors.solar.forecasts
+                  | map('state_attr', 'detailedForecast')
+                  | sum(start=[])
+                  | selectattr('period_start', '>', now())
+                  | selectattr('period_start', '<=', now() + timedelta(days=num_prediction_days)),
+                output={
+                  now_iso: (states(sensors.solar.current_power) | float(0)) | round(0)
+                }
+              ) %}
+              {% for solar in ns.input %}
+                {% set key = (solar.period_start | as_datetime | as_local).isoformat() %}
+                {% set value = ((solar.pv_estimate | float(0)) * 1000) | round(0) %}
+                {% set ns.output = ns.output | combine({ key: value }) %}
+              {% endfor %}
+              {{ ns.output }}
+            load_power_forecast: |-
+              {% set ml = state_attr('sensor.p_load_forecast_ml', 'scheduled_forecast') or [] %}
+              {% set ns = namespace(output={
+                now_iso: (states(sensors.consumed_power) | float(0)) | round(0)
+              }) %}
+              {% for item in ml %}
+                {% set ns.output = ns.output | combine({
+                  item.date: (item.p_load_forecast_ml | float(0)) | round(0)
+                }) %}
+              {% endfor %}
+              {{ ns.output }}
+        alias: Calculate payload
+      - action: rest_command.emhass_naive_mpc_optim
+        metadata: {}
+        data:
+          payload: >
+            {{ dict(common, **payload) | to_json }}
+        alias: Run EMHASS
+      - variables:
+          payload:
+            custom_pv_forecast_id:
+              entity_id: sensor.{{ sensor_prefix }}pv_power
+              unit_of_measurement: W
+              device_class: power
+              friendly_name: '{{ sensor_name_prefix }}PV Power'
+            custom_load_forecast_id:
+              entity_id: sensor.{{ sensor_prefix }}load_power
+              unit_of_measurement: W
+              device_class: power
+              friendly_name: '{{ sensor_name_prefix }}Load Power'
+            custom_hybrid_inverter_id:
+              entity_id: sensor.{{ sensor_prefix }}inverter_power
+              unit_of_measurement: W
+              device_class: power
+              friendly_name: '{{ sensor_name_prefix }}Inverter Power'
+            custom_batt_forecast_id:
+              entity_id: sensor.{{ sensor_prefix }}batt_power
+              unit_of_measurement: W
+              device_class: power
+              friendly_name: '{{ sensor_name_prefix }}Battery Power'
+            custom_grid_forecast_id:
+              entity_id: sensor.{{ sensor_prefix }}grid_power
+              unit_of_measurement: W
+              device_class: power
+              friendly_name: '{{ sensor_name_prefix }}Grid Power'
+            custom_batt_soc_forecast_id:
+              entity_id: sensor.{{ sensor_prefix }}batt_soc
+              unit_of_measurement: '%'
+              device_class: battery
+              friendly_name: '{{ sensor_name_prefix }}Battery SOC'
+            custom_cost_fun_id:
+              entity_id: sensor.{{ sensor_prefix }}cost_fun
+              unit_of_measurement: $
+              device_class: monetary
+              friendly_name: '{{ sensor_name_prefix }}Cost Function'
+            custom_unit_load_cost_id:
+              entity_id: sensor.{{ sensor_prefix }}import_price
+              unit_of_measurement: $
+              device_class: monetary
+              friendly_name: '{{ sensor_name_prefix }}Buy Price'
+            custom_unit_production_price_id:
+              entity_id: sensor.{{ sensor_prefix }}export_price
+              unit_of_measurement: $
+              device_class: monetary
+              friendly_name: '{{ sensor_name_prefix }}Sell Price'
+            custom_optim_status_id:
+              entity_id: sensor.{{ sensor_prefix }}optim_status
+              unit_of_measurement: ''
+              friendly_name: '{{ sensor_name_prefix }}Optimisation Status'
+      - action: rest_command.emhass_publish_data
+        metadata: {}
+        data:
+          payload: >
+            {{ dict(common, **payload) | to_json }}
+        alias: Publish Energy Plan to HA
+  alias: Generate EMHASS Energy Plan (MPC)
+  description: Runs EMHASS MPC optimizer, generating an optimal energy plan
