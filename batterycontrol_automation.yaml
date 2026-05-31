@@ -211,13 +211,36 @@ automation:
             sequence:
               - service: script.set_storage_charge_limit0
               - delay: "00:00:02"
+              - service: script.set_dynamic_storage_discharge_limit
+              - delay: "00:00:02"
         
+          
           - conditions:
               - condition: template
                 value_template: "{{ soc < soc_min }}"
             sequence:
               - service: script.set_storage_discharge_limit0
-              - delay: "00:00:02"                
+              - delay: "00:00:02"
+
+              - choose:
+
+        # 🔴 VERY LOW SOC (<10%) → FORCE RECOVERY
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ soc < 10 }}"
+                    sequence:
+                      - service: script.charge_from_solar_power_and_grid_script
+                      - delay: "00:00:02"
+                      - service: script.set_storage_charge_limit3000
+                      - delay: "00:00:02"
+
+        # 🟡 NORMAL LOW SOC (10–20%) → FOLLOW DYNAMIC
+                default:
+                  - service: script.charge_from_solar_power_and_grid_script
+                  - delay: "00:00:02"
+                  - service: script.set_dynamic_storage_charge_limit
+                  - delay: "00:00:02"
+
               
           # ===== CLIPPED SOLAR =====
           - conditions:
@@ -230,7 +253,8 @@ automation:
               - delay: "00:00:02"
               - service: script.set_dynamic_storage_charge_limit
               - delay: "00:00:02"
-
+              - service: script.set_dynamic_storage_discharge_limit
+              - delay: "00:00:02"
 
 
           # ===== BELOW-SOC / Charging logic =====
@@ -323,6 +347,8 @@ automation:
               - delay: "00:00:02"
               - service: script.set_dynamic_storage_discharge_limit
               - delay: "00:00:02"
+              - service: script.set_storage_charge_limit0
+              - delay: "00:00:02"
               
               
 
@@ -378,8 +404,8 @@ automation:
                     sequence:
                       - service: script.solar_power_only_script
                       - delay: "00:00:02"
-                      
-
-                      
-                      
-            
+                      - service: script.solar_power_only_script
+                      - delay: "00:00:02"
+                      - service: script.set_storage_charge_limit0
+                      - delay: "00:00:02"
+                      - service: script.set_storage_discharge_limit0
