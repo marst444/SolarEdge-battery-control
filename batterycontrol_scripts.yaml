@@ -64,6 +64,14 @@ script:
           queue_service: set_storage_command_timeout
           queue_value: 900
 
+  set_storage_discharge_limit0:
+    alias: Set storage discharge limit 0
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_discharge_limit
+          queue_value: 0
+
   set_storage_discharge_limit100:
     alias: Set storage discharge limit 100
     sequence:
@@ -71,7 +79,7 @@ script:
         data:
           queue_service: set_storage_discharge_limit
           queue_value: 100
-          
+
   set_storage_discharge_limit3000:
     alias: Set storage discharge limit 3000
     sequence:
@@ -79,9 +87,25 @@ script:
         data:
           queue_service: set_storage_discharge_limit
           queue_value: 3000
-  
+
+  set_storage_charge_limit0:
+    alias: Set storage charge limit 0
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_charge_limit
+          queue_value: 0
+          
+  set_storage_charge_limit3000:
+    alias: Set Storage charge Limit 3000
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_charge_limit
+          queue_value: 3000  
+          
   set_storage_charge_limit5000:
-    alias: Set Storage Charge Limit 5000
+    alias: Set Storage charge Limit 5000
     sequence:
       - service: script.modbus_queue
         data:
