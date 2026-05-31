@@ -1,5 +1,5 @@
 #####################################################
-#    Sensors in "Generate EMHASS energy plan mpc"
+#    Sensors in "Generate EMHASS energy plan mpc_pv"
 #
 #.   Sensors:   
 #    Energy_capacity: kWh
@@ -17,8 +17,8 @@
 
 script:
 
-  generate_emhass_energy_plan_mpc:
-    alias: "generate EMHASS energy plan MPC"
+  generate_emhass_energy_plan_mpc_pv:
+    alias: "generate EMHASS energy plan MPC_PV"
     sequence:
       - variables:
           costfun: profit
