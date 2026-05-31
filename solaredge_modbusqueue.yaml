@@ -215,7 +215,6 @@ script:
                   value: "{{ queue_value | float }}"
               - delay: "00:00:02"
 
-        # ✅ THIS IS THE KEY FIX
         default:
           - service: system_log.write
             data:
