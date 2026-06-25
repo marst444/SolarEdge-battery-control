@@ -1,0 +1,22 @@
+template:
+  - sensor:
+      # WATCHDOG
+
+      - name: "EMHASS Health"
+        unique_id: emhass_health
+        state: >
+          {% if states('input_text.emhass_dayahead_status') != 'OK' %}
+            Day‑ahead problem
+          {% elif states('input_text.emhass_mpc_status') != 'OK' %}
+            MPC problem
+          {% else %}
+            OK
+          {% endif %}
+
+  - binary_sensor:
+      - name: "EMHASS Healthy"
+        state: >
+          {{ states('sensor.emhass_health') == 'OK' }}
+        device_class: problem
+
+        

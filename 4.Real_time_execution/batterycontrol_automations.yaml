@@ -84,7 +84,7 @@ automation:
           entity_id: input_number.soc_target
         data:
           value: >
-            {% set forecasts = state_attr('sensor.soc_batt_forecast', 'battery_scheduled_soc') %}
+            {% set forecasts = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') %}
             {% set last_value = states('input_number.soc_target') | float(30) %}
             {% set now = now() %}
             {% if forecasts %}
@@ -92,9 +92,9 @@ automation:
                  | selectattr('date', '>=', now.isoformat()) 
                  | list %}
               {% if upcoming %}
-                {{ upcoming[0].soc_batt_forecast | float(last_value) }}
+                {{ upcoming[0].mpc_pv_batt_soc | float(last_value) }}
               {% else %}
-                {{ states('sensor.soc_batt_forecast') | float(last_value) }}
+                {{ states('sensor.mpc_pv_batt_soc') | float(last_value) }}
               {% endif %}
             {% else %}
               {{ last_value }}
@@ -106,12 +106,12 @@ automation:
     alias: "Update Grid Charging Average Price"
     trigger:
       - platform: template
-        value_template: "{{ states('sensor.p_batt_forecast') | float(0) < 0 }}"
+        value_template: "{{ states('sensor.mpc_pv_batt_power') | float(0) < 0 }}"
       - platform: time_pattern
         minutes: "/15"
     condition:
       - condition: template
-        value_template: "{{ states('sensor.p_batt_forecast') | float(0) < 0 }}"
+        value_template: "{{ states('sensor.mpc_pv_batt_power') | float(0) < 0 }}"
     action:
       - service: input_number.set_value
         target:
@@ -131,7 +131,7 @@ automation:
 
       - service: input_number.set_value
         target:
-          entity_id: input_number.avarage_last_chargingprice
+          entity_id: input_number.average_last_chargingprice
         data:
           value: >
             {% set total = states('input_number.grid_charge_price_total') | float(0) %}
@@ -147,8 +147,8 @@ automation:
     trigger:
       - platform: template
         value_template: >
-          {{ (states('sensor.p_batt_forecast') | float(0)) < 0 and
-             (states('sensor.p_batt_forecast') | float(0) | round(1)) >= 0 }}
+          {{ (states('sensor.mpc_pv_grid_power') | float(0)) < 0 and
+             (states('sensor.mpc_pv_batt_power') | float(0) | round(1)) >= 0 }}
     action:
       - service: input_number.set_value
         target:
@@ -164,7 +164,7 @@ automation:
 
       - service: input_number.set_value
         target:
-          entity_id: input_number.avarage_last_chargingprice
+          entity_id: input_number.average_last_chargingprice
         data:
           value: 0
 
@@ -191,13 +191,14 @@ automation:
           maintain: "{{ soc >= (target - db) and soc <= (target + db) }}"
           pv: "{{ (states('sensor.solar_panel_production_w') | float(0)) }}"
           ac_lim: "{{ (states('input_number.ac_maxpower') | float(0)) }}"
-          batt_fc: "{{ (states('sensor.p_batt_forecast') | float(0)) }}"
-          grid_fc: "{{ (states('sensor.p_grid_forecast') | float(0)) }}"
+          batt_fc: "{{ (states('sensor.mpc_pv_batt_power') | float(0)) }}"
+          grid_fc: "{{ (states('sensor.mpc_pv_grid_power') | float(0)) }}"
           house_load: "{{ (states('sensor.power_myhouse_load_no_var_loads') | float(0)) }}"
           ev: "{{ (states('binary_sensor.ev_charging_on')) }}"
           soc_max: "{{ (states('input_number.maximum_state_of_charge') | float(90)) }}"
           soc_min: "{{ (states('input_number.minimum_state_of_charge') | float(20)) }}"
-          
+          price_import: "{{ (states('sensor.total_import_price') | float(0)) }}"
+          last_average_chargingprice: "{{ (states('input_number.average_last_chargingprice') | float(0) * 1.2) }}"
 #############################################################################
 #p_pv: > 0 when pv energy available
 #p_batt_forecast: <0 when charging =0 when stable SOC, >0 when discharging
@@ -247,7 +248,7 @@ automation:
               - condition: template
                 value_template: "{{ pv > ac_lim }}"
               - condition: template
-                value_template: "{{ states('sensor.solaredge_b1_state_of_energy') | float(0) < soc_max }}"
+                value_template: "{{ soc < soc_max }}"
             sequence:
               - service: script.charge_from_clipped_solar_script
               - delay: "00:00:02"
@@ -260,14 +261,14 @@ automation:
           # ===== BELOW-SOC / Charging logic =====
           - conditions:
               - condition: template
-                value_template: "{{ below and (states('sensor.solaredge_b1_state_of_energy') | float(0) < soc_max) }}"
+                value_template: "{{ below and (soc < soc_max) }}"
             sequence:
               - choose:
                  
                   # PV > house load AND grid_forecast >=0 (no export/import): maximize self-consumption
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv > house_load and grid_fc >=0 }}"
+                        value_template: "{{ (pv > house_load) and (grid_fc >=0) }}"
                     sequence:
                       - service: script.maximize_self_consumption_script
                       - delay: "00:00:02"
@@ -279,7 +280,7 @@ automation:
                   # PV > house load AND grid forecast <0 (export): set charglimit to 0
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv > house_load and grid_fc <0 }}"
+                        value_template: "{{ (pv > house_load) and (grid_fc <0) }}"
                     sequence:
                       - service: script.discharge_to_maximize_export_script
                       - delay: "00:00:02"
@@ -291,7 +292,7 @@ automation:
                   # PV <= load and BattForecast is charging: charge from solar+grid
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv <= house_load and pv > 0 and batt_fc < 0 }}"
+                        value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc <=0) }}"
                     sequence:
                       - service: script.charge_from_solar_power_and_grid_script
                       - delay: "00:00:02"
@@ -303,7 +304,7 @@ automation:
                   # No PV, BattForecast is charging and GridForecast is import
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv == 0 and batt_fc < 0 and grid_fc > 0 }}"
+                        value_template: "{{ (pv == 0) and (batt_fc < 0) and (grid_fc > 0) }}"
                     sequence:
                       - service: script.charge_from_solar_power_and_grid_script
                       - delay: "00:00:02"
@@ -316,7 +317,7 @@ automation:
                   # ===== PRICE-BASED FALLBACK (LAST) =====
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv == 0 and (states('sensor.total_import_price') | float(0) <= (states('input_number.avarage_last_chargingprice') | float(0) * 1.2)) }}"
+                        value_template: "{{ (pv == 0) and (batt_fc==0) and (price_import <= last_average_chargingprice) }}"
                     sequence:
                       - service: script.charge_from_solar_power_and_grid_script
                       - delay: "00:00:02"
@@ -328,7 +329,7 @@ automation:
                   # No PV, BattForecast is 0, SOC below target, and prices up >20% fallback to solar-only (off)
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv == 0 and batt_fc == 0 and grid_fc > 0 }}"
+                        value_template: "{{ (pv == 0) and (batt_fc == 0) and (grid_fc > 0) }}"
                     sequence:
                       - service: script.solar_power_only_script
                       - delay: "00:00:02"
@@ -389,7 +390,7 @@ automation:
                   # Normal maintain zone: dynamic charge and discharge limits
                   - conditions:
                       - condition: template
-                        value_template: "{{ pv <= house_load or batt_fc < 0 }}"
+                        value_template: "{{ (pv <= house_load) or (batt_fc < 0) }}"
                     sequence:
                       - service: script.maximize_self_consumption_script
                       - delay: "00:00:02"
@@ -404,8 +405,11 @@ automation:
                     sequence:
                       - service: script.solar_power_only_script
                       - delay: "00:00:02"
-                      - service: script.solar_power_only_script
-                      - delay: "00:00:02"
                       - service: script.set_storage_charge_limit0
                       - delay: "00:00:02"
-                      - service: script.set_storage_discharge_limit0
+
+                      
+
+                      
+                      
+            

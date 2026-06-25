@@ -1,0 +1,25 @@
+shell_command:
+  trigger_nordpool_forecast: >
+    curl -i -H "Content-Type:application/json" -X POST -d '{
+      "load_cost_forecast": {{ (
+        (state_attr("sensor.nordpool_kwh_se3_sek_3_10_025","raw_today") | map(attribute="value") | list +
+         state_attr("sensor.nordpool_kwh_se3_sek_3_10_025","raw_tomorrow") | map(attribute="value") | list
+        )[:24] 
+        | map('float') 
+        | map('add', states('input_number.grid_fee') | float(0))
+        | map('add', states('input_number.import_energy_tax') | float(0))
+        | map('add', states('input_number.tibber_fee') | float(0))
+        | map('multiply', 1 + (states('input_number.vat') | float(0) / 100))
+        | list | tojson
+      ) }},
+      "prod_price_forecast": {{ (
+        (state_attr("sensor.nordpool_kwh_se3_sek_3_10_025","raw_today") | map(attribute="value") | list +
+         state_attr("sensor.nordpool_kwh_se3_sek_3_10_025","raw_tomorrow") | map(attribute="value") | list
+        )[:24]
+        | map('float')
+        | map('add', states('input_number.export_compensation') | float(0))
+        | map('multiply', 0.01)  # convert öre to SEK
+        | list | tojson
+      ) }},
+      "prediction_horizon": 24
+    }' http://localhost:5000/action/dayahead-optim

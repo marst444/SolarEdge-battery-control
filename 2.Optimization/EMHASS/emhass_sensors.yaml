@@ -1,0 +1,554 @@
+template:
+  - sensor:
+      # Power consumption sensor for EMHASS
+      - name: "Power myhouse load no var loads"
+        unique_id: power_myhouse_load_no_var_loads
+        unit_of_measurement: "W"
+        device_class: "power"
+        state_class: "measurement"
+        icon: mdi:home
+        state: >
+          {% set panel_to_house_w = states('sensor.solar_panel_to_house_w') | float(0) %}
+          {% set battery_to_house_w = states('sensor.solar_battery_to_house_w') | float(0) %}
+          {% set grid_to_house_w = states('sensor.solar_grid_to_house_w') | float(0) %}
+          {% set total_power = panel_to_house_w + battery_to_house_w + grid_to_house_w %}
+          {{ [total_power, 0.0] | max }}
+          
+      - name: "Power myhouse load no var loads no EV"
+        unique_id: power_myhouse_load_no_var_loads_no_ev
+        unit_of_measurement: "W"
+        device_class: "power"
+        state_class: "measurement"
+        icon: mdi:home
+        state: >
+          {% set panel_to_house_w = states('sensor.solar_panel_to_house_w') | float(0) %}
+          {% set battery_to_house_w = states('sensor.solar_battery_to_house_w') | float(0) %}
+          {% set grid_to_house_w = states('sensor.solar_grid_to_house_w') | float(0) %}
+          {% set ev_charge = states('sensor.ev_charging_w') | float(0) %}
+          {% set total_power = panel_to_house_w + battery_to_house_w + grid_to_house_w - ev_charge %}
+          {{ [total_power, 0.0] | max }}
+
+
+###############################################################################
+#
+#
+#       Price senosors with added gridfees, VAT and export additions from input numnbers.
+#
+#
+##############################################################################
+
+      # Custom IMPORT price sensor for EMHASS
+      - name: "Nordpool SE3 Total Costs Import"
+        unique_id: nordpool_se3_total_costs_import
+        state: >
+          {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
+          {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
+          {% set gridfee = states("input_number.grid_fee") | float(0) %}
+          {% set import_energy_tax = states("input_number.import_energy_tax") | float(0) %}
+          {% set tibberfee = states("input_number.tibber_fee") | float(0) %}
+          {% set vat = states("input_number.vat") | float(0) %}
+          {% set merged = today_raw + tomorrow_raw %}
+          {{ (merged[0] | float + gridfee + import_energy_tax + tibberfee)/100 * (1 + vat/100) | round(2) }}
+
+        attributes:
+          forecast_merged: >
+            {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
+            {% set today_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_today") %}
+            {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
+            {% set tomorrow_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_tomorrow") %}
+            {% set gridfee = states("input_number.grid_fee") | float(0) %}
+            {% set import_energy_tax = states("input_number.import_energy_tax") | float(0) %}
+            {% set tibberfee = states("input_number.tibber_fee") | float(0) %}
+            {% set vat = states("input_number.vat") | float(0) %}
+            [
+            {% for i in range(today_raw | length) %}
+              {
+                "price": {{ ((today_raw[i] | float + gridfee + import_energy_tax + tibberfee)/100 * (1 + vat/100)) | round(2) }},
+                "ts": "{{ as_timestamp(today_ts[i].start) | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ as_timestamp(today_ts[i].end) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last or tomorrow_raw | length > 0 %},{% endif %}
+            {% endfor %}
+            {% for i in range(tomorrow_raw | length) %}
+              {
+                "price": {{ ((tomorrow_raw[i] | float + gridfee + import_energy_tax + tibberfee)/100 * (1 + vat/100)) | round(2) }},
+                "ts": "{{ as_timestamp(tomorrow_ts[i].start) | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ as_timestamp(tomorrow_ts[i].end) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last %},{% endif %}
+            {% endfor %}
+            ]
+
+      # Custom EXPORT price sensor for EMHASS
+      - name: "Nordpool SE3 Total Revenue Export"
+        unique_id: nordpool_se3_total_revenue_export
+        state: >
+          {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
+          {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
+          {% set exportcompensation = states("input_number.export_compensation") | float(0) %}
+          {% set merged = today_raw + tomorrow_raw %}
+          {{ (merged[0] | float + exportcompensation)/100 | round(2) }}
+
+        attributes:
+          forecast_merged: >
+            {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
+            {% set today_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_today") %}
+            {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
+            {% set tomorrow_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_tomorrow") %}
+            {% set exportcompensation = states("input_number.export_compensation") | float(0) %}
+            [
+            {% for i in range(today_raw | length) %}
+              {
+                "price": {{ ((today_raw[i] | float + exportcompensation)/100) | round(2) }},
+                "ts": "{{ as_timestamp(today_ts[i].start) | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ as_timestamp(today_ts[i].end) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last or tomorrow_raw | length > 0 %},{% endif %}
+            {% endfor %}
+            {% for i in range(tomorrow_raw | length) %}
+              {
+                "price": {{ ((tomorrow_raw[i] | float + exportcompensation)/100) | round(2) }},
+                "ts": "{{ as_timestamp(tomorrow_ts[i].start) | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ as_timestamp(tomorrow_ts[i].end) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last %},{% endif %}
+            {% endfor %}
+            ]
+        availability: >
+          {{ states("sensor.nordpool_kwh_se3_sek_3_10_025") | is_number }}
+          
+          
+########################################################
+# EPEX priceprediction sensors for EMHASS
+#
+########################################################
+
+# EPEX IMPORT price sensor 
+      - name: "EPEX Total Costs Import Forecast"
+        unique_id: epex_total_costs_import
+        unit_of_measurement: "SEK/kWh"
+        state: >
+          {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') %}
+          {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}
+          {% set gridfee = states('input_number.grid_fee') | float(0) %}
+          {% set import_energy_tax = states('input_number.import_energy_tax') | float(0) %}
+          {% set tibberfee = states('input_number.tibber_fee') | float(0) %}
+          {% set vat = states('input_number.vat') | float(0) %}
+
+          {% if forecast and forecast | count > 0 %}
+            {% set price_ore = (forecast[0]['price'] | float(0)) * eur_to_ore %}
+            {{ ((price_ore + gridfee + import_energy_tax + tibberfee) / 100 * (1 + vat / 100)) | round(3) }}
+          {% else %}
+            unknown
+          {% endif %}
+        availability: >
+          {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
+             and states('sensor.eur_to_ore_factor') | is_number }}
+        attributes:
+          forecast_merged: >
+            {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') %}
+            {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}
+            {% set gridfee = states('input_number.grid_fee') | float(0) %}
+            {% set import_energy_tax = states('input_number.import_energy_tax') | float(0) %}
+            {% set tibberfee = states('input_number.tibber_fee') | float(0) %}
+            {% set vat = states('input_number.vat') | float(0) %}
+
+            {% if forecast %}
+            [
+            {% for item in forecast %}
+              {% set price_ore = (item['price'] | float(0)) * eur_to_ore %}
+              {
+                "price": {{ ((price_ore + gridfee + import_energy_tax + tibberfee) / 100 * (1 + vat / 100)) | round(3) }},
+                {% set start_ts = as_timestamp(item['ts']) %}
+                {% set end_ts = start_ts + 15 * 60 %}
+                "ts": "{{ start_ts | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ end_ts | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last %},{% endif %}
+            {% endfor %}
+            ]
+            {% else %}
+            []
+            {% endif %}
+
+# EPEX EXPORT price sensor 
+      - name: "EPEX Total Revenue Export Forecast"
+        unique_id: epex_total_revenue_export
+        unit_of_measurement: "SEK/kWh"
+        state: >
+          {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') or [] %}
+          {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}
+          {% set exportcompensation = states('input_number.export_compensation') | float(0) %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set ns = namespace(price=none) %}
+
+          {% for item in forecast %}
+            {% set start_ts = as_timestamp(item['ts']) %}
+            {% set end_ts = start_ts + 15 * 60 %}
+            {% if start_ts <= now_ts and now_ts < end_ts %}
+              {% set price_ore = (item['price'] | float(0)) * eur_to_ore %}
+              {% set ns.price = ((price_ore + exportcompensation) / 100) | round(3) %}
+            {% endif %}
+          {% endfor %}
+
+          {% if ns.price is not none %}
+            {{ ns.price }}
+          {% elif forecast | count > 0 %}
+            {% set price_ore = (forecast[0]['price'] | float(0)) * eur_to_ore %}
+            {{ ((price_ore + exportcompensation) / 100) | round(3) }}
+          {% else %}
+            unknown
+          {% endif %}
+        availability: >
+          {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
+             and states('sensor.eur_to_ore_factor') | is_number }}
+        attributes:
+          forecast_merged: >
+            {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') %}
+            {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}
+            {% set exportcompensation = states('input_number.export_compensation') | float(0) %}
+
+            {% if forecast %}
+            [
+            {% for item in forecast %}
+              {% set price_ore = (item['price'] | float(0)) * eur_to_ore %}
+              {
+                "price": {{ ((price_ore + exportcompensation) / 100) | round(3) }},
+                {% set start_ts = as_timestamp(item['ts']) %}
+                {% set end_ts = start_ts + 15 * 60 %}
+                "ts": "{{ start_ts | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ end_ts | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last %},{% endif %}
+            {% endfor %}
+            ]
+            {% else %}
+            []
+            {% endif %}
+
+
+      - name: "solcast_pv_forecast_15min_intervals"
+        unique_id: solcast_pv_forecast_15min_intervals
+        state: >
+          {% set forecast_today = state_attr('sensor.solcast_pv_forecast_forecast_today', 'detailedForecast') or [] %}
+          {% set forecast_tomorrow = state_attr('sensor.solcast_pv_forecast_forecast_tomorrow', 'detailedForecast') or [] %}
+          {% set forecast = forecast_today + forecast_tomorrow %}
+
+          {% if not forecast %}
+            0
+          {% else %}
+            {% set now_dt = now() %}
+            {% set rounded_minute = 0 if now_dt.minute < 30 else 30 %}
+            {% set block_now = now_dt.replace(minute=rounded_minute, second=0, microsecond=0) %}
+            {% set minute = now_dt.minute %}
+
+            {# choose between whole or half block #}
+            {% if (minute >= 15 and minute < 30) or (minute >= 45) %}
+              {# HALF BLOCK branch — use entry's pv_estimate normally #}
+              {% set past_forecast = forecast | selectattr('period_start', '<=', block_now) | list %}
+              {% set last_before_now = past_forecast[-1] if past_forecast else forecast[0] %}
+              {{ last_before_now.pv_estimate }}
+            {% else %}
+              {# WHOLE BLOCK branch #}
+              {% set past_forecast = forecast | selectattr('period_start', '<=', block_now) | list %}
+              {% set last_before_now = past_forecast[-1] if past_forecast else forecast[0] %}
+              {{ last_before_now.pv_estimate }}
+            {% endif %}
+          {% endif %}
+
+        attributes:
+          forecast_merged: >
+            {% set forecast_today = state_attr('sensor.solcast_pv_forecast_forecast_today', 'detailedForecast') or [] %}
+            {% set forecast_tomorrow = state_attr('sensor.solcast_pv_forecast_forecast_tomorrow', 'detailedForecast') or [] %}
+            {% set forecast = forecast_today + forecast_tomorrow %}
+
+            {% set now_dt = now() %}
+            {% set rounded_minute = 0 if now_dt.minute < 30 else 30 %}
+            {% set block_now = now_dt.replace(minute=rounded_minute, second=0, microsecond=0) %}
+            {% set minute = now_dt.minute %}
+
+            {# decide block mode #}
+            {% set half_mode = (minute >= 15 and minute < 30) or (minute >= 45) %}
+
+            {% set forecast_from_now = forecast | selectattr('period_start', '>=', block_now) | list %}
+
+            [
+            {% for entry in forecast_from_now %}
+              {% set start_ts = as_timestamp(entry.period_start) %}
+              {% set pv = entry.pv_estimate %}
+
+              {% if half_mode and loop.first %}
+                {# HALF-BLOCK FIRST ENTRY ONLY → skip the first half #}
+                {
+                  "pv_estimate": {{ pv }},
+                  "ts": "{{ (start_ts + 900) | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ (start_ts + 1800) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+                }{% if not loop.last %},{% endif %}
+              {% else %}
+                {# WHOLE BLOCK (normal): output BOTH halves #}
+                {
+                  "pv_estimate": {{ pv }},
+                  "ts": "{{ start_ts | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ (start_ts + 900) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+                },
+                {
+                  "pv_estimate": {{ pv }},
+                  "ts": "{{ (start_ts + 900) | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ (start_ts + 1800) | timestamp_custom('%Y-%m-%d %H:%M') }}"
+                }{% if not loop.last %},{% endif %}
+              {% endif %}
+            {% endfor %}
+            ]
+
+
+      - name: "Solcast PV Forecast 30min Intervals"
+        unique_id: solcast_pv_forecast_30min_intervals
+        state: >
+          {% set forecast_today = state_attr('sensor.solcast_pv_forecast_forecast_today', 'detailedForecast') or [] %}
+          {% set forecast_tomorrow = state_attr('sensor.solcast_pv_forecast_forecast_tomorrow', 'detailedForecast') or [] %}
+          {% set forecast = forecast_today + forecast_tomorrow %}
+          {% if forecast %}
+            {% set now_dt = now() %}
+            {% set next_estimate = forecast | selectattr('period_start', '>=', now_dt) | map(attribute='pv_estimate') | list %}
+            {{ next_estimate[0] if next_estimate else forecast[-1].pv_estimate }}
+          {% else %}
+            0
+          {% endif %}
+        attributes:
+          forecast_merged: >
+            {% set forecast_today = state_attr('sensor.solcast_pv_forecast_forecast_today', 'detailedForecast') or [] %}
+            {% set forecast_tomorrow = state_attr('sensor.solcast_pv_forecast_forecast_tomorrow', 'detailedForecast') or [] %}
+            {% set forecast = forecast_today + forecast_tomorrow %}
+            [
+            {%- for entry in forecast %}
+              {%- set start = entry.period_start %}
+              {%- set pv = entry.pv_estimate %}
+              {%- set mid = start + timedelta(minutes=15) %}
+              {%- set end = start + timedelta(minutes=30) %}
+
+              {
+                "power": {{ pv }},
+                "ts": "{{ start.strftime('%Y-%m-%d %H:%M') }} - {{ mid.strftime('%Y-%m-%d %H:%M') }}"
+              },
+              {
+                "power": {{ pv }},
+                "ts": "{{ mid.strftime('%Y-%m-%d %H:%M') }} - {{ end.strftime('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last %},{% endif %}
+            {%- endfor %}
+            ]
+        availability: >
+          {{ states('sensor.solcast_pv_forecast_forecast_today') | is_number or states('sensor.solcast_pv_forecast_forecast_tomorrow') | is_number }}
+
+
+      # Load forecast sensor for MPC
+      - name: "p_load_dayahead_forecast"
+        unique_id: p_load_dayahead_forecast
+        unit_of_measurement: "W"
+        state: >
+          {% set raw = state_attr('sensor.p_load_forecast', 'forecasts') or [] %}
+          {% set now_time = now() %}
+          {% set minute_offset = 15 - (now_time.minute % 15) %}
+          {% set next_interval = (now_time + timedelta(minutes=minute_offset)).replace(second=0, microsecond=0) %}
+          {% set future_loads = raw | selectattr('date', '>=', next_interval.isoformat()) | list %}
+          {{ future_loads[0].p_load_forecast if future_loads else (raw[-1].p_load_forecast if raw else 0) }}
+
+        attributes:
+          forecast_merged: >
+            {% set raw = state_attr('sensor.p_load_forecast', 'forecasts') or [] %}
+            {% set now_time = now() %}
+            {% set minute_offset = 15 - (now_time.minute % 15) %}
+            {% set next_interval = (now_time + timedelta(minutes=minute_offset)).replace(second=0, microsecond=0) %}
+            {% set future_loads = raw | selectattr('date', '>=', next_interval.isoformat()) | list %}
+            [
+            {% for entry in future_loads %}
+              {% set start_ts = as_timestamp(entry.date) %}
+              {% set end_ts = start_ts + 900 %}
+              {
+                "load": {{ entry.p_load_forecast | float }},
+                "ts": "{{ start_ts | timestamp_custom('%Y-%m-%d %H:%M') }} - {{ end_ts | timestamp_custom('%Y-%m-%d %H:%M') }}"
+              }{% if not loop.last %},{% endif %}
+            {% endfor %}
+            ]
+
+################################################################################
+# Merged Nordpool total import and export price sensors, with EPEX as padding
+# Update every 15 min
+# Stale protection: ignore Nordpool if not updated for 2 hours
+################################################################################
+
+  - trigger:
+      - platform: time_pattern
+        minutes: "/15"
+      - platform: state
+        entity_id:
+          - sensor.nordpool_se3_total_costs_import
+          - sensor.epex_total_costs_import_forecast
+          - sensor.nordpool_se3_total_revenue_export
+          - sensor.epex_total_revenue_export_forecast
+          - sensor.nordpool_kwh_se3_sek_3_10_025
+
+    sensor:
+      - name: "Merged Total Costs Import Forecast"
+        unique_id: merged_total_costs_import_forecast
+        unit_of_measurement: "SEK/kWh"
+        state: >
+          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+          {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+          {% set np = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set epex = state_attr('sensor.epex_total_costs_import_forecast', 'forecast_merged') or [] %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set ns = namespace(price=none) %}
+
+          {% if np | count > 0 %}
+            {% set np_last_end = as_timestamp(np[-1]['ts'].split(' - ')[1]) %}
+          {% else %}
+            {% set np_last_end = none %}
+          {% endif %}
+
+          {# 1. Nordpool current slot has priority if fresh #}
+          {% for row in np %}
+            {% set start = as_timestamp(row.ts.split(' - ')[0]) %}
+            {% set end = as_timestamp(row.ts.split(' - ')[1]) %}
+            {% if start <= now_ts and now_ts < end %}
+              {% set ns.price = row.price %}
+            {% endif %}
+          {% endfor %}
+
+          {# 2. If no Nordpool match, use EPEX after Nordpool end or if Nordpool stale/missing #}
+          {% if ns.price is none %}
+            {% if np_last_end is none or now_ts >= np_last_end %}
+              {% for row in epex %}
+                {% set start = as_timestamp(row.ts.split(' - ')[0]) %}
+                {% set end = as_timestamp(row.ts.split(' - ')[1]) %}
+                {% if start <= now_ts and now_ts < end %}
+                  {% set ns.price = row.price %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          {% endif %}
+
+          {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 'unknown')) }}
+
+        availability: >
+          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+          {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+          {% set np = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set epex = state_attr('sensor.epex_total_costs_import_forecast', 'forecast_merged') or [] %}
+          {{ (np | count > 0) or (epex | count > 0) }}
+
+        attributes:
+          source_status: >
+            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+            {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+            {{ 'nordpool_ok' if np_age < 7200 else 'fallback_epex_only' }}
+
+          forecast_merged: >
+            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+            {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+            {% set np = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') if np_age < 7200 else [] %}
+            {% set epex = state_attr('sensor.epex_total_costs_import_forecast', 'forecast_merged') or [] %}
+
+            {% set np = np if np is not none else [] %}
+            {% set epex = epex if epex is not none else [] %}
+
+            {% if np | count > 0 %}
+              {% set np_last_end = as_timestamp(np[-1]['ts'].split(' - ')[1]) %}
+            {% else %}
+              {% set np_last_end = none %}
+            {% endif %}
+
+            [
+            {% for item in np %}
+              {
+                "price": {{ item['price'] | float(0) | round(3) }},
+                "ts": "{{ item['ts'] }}"
+              }{% if not loop.last or epex | count > 0 %},{% endif %}
+            {% endfor %}
+            {% set ns = namespace(first=true) %}
+            {% for item in epex %}
+              {% set epex_start = as_timestamp(item['ts'].split(' - ')[0]) %}
+              {% if np_last_end is none or epex_start >= np_last_end %}
+                {% if not ns.first %},{% endif %}
+                {
+                  "price": {{ item['price'] | float(0) | round(3) }},
+                  "ts": "{{ item['ts'] }}"
+                }
+                {% set ns.first = false %}
+              {% endif %}
+            {% endfor %}
+            ]
+
+      - name: "Merged Total Revenue Export Forecast"
+        unique_id: merged_total_revenue_export_forecast
+        unit_of_measurement: "SEK/kWh"
+        state: >
+          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+          {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+          {% set np = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set epex = state_attr('sensor.epex_total_revenue_export_forecast', 'forecast_merged') or [] %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set ns = namespace(price=none) %}
+
+          {% if np | count > 0 %}
+            {% set np_last_end = as_timestamp(np[-1]['ts'].split(' - ')[1]) %}
+          {% else %}
+            {% set np_last_end = none %}
+          {% endif %}
+
+          {# 1. Nordpool current slot has priority if fresh #}
+          {% for row in np %}
+            {% set start = as_timestamp(row.ts.split(' - ')[0]) %}
+            {% set end = as_timestamp(row.ts.split(' - ')[1]) %}
+            {% if start <= now_ts and now_ts < end %}
+              {% set ns.price = row.price %}
+            {% endif %}
+          {% endfor %}
+
+          {# 2. If no Nordpool match, use EPEX after Nordpool end or if Nordpool stale/missing #}
+          {% if ns.price is none %}
+            {% if np_last_end is none or now_ts >= np_last_end %}
+              {% for row in epex %}
+                {% set start = as_timestamp(row.ts.split(' - ')[0]) %}
+                {% set end = as_timestamp(row.ts.split(' - ')[1]) %}
+                {% if start <= now_ts and now_ts < end %}
+                  {% set ns.price = row.price %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          {% endif %}
+
+          {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 'unknown')) }}
+
+        availability: >
+          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+          {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+          {% set np = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set epex = state_attr('sensor.epex_total_revenue_export_forecast', 'forecast_merged') or [] %}
+          {{ (np | count > 0) or (epex | count > 0) }}
+
+        attributes:
+          source_status: >
+            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+            {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+            {{ 'nordpool_ok' if np_age < 7200 else 'fallback_epex_only' }}
+
+          forecast_merged: >
+            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+            {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
+            {% set np = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') if np_age < 7200 else [] %}
+            {% set epex = state_attr('sensor.epex_total_revenue_export_forecast', 'forecast_merged') or [] %}
+
+            {% set np = np if np is not none else [] %}
+            {% set epex = epex if epex is not none else [] %}
+
+            {% if np | count > 0 %}
+              {% set np_last_end = as_timestamp(np[-1]['ts'].split(' - ')[1]) %}
+            {% else %}
+              {% set np_last_end = none %}
+            {% endif %}
+
+            [
+            {% for item in np %}
+              {
+                "price": {{ item['price'] | float(0) | round(3) }},
+                "ts": "{{ item['ts'] }}"
+              }{% if not loop.last or epex | count > 0 %},{% endif %}
+            {% endfor %}
+            {% set ns = namespace(first=true) %}
+            {% for item in epex %}
+              {% set epex_start = as_timestamp(item['ts'].split(' - ')[0]) %}
+              {% if np_last_end is none or epex_start >= np_last_end %}
+                {% if not ns.first %},{% endif %}
+                {
+                  "price": {{ item['price'] | float(0) | round(3) }},
+                  "ts": "{{ item['ts'] }}"
+                }
+                {% set ns.first = false %}
+              {% endif %}
+            {% endfor %}
+            ]

@@ -10,7 +10,7 @@
 #    Current power = solar panel production W
 #    electricity_price: Sek/kWh
 #
-#
+#    The plan uses a forecast produced by EMHASS using ML predict and publish to sensor.p_load_forecast_ml 
 #
 #
 ####################################################
@@ -32,7 +32,7 @@ script:
           weight_battery_charge: 0.02
           weight_battery_discharge: 0.02
           sensor_prefix: mpc_pv_
-          sensor_name_prefix: 'MPC_PV'
+          sensor_name_prefix: 'MPC_PV '
         alias: Configure secondary settings
       - variables:
 
@@ -42,7 +42,7 @@ script:
             discharging_power: sensor.solaredge_b1_max_discharge_power 
             max_inverter_power: sensor.max_active_power_1
             battery_soc: sensor.solaredge_b1_state_of_energy 
-            consumed_power: sensor.power_myhouse_load_no_var_loads 
+            consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev 
             solar:
               current_power: sensor.solar_panel_production_w 
               forecasts:
@@ -50,18 +50,10 @@ script:
               - sensor.solcast_pv_forecast_forecast_tomorrow
               - sensor.solcast_pv_forecast_forecast_day_3
             prices:
-              import: sensor.nordpool_se3_total_costs_import
-              export: sensor.nordpool_se3_total_revenue_export
+              import: sensor.merged_total_costs_import_forecast
+              export: sensor.merged_total_revenue_export_forecast
         alias: Configure sensor entities
-      - action: recorder.get_statistics
-        data:
-          start_time: '{{ (now() - timedelta(days=1)).isoformat() }}'
-          end_time: '{{ now().isoformat() }}'
-          statistic_ids: '{{ sensors.consumed_power }}'
-          period: hour
-          types: mean
-        response_variable: history
-        alias: Fetch load history
+
       - variables:
           num_forecasts: '{{ (60 / optimization_time_step * 24 * num_prediction_days) | int }}'
           soc_init: '{{ (states(sensors.battery_soc) | float(0) / 100) | round(3) }}'
@@ -98,23 +90,19 @@ script:
             soc_final: '{{ soc_final }}'
             load_cost_forecast: |-
               {% set ns = namespace(output={}) %}
-              {% for day in range(num_prediction_days) %}
-                {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
-                  {% set start = (forecast.ts.split(' - ')[0] | as_datetime | as_local + timedelta(days=day)).isoformat() %}
-                  {% set price = forecast.price | float(0) %}
-                  {% set ns.output = ns.output | combine({ start: price }) %}
-                {% endfor %}
+              {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
+                {% set start = (forecast.ts.split(' - ')[0] | as_datetime | as_local).isoformat() %}
+                {% set price = forecast.price | float(0) %}
+                {% set ns.output = ns.output | combine({ start: price }) %}
               {% endfor %}
               {{ ns.output }}
 
             prod_price_forecast: |-
               {% set ns = namespace(output={}) %}
-              {% for day in range(num_prediction_days) %}
-                {% for forecast in (state_attr(sensors.prices.export, 'forecast_merged') or []) %}
-                  {% set start = (forecast.ts.split(' - ')[0] | as_datetime | as_local + timedelta(days=day)).isoformat() %}
-                  {% set price = forecast.price | float(0) %}
-                  {% set ns.output = ns.output | combine({ start: price }) %}
-                {% endfor %}
+              {% for forecast in (state_attr(sensors.prices.export, 'forecast_merged') or []) %}
+                {% set start = (forecast.ts.split(' - ')[0] | as_datetime | as_local).isoformat() %}
+                {% set price = forecast.price | float(0) %}
+                {% set ns.output = ns.output | combine({ start: price }) %}
               {% endfor %}
               {{ ns.output }}
 
@@ -136,18 +124,14 @@ script:
               {% endfor %}
               {{ ns.output }}
             load_power_forecast: |-
-              {% set ns = namespace(
-                input=history.statistics[sensors.consumed_power],
-                output={
-                  now_iso: (states(sensors.consumed_power) | float(0)) | round(0)
-                }
-              ) %}
-              {% for day in range(num_prediction_days) %}
-                {% for load in ns.input %}
-                  {% set load_start = load.start | as_datetime | as_local + timedelta(days=day + 1) %}
-                  {% set load_value_watts = (load.mean | float(0)) | round(0) %}
-                  {% set ns.output = ns.output | combine({ load_start.isoformat(): load_value_watts }) %}
-                {% endfor %}
+              {% set ml = state_attr('sensor.p_load_forecast_ml_pv', 'scheduled_forecast') or [] %}
+              {% set ns = namespace(output={
+                now_iso: (states(sensors.consumed_power) | float(0)) | round(0)
+              }) %}
+              {% for item in ml %}
+                {% set ns.output = ns.output | combine({
+                  item.date: (item.p_load_forecast_ml_pv | float(0)) | round(0)
+                }) %}
               {% endfor %}
               {{ ns.output }}
         alias: Calculate payload
@@ -214,5 +198,167 @@ script:
           payload: >
             {{ dict(common, **payload) | to_json }}
         alias: Publish Energy Plan to HA
-  alias: Generate EMHASS Energy Plan (MPC_PV)
-  description: Runs EMHASS MPC optimizer, generating an optimal energy plan
+
+  run_dayahead_optim:
+    alias: "Run day-ahead optimization"
+    mode: single
+    sequence:
+      - service: rest_command.trigger_dayahead_optim
+
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.emhass_last_dayahead_run
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.day_ahead_forecast_end
+        data:
+          timestamp: >
+            {% set now_time = now() %}
+            {% set minute_offset = 15 - (now_time.minute % 15) %}
+            {% set next_interval = (now_time + timedelta(minutes=minute_offset)).replace(second=0, microsecond=0) %}
+
+            {% set load_list = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') or [] %}
+
+            {% set future_load = load_list | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M')) | list %}
+
+            {% set horizon = [future_load | length, 96] | min %}
+
+            {% if future_load %}
+              {# Pad list if it has fewer than 96 entries #}
+              {% set padded_list = (future_load[:horizon] + [future_load[-1]] * (96 - horizon))
+                 if horizon < 96 else future_load[:horizon] %}
+
+              {# Extract the timestamp from the range string #}
+              {% set last_ts_str = padded_list[-1].ts.split(' - ')[0] %}
+              {% set last_dt = last_ts_str | as_datetime %}
+            {% else %}
+              {# Fallback: +24h if no data #}
+              {% set last_dt = next_interval + timedelta(hours=24) %}
+            {% endif %}
+
+            {{ as_timestamp(last_dt) }}
+            
+      - delay: "00:00:05"
+      - service: rest_command.publish_data
+  
+  run_mpc_optimization:
+    alias: "Run naive MPC optimization"
+    sequence:
+      - service: rest_command.trigger_mpc_optim
+        data: {}
+      - delay: "00:00:05"
+      - service: rest_command.publish_data
+    
+  
+  run_mlforecast_fit_load:
+    alias: "Run ML load Forecast Fit load"
+    sequence:
+      - service: rest_command.mlforecast_fit_load
+        data: {}
+
+  run_mlforecast_predict_load:
+    alias: "Run ML load Forecast predict load"
+    sequence:
+      - service: rest_command.mlforecast_predict_load
+        data: {}
+
+  emhass_update_sliding_window:
+    alias: "Update MPC Sliding Window Helpers"
+    sequence:
+      - variables:
+          forecast_length: 96
+
+        # Interval start rounded down to nearest 15 minutes
+          interval_start: >
+            {% set ct = now() %}
+            {{ ct.replace(minute=(ct.minute // 15) * 15, second=0, microsecond=0) }}
+
+        # Use the day-ahead optimization end timestamp
+          forecast_end: >
+            {% set dae = states('input_datetime.day_ahead_forecast_end') %}
+            {{ (dae | as_datetime | as_local) - timedelta(minutes=15) }}
+
+        # Remaining steps from now until end of forecast
+          remaining_steps: >
+            {% set delta_sec = (forecast_end | as_datetime) - (interval_start | as_datetime) %}
+            {% set minutes = delta_sec.total_seconds() / 60 %}
+            {% set ceil_steps = ((minutes + 14) // 15) | int %}
+            {{ ceil_steps if ceil_steps > 0 else 1 }}
+
+        # Calculate current step, end step, prediction horizon
+          current_step: "{{ (forecast_length - remaining_steps) if (forecast_length - remaining_steps) >= 1 else 1 }}"
+          end_step: "{{ forecast_length if (current_step + remaining_steps) > forecast_length else (current_step + remaining_steps) }}"
+          prediction_horizon: "{{ (end_step - current_step + 1) }}"
+
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.mpc_window_start
+        data:
+          value: "{{ current_step | float(0) }}"
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.mpc_window_end
+        data:
+          value: "{{ end_step | float(0) }}"
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.mpc_prediction_horizon
+        data:
+          value: "{{ prediction_horizon | float(0) }}"
+          
+
+  set_mpc_soc_final_target:
+    alias: "Set MPC SOC Final Target"
+    sequence:
+      # Step 1: Get fallback, end timestamp, and schedule
+      - variables:
+          fallback: 30
+          end_ts: "{{ state_attr('input_datetime.day_ahead_forecast_end', 'timestamp') | int }}"
+          schedule: "{{ state_attr('sensor.soc_batt_forecast', 'battery_scheduled_soc') or [] }}"
+
+      # Step 2: Find the SOC value with the closest timestamp
+      - variables:
+          soc_target: >
+            {% set result = fallback | float %}
+            {% set min_diff = None %}
+            {% for row in schedule %}
+              {% if row is mapping and row.date is defined and row.soc_batt_forecast is not none %}
+                {% set row_ts = as_timestamp(row.date) | int %}
+                {% set diff = (row_ts - end_ts) | abs %}
+                {% if min_diff is none or diff < min_diff %}
+                  {% set min_diff = diff %}
+                  {% set result = row.soc_batt_forecast | float %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ result }}
+
+      # Step 3: Clamp SOC safely between 0 and 100
+      - variables:
+          soc_target_clamped: >
+            {% set soc_target_clamped = soc_target | float %}
+            {% if soc_target_clamped < 0 %}
+              {% set soc_target_clamped = 0 %}
+            {% elif soc_target_clamped > 100 %}
+              {% set soc_target_clamped = 100 %}
+            {% endif %}
+            {{ soc_target_clamped }}
+
+      # Step 4: Write the value to the input_number
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.mpc_soc_final_target
+        data:
+          value: "{{ soc_target_clamped }}"
+
+      # Step 5: Log the update
+      - service: system_log.write
+        data:
+          message: "MPC SOC final target updated to {{ soc_target_clamped }} (closest timestamp match)."
+          level: info

@@ -7,7 +7,7 @@ template:
         state: >
           {% set soc = states('sensor.solaredge_b1_state_of_energy') | float(0) / 100 %}
           {% set capacity = 4.6 %}
-          {% set avg_price_paid = states('input_number.avarage_last_chargingprice') | float(0) %}
+          {% set avg_price_paid = states('input_number.average_last_chargingprice') | float(0) %}
           {{ (soc * capacity * avg_price_paid) | round(2) }}
 
       # Worth using battery for house load
@@ -38,7 +38,7 @@ template:
         unit_of_measurement: "W"
         state: >
           {% set soc_now = states('sensor.solaredge_b1_state_of_energy') | float(0) %}
-          {% set forecast_raw = state_attr('sensor.soc_batt_forecast', 'battery_scheduled_soc') or [] %}
+          {% set forecast_raw = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') or [] %}
           {% set batt_capacity_wh = 4600 %}
           {% set now_ts = as_timestamp(now()) %}
           {% if forecast_raw | length >= 1 %}
@@ -52,7 +52,7 @@ template:
             {% set forecast = [] %}
           {% endif %}
           {% if forecast | length >= 1 %}
-            {% set next_forecast = forecast[0].soc_batt_forecast | float(0) %}
+            {% set next_forecast = forecast[0].mpc_pv_batt_soc | float(0) %}
             {% set power = ((next_forecast - soc_now) / 100 * batt_capacity_wh) | round(0) %}
             {{ power if power > 0 else 0 }}
           {% else %}
@@ -65,7 +65,7 @@ template:
         unique_id: dynamic_storage_discharge_limit
         state: >
           {% set soc_now = states('sensor.solaredge_b1_state_of_energy') | float(0) %}
-          {% set forecast_raw = state_attr('sensor.soc_batt_forecast', 'battery_scheduled_soc') or [] %}
+          {% set forecast_raw = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') or [] %}
           {% set batt_capacity_wh = 4600 %}
           {% set now_ts = as_timestamp(now()) %}
           {% if forecast_raw | length >= 1 %}
@@ -79,7 +79,7 @@ template:
             {% set forecast = [] %}
           {% endif %}
           {% if forecast | length >= 1 %}
-            {% set next_forecast = forecast[0].soc_batt_forecast | float(0) %}
+            {% set next_forecast = forecast[0].mpc_pv_batt_soc | float(0) %}
             {% set power = ((next_forecast - soc_now) / 100 * batt_capacity_wh) | round(0) %}
             {{ (-power) if power < 0 else 0 }}
           {% else %}
@@ -91,19 +91,19 @@ template:
         unique_id: soc_batt_forecast_smooth
         unit_of_measurement: "%"
         state: >
-          {% set forecast_raw = state_attr('sensor.soc_batt_forecast', 'battery_scheduled_soc') or [] %}
+          {% set forecast_raw = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') or [] %}
           {% set now_ts = as_timestamp(now()) %}
           {# Keep only future entries #}
           {% set forecast = forecast_raw | selectattr('date', 'defined') | list %}
           {% set forecast_future = forecast | selectattr('date', '>=', now() | string) | list %}
 
           {% if forecast_future | length >= 3 %}
-            {% set s1 = forecast_future[0].soc_batt_forecast | float %}
-            {% set s2 = forecast_future[1].soc_batt_forecast | float %}
-            {% set s3 = forecast_future[2].soc_batt_forecast | float %}
+            {% set s1 = forecast_future[0].mpc_pv_batt_soc | float %}
+            {% set s2 = forecast_future[1].mpc_pv_batt_soc | float %}
+            {% set s3 = forecast_future[2].mpc_pv_batt_soc | float %}
             {{ ((s1*0.5 + s2*0.3 + s3*0.2)) | round(2) }}
           {% elif forecast_future | length >= 1 %}
-            {{ forecast_future[0].soc_batt_forecast | float }}
+            {{ forecast_future[0].mpc_pv_batt_soc | float }}
           {% else %}
             0
           {% endif %}
@@ -127,7 +127,7 @@ input_number:
     max: 1000
     step: 1
 
-  avarage_last_chargingprice:
+  average_last_chargingprice:
     initial: 0
     min: 0
     max: 1000
@@ -196,3 +196,5 @@ input_number:
     max: 10000
     step: 100
     mode: box
+
+    

@@ -1,0 +1,302 @@
+rest_command:
+
+# Siegen energy setup #
+  emhass_dayahead_optim:
+    url: http://127.0.0.1:5000/action/dayahead-optim
+    method: POST
+    content_type: "application/json"
+    timeout: 240
+    payload: "{{ payload }}"
+  emhass_naive_mpc_optim:
+    url: http://127.0.0.1:5000/action/naive-mpc-optim
+    method: POST
+    content_type: "application/json"
+    timeout: 240
+    payload: "{{ payload }}"
+  emhass_publish_data:
+    url: http://127.0.0.1:5000/action/publish-data
+    method: POST
+    content_type: "application/json"
+    timeout: 240
+    payload: "{{ payload }}"
+
+# My current setup #
+
+  trigger_dayahead_optim:
+    url: "http://192.168.10.3:5000/action/dayahead-optim"
+    method: POST
+    timeout: 60
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {% set now_time = now() %}
+      {% set next_interval = now_time + timedelta(minutes=15 - (now_time.minute % 15)) %}
+
+      {% set load_list = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') or [] %}
+      {% set prod_list = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') or [] %}
+      {% set pv_list = state_attr('sensor.solcast_pv_forecast_15min_intervals', 'forecast_merged') or [] %}
+
+      {% set future_load = load_list
+           | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M'))
+           | list %}
+      {% if future_load | length == 0 %}
+        {% set future_load = [{'price': 0}] %}
+      {% endif %}
+
+      {% set future_prod = prod_list
+           | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M'))
+           | list %}
+      {% if future_prod | length == 0 %}
+        {% set future_prod = [{'price': 0}] %}
+      {% endif %}
+
+      {% set future_pv = pv_list
+           | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M'))
+           | list %}
+      {% if future_pv | length == 0 %}
+        {% set future_pv = [{'pv_estimate': 0}] %}
+      {% endif %}
+
+      {% set horizon = [future_load | length, 96] | min %}
+
+      {% set padded_load = (future_load[:horizon] + [future_load[-1]] * (96 - horizon))
+                            if horizon < 96 else future_load[:horizon] %}
+      {% set padded_prod = (future_prod[:horizon] + [future_prod[-1]] * (96 - horizon))
+                            if horizon < 96 else future_prod[:horizon] %}
+      {% set padded_pv   = (future_pv[:horizon] + [future_pv[-1]] * (96 - horizon))
+                            if horizon < 96 else future_pv[:horizon] %}
+
+      {
+        "load_cost_forecast": [{{ padded_load | map(attribute='price') | join(', ') }}],
+        "prod_price_forecast": [{{ padded_prod | map(attribute='price') | join(', ') }}],
+        "pv_power_forecast": [
+          {% for item in padded_pv %}
+            {{ (item.pv_estimate * 1000) | round(0, 'floor') }}{{ ',' if not loop.last }}
+          {% endfor %}
+        ],
+        "prediction_horizon": 96
+      }
+      
+  test_day_ahead_forecast:
+    url: "http://192.168.10.3:5000/action/dayahead-optim"
+    method: POST
+    timeout: 60
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {
+          "load_cost_forecast": [    
+            0.19, 0.18, 0.17, 0.18, 0.19, 0.20, 0.19, 0.18, 
+            0.17, 0.18, 0.19, 0.20, 0.19, 0.18, 0.17, 0.18, 
+            0.19, 0.20, 0.21, 0.22, 0.23, 0.22, 0.21, 0.20, 
+            0.19, 0.18, 0.17, 0.18, 0.19, 0.20, 0.21, 0.22, 
+            0.23, 0.22, 0.21, 0.20, 0.19, 0.18, 0.17, 0.18, 
+            0.19, 0.20, 0.21, 0.22, 0.23, 0.22, 0.21, 0.20, 
+            0.19, 0.18, 0.17, 0.18, 0.19, 0.20, 0.21, 0.22, 
+            0.23, 0.22, 0.21, 0.20, 0.19, 0.18, 0.17, 0.18, 
+            0.19, 0.20, 0.21, 0.22, 0.23, 0.22, 0.21, 0.20, 
+            0.19, 0.18, 0.17, 0.18, 0.19, 0.20, 0.21, 0.22, 
+            0.23, 0.22, 0.21, 0.20, 0.19, 0.18, 0.17, 0.18, 
+            0.19, 0.20, 0.21, 0.22, 0.23, 0.22, 0.21, 0.20  
+            ],
+          "prod_price_forecast": [ 
+            0.11, 0.10, 0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 
+            0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 0.09, 0.10, 
+            0.11, 0.12, 0.13, 0.14, 0.13, 0.12, 0.11, 0.10, 
+            0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 0.09, 0.10, 
+            0.11, 0.12, 0.13, 0.14, 0.13, 0.12, 0.11, 0.10, 
+            0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 0.09, 0.10, 
+            0.11, 0.12, 0.13, 0.14, 0.13, 0.12, 0.11, 0.10, 
+            0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 0.09, 0.10, 
+            0.11, 0.12, 0.13, 0.14, 0.13, 0.12, 0.11, 0.10, 
+            0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 0.09, 0.10, 
+            0.11, 0.12, 0.13, 0.14, 0.13, 0.12, 0.11, 0.10, 
+            0.09, 0.10, 0.11, 0.12, 0.11, 0.10, 0.09, 0.10
+            ],
+          "pv_power_forecast": [ 
+            0,0,0,0,0, 50,100,150,200,250, 
+            300,400,500,600,700,800,900,1000,1100,1200, 
+            1300,1400,1500,1600,1700,1800,1900,2000,2000,2000, 
+            1900,1800,1700,1600,1500,1400,1300,1200,1100,1000, 
+            900,800,700,600,500,400,300,200,150,100, 
+            80,60,40,20,0, 0,0,0,0,0, 
+            0,0,0,0,0, 0,0,0,0,0, 
+            0,0,0,0,0, 0,0,0,0,0, 
+            0,0,0,0,0, 0,0,0,0,0, 
+            0,0,0,0,0, 0,0,0,0,0  
+            ],
+          "load_power_forecast": [ 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900, 
+            900,900,900,900,900,900,900,900,900,900 
+            ],
+          "prediction_horizon": 96
+        }
+
+
+  publish_data:
+    url: http://192.168.10.3:5000/action/publish-data
+    method: POST
+    headers:
+      Content-Type: application/json
+    payload: '{}'  
+
+
+  mlforecast_fit_load:
+    url: "http://192.168.10.3:5000/action/forecast-model-fit"
+    method: POST
+    timeout: 300
+    headers:
+      Content-Type: "application/json"
+    payload: >
+      {
+        "historic_days_to_retrieve": 40,
+        "model_type": "load_forecast",
+        "vars_model": ["sensor.power_myhouse_load_no_var_loads_no_ev"],
+        "sklearn_model": "KNeighborsRegressor",
+        "num_lags": 96,
+        "split_date_delta": "48h",
+        "perform_backtest": true,
+        "retrieve_method": "influxdb",
+        "influxdb_host": "192.168.10.3",
+        "influxdb_port": 8086,
+        "influxdb_dbname": "home_assistant",
+        "influxdb_ssl": false,
+        "influxdb_verify_ssl": false,
+        "influxdb_measurement_attr": "last_state",
+        "influxdb_measurement": "sensor.power_myhouse_load_no_var_loads_no_ev"
+      }
+
+  mlforecast_predict_load:
+    url: "http://192.168.10.3:5000/action/forecast-model-predict"
+    method: POST
+    timeout: 60
+    headers:
+      Content-Type: "application/json"
+    payload: >
+      {
+        "model_type": "load_forecast",
+        "model_predict_publish": true,
+        "model_predict_entity_id": "sensor.p_load_forecast_ml_pv",
+        "model_predict_unit_of_measurement": "W",
+        "model_predict_friendly_name": "Load Power Forecast ML PV"
+      }
+
+
+  trigger_mpc_optim:
+    url: "http://192.168.10.3:5000/action/naive-mpc-optim"
+    method: POST
+    timeout: 60
+    headers:
+      Content-Type: "application/json"
+    payload: >
+      {% set now_ts = now().replace(minute=(now().minute // 15) * 15,
+                                    second=0,
+                                    microsecond=0) %}
+      {% set max_horizon = 96 %}
+
+      {# ------------------------------------------------------------------ #}
+      {# Helper: convert ANY time to local ISO string with correct offset   #}
+      {# ------------------------------------------------------------------ #}
+      {% macro to_local_iso(t) -%}
+      {{ (t
+          | as_timestamp
+          | timestamp_custom('%Y-%m-%dT%H:%M:%S%z', true))
+          | regex_replace('([+-]\\d{2})(\\d{2})$', '\\1:\\2') }}
+      {%- endmacro %}
+
+      {# ------------------------------------------------------------------ #}
+      {# 1. DAY-AHEAD LOAD FORECAST (EMHASS p_load_forecast)                 #}
+      {# ------------------------------------------------------------------ #}
+      {% set load_forecasts = state_attr('sensor.p_load_forecast', 'forecasts') or [] %}
+      {% set future_load = namespace(items=[]) %}
+
+      {% for item in load_forecasts %}
+        {% if item.date | as_timestamp >= now_ts | as_timestamp %}
+          {% set future_load.items = future_load.items + [item] %}
+        {% endif %}
+      {% endfor %}
+
+      {% set horizon = future_load.items | length %}
+      {% if horizon > max_horizon %}
+        {% set horizon = max_horizon %}
+      {% endif %}
+
+      {% if horizon == 0 %}
+        {{ {'error': 'MPC horizon exhausted – waiting for next day-ahead run'} | tojson }}
+      {% else %}
+
+      {% set ns_load = namespace(d={}) %}
+      {% for item in future_load.items[:horizon] %}
+        {% set ts = to_local_iso(item.date) %}
+        {% set ns_load.d = ns_load.d | combine({ ts: item.p_load_forecast | float }) %}
+      {% endfor %}
+
+      {# ------------------------------------------------------------------ #}
+      {# 2. PRICE FORECASTS (Nordpool import / export)                       #}
+      {# ------------------------------------------------------------------ #}
+      {% set import_prices = state_attr('sensor.nordpool_se3_total_costs_import',
+                                        'forecast_merged') or [] %}
+      {% set export_prices = state_attr('sensor.nordpool_se3_total_revenue_export',
+                                        'forecast_merged') or [] %}
+
+      {% set ns_load_cost = namespace(d={}) %}
+      {% for item in import_prices[:horizon] %}
+        {% set base_ts = item.ts.split(' - ')[0] %}
+        {% set ts = to_local_iso(strptime(base_ts, '%Y-%m-%d %H:%M')) %}
+        {% set ns_load_cost.d = ns_load_cost.d | combine({ ts: item.price }) %}
+      {% endfor %}
+
+      {% set ns_prod_price = namespace(d={}) %}
+      {% for item in export_prices[:horizon] %}
+        {% set base_ts = item.ts.split(' - ')[0] %}
+        {% set ts = to_local_iso(strptime(base_ts, '%Y-%m-%d %H:%M')) %}
+        {% set ns_prod_price.d = ns_prod_price.d | combine({ ts: item.price }) %}
+      {% endfor %}
+
+      {# ------------------------------------------------------------------ #}
+      {# 3. PV FORECAST (Solcast)                                           #}
+      {# ------------------------------------------------------------------ #}
+      {% set pv_forecasts = state_attr('sensor.solcast_pv_forecast_15min_intervals',
+                                       'forecast_merged') or [] %}
+      {% set ns_pv = namespace(d={}) %}
+      {% for item in pv_forecasts[:horizon] %}
+        {% set base_ts = item.ts.split(' - ')[0] %}
+        {% set ts = to_local_iso(strptime(base_ts, '%Y-%m-%d %H:%M')) %}
+        {% set ns_pv.d = ns_pv.d | combine({
+          ts: (item.pv_estimate * 1000) | round(0)
+        }) %}
+      {% endfor %}
+
+      {# ------------------------------------------------------------------ #}
+      {# 4. MPC PAYLOAD                                                    #}
+      {# ------------------------------------------------------------------ #}
+      {
+        "prediction_horizon": {{ horizon }},
+        "load_power_forecast": {{ ns_load.d | tojson }},
+        "load_cost_forecast": {{ ns_load_cost.d | tojson }},
+        "prod_price_forecast": {{ ns_prod_price.d | tojson }},
+        "pv_power_forecast": {{ ns_pv.d | tojson }},
+        "soc_init": {{ (states('sensor.solaredge_b1_state_of_energy') | float) / 100 }},
+        "soc_final": 0.3,
+        "set_use_battery": true,
+        "battery_minimum_state_of_charge": 0.2,
+        "battery_maximum_state_of_charge": 0.9,
+        "battery_discharge_power_max": 3300,
+        "battery_charge_power_max": 3300,
+        "battery_discharge_efficiency": 0.9,
+        "battery_charge_efficiency": 0.95,
+        "battery_nominal_energy_capacity": 5000,
+        "inverter_stress_cost": 0.05,
+        "inverter_stress_segments": 10,
+        "publish_prefix": "mpc_"
+      }
+
+      {% endif %}

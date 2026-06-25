@@ -128,3 +128,4 @@ script:
           queue_service: set_dynamic_storage_charge_limit
           queue_value: "{{ states('input_number.dynamic_charge_limit') | int }}"
 
+

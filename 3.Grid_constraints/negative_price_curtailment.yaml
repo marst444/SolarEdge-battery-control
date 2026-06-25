@@ -1,0 +1,52 @@
+automation:
+  - id: negative_price_curtailment
+    alias: "Curtail Export When Price Negative"
+
+    trigger:
+      # ✅ instant reaction
+      - platform: state
+        entity_id: sensor.total_export_price
+
+      # ✅ periodic enforcement (stability)
+      - platform: time_pattern
+        seconds: "/30"
+
+    action:
+      - choose:
+
+          # 🔴 NEGATIVE PRICE → ACTIVATE CURTAILMENT
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ states('sensor.total_export_price') | float(0) < 0 }}
+              - condition: state
+                entity_id: switch.solaredge_i1_negative_site_limit
+                state: "off"
+            sequence:
+              # ✅ activate inverter-level export block
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.solaredge_i1_negative_site_limit
+
+              - delay: "00:00:02"
+
+              # ✅ ensure correct mode (no forced export logic)
+              - service: script.maximize_self_consumption_script
+              - delay: "00:00:02"
+
+              # ✅ block battery discharge to grid
+              - service: script.set_storage_discharge_limit0
+
+          # 🟢 NORMAL PRICE → RELEASE CURTAILMENT
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ states('sensor.total_export_price') | float(0) >= 0 }}
+              - condition: state
+                entity_id: switch.solaredge_i1_negative_site_limit
+                state: "on"
+            sequence:
+              # ✅ restore inverter export capability
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.solaredge_i1_negative_site_limit

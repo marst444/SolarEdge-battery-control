@@ -1,0 +1,184 @@
+automation:
+
+  - id: generate_EMHASS_energy_plan_mpc_pv
+    alias: "Generate EMHASS energy plan mpc pv"
+    description: "Automatically generate EMHASS energy plan for PV using MPC and ML"
+
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+      - platform: homeassistant
+        event: start
+
+    condition: []
+    action:
+  # Only delay when triggered by restart
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.platform == 'homeassistant' }}"
+            sequence:
+              - delay: "00:05:00"
+      - service: script.generate_emhass_energy_plan_mpc_pv
+    mode: single
+
+  - id: EMHASS_ML_forecast_fit
+    alias: "EMHASS ML forecast fit"
+    description: "Automatically generate EMHASS machinelearning (ML) forecast fit"
+    trigger:
+      - platform: time
+        at: "19:00:00"
+    condition:
+      - condition: time
+        weekday:
+          - sun
+    action:
+      - service: script.run_mlforecast_fit_load
+    mode: single
+    
+  - id: EMHASS_ML_forecast_predict
+    alias: "EMHASS ML forecast predict"
+    description: "Automatically generate EMHASS machinelearning (ML) forecast predict"
+    trigger:
+      - platform: time_pattern
+        hours: "/6"
+      - platform: homeassistant
+        event: start
+    condition: []
+    action:
+  # Only delay when triggered by restart
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.platform == 'homeassistant' }}"
+            sequence:
+              - delay: "00:05:00"
+      - service: script.run_mlforecast_predict_load
+    mode: single
+
+      
+  - id: EMHASS_day-ahead_optimization
+    alias: "EMHASS day-ahead optimization"
+    trigger:
+      platform: time
+      at: '21:00:00'
+    action:
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.emhass_dayahead_status
+        data:
+          value: "RUNNING"
+
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.emhass_last_dayahead_run
+        data:
+          datetime: "{{ now().isoformat() }}"
+      - service: script.run_dayahead_optim
+      - delay: "00:00:05"
+      - service: rest_command.publish_data
+      - delay: "00:00:05"
+      - service: script.set_mpc_soc_final_target
+      - service: script.emhass_update_sliding_window
+
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: sensor.optim_status
+                state: "Optimal"
+            sequence:
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.emhass_dayahead_status
+                data:
+                  value: "OK"
+
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.emhass_dayahead_last_success
+                data:
+                  datetime: "{{ now().isoformat() }}"
+
+        default:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.emhass_dayahead_status
+            data:
+              value: "FAILED"
+
+
+  - id: EMHASS_MPC
+    alias: "EMHASS MPC"
+    mode: single
+
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+      - platform: homeassistant
+        event: start
+
+    condition:
+      # Block MPC during day-ahead window (21:00–21:14)
+      - condition: template
+        value_template: >
+          {% set h = now().hour %}
+          {% set m = now().minute %}
+          {{ not (h == 21 and m < 15) }}
+
+      # Require successful day-ahead
+      - condition: state
+        entity_id: input_text.emhass_dayahead_status
+        state: "OK"
+    
+    action:
+      - service: script.emhass_update_sliding_window
+      - choose:
+          # ---------- MPC ENABLED ----------
+          - conditions:
+              - condition: numeric_state
+                entity_id: input_number.mpc_prediction_horizon
+                above: 3
+                below: 94
+            sequence:
+              # Mark MPC running
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.emhass_mpc_status
+                data:
+                  value: "RUNNING"
+
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.emhass_last_mpc_run
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+              # Run MPC
+              - service: script.run_mpc_optimization
+              - service: rest_command.publish_data
+
+              # ✅ RESULT CHECK (NO NESTED CHOOSE)
+              - condition: state
+                entity_id: sensor.optim_status
+                state: "Optimal"
+
+              # MPC success
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.emhass_mpc_status
+                data:
+                  value: "OK"
+
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.emhass_mpc_last_success
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+        # ---------- MPC DISABLED ----------
+        default:
+          - service: logbook.log
+            data:
+              name: EMHASS
+              message: "MPC horizon exhausted – awaiting next day-ahead run"
+
