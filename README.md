@@ -59,7 +59,7 @@ System Architecture — 4-Layer Control Model
 
 The control system is inspired by hierarchical control theory and organized into four distinct layers, each with a specific responsibility. Higher layers set constraints and targets; lower layers execute them in real time.
 
-´´´
+```
 ┌─────────────────────────────────────────┐
 │         1. SAFETY & WATCHDOG            │  Hard limits — always enforced and watchdog
 ├─────────────────────────────────────────┤
@@ -69,7 +69,7 @@ The control system is inspired by hierarchical control theory and organized into
 ├─────────────────────────────────────────┤
 │         4. REAL-TIME EFFECTUATION       │  Modbus, scripts, SolarEdge modes
 └─────────────────────────────────────────┘
-´´´
+```
 # Layer 1 — Safety
 
 Hard boundaries that override all other logic. These are checked first in every automation cycle and cannot be overridden by optimization or grid signals.
