@@ -5,7 +5,9 @@ template:
       - name: "EMHASS Health"
         unique_id: emhass_health
         state: >
-          {% if (now().timestamp() - as_timestamp(states.sensor.mpc_pv_optim_status.last_changed)) > 2700 %}
+          {% if states('input_text.emhass_mpc_status') == 'RUNNING' %}
+            RUNNING
+          {% elif (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 %}
             MPC stalled
           {% elif states('sensor.mpc_pv_optim_status') != 'Optimal' %}
             MPC problem
