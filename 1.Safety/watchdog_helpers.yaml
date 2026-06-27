@@ -1,0 +1,30 @@
+input_datetime:
+
+  emhass_last_dayahead_run:
+    name: EMHASS Last Dayahead Run
+    has_date: true
+    has_time: true
+
+  emhass_last_mpc_run:
+    name: EMHASS Last MPC Run
+    has_date: true
+    has_time: true
+
+  emhass_dayahead_last_success:
+    name: EMHASS Dayahead last success
+    has_date: true
+    has_time: true  
+  
+  emhass_mpc_last_success:
+    name: EMHASS MPC last success
+    has_date: true
+    has_time: true
+
+input_text:
+
+
+  emhass_mpc_status:
+    name: EMHASS MPC status
+    
+  emhass_dayahead_status:
+    name: EMHASS dayahead status    

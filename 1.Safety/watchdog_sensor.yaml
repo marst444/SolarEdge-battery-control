@@ -5,9 +5,9 @@ template:
       - name: "EMHASS Health"
         unique_id: emhass_health
         state: >
-          {% if states('input_text.emhass_dayahead_status') != 'OK' %}
-            Day‑ahead problem
-          {% elif states('input_text.emhass_mpc_status') != 'OK' %}
+          {% if (now().timestamp() - as_timestamp(states.sensor.mpc_pv_optim_status.last_changed)) > 2700 %}
+            MPC stalled
+          {% elif states('sensor.mpc_pv_optim_status') != 'Optimal' %}
             MPC problem
           {% else %}
             OK
