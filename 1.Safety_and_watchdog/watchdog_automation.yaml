@@ -55,7 +55,8 @@ automation:
     condition:
       - condition: template
         value_template: >
-          {{ (now().timestamp() - as_timestamp(states.sensor.mpc_pv_optim_status.last_changed)) > 2700 }}
+          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 }}   
+    
     action:
       - service: persistent_notification.create
         data:
@@ -63,11 +64,11 @@ automation:
           message: >
             MPC has not run successfully in over 45 minutes.
             Status: {{ states('sensor.mpc_pv_optim_status') }}
-            Last changed: {{ states.sensor.mpc_pv_optim_status.last_changed }}
+            Last success: {{ states('input_datetime.emhass_mpc_last_success') }}
       - service: notify.mobile_app_fp3_ms
         data:
           title: "⚠️ EMHASS MPC stalled"
           message: >
             MPC has not run successfully in over 45 minutes.
             Status: {{ states('sensor.mpc_pv_optim_status') }}
-            Last changed: {{ states.sensor.mpc_pv_optim_status.last_changed }}
+            Last changed: {{ states.sensor.emhass_mpc_last_success }}
