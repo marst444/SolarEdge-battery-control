@@ -284,9 +284,13 @@ Sun covers house load. Let surplus charge the battery via self-consumption logic
 
 C)
 PV > house_load AND grid_fc < 0 (export forecast)
-Sun covers house load and EMHASS expects export. Exporting is more valuable than charging — let PV export freely, keep battery out of the loop.
-→ Mode: Maximize Self Consumption, both charge and discharge limits = 0
+SOC is below target, but EMHASS forecasts grid export. The automation allows PV surplus to be exported, but protects the battery from being discharged because SOC still needs to recover.
 
+→ Mode: Discharge to Maximize Export
+→ Discharge limit: 0 W
+→ Charge limit: dynamic
+
+This means export is allowed from PV surplus, but the battery is kept out of export because it is below target.
 D)
 PV ≤ house_load AND PV > 0 AND batt_fc ≤ 0 (EMHASS says charge)
 Sun partially covers load. EMHASS forecasts charging — allow grid to supplement.
