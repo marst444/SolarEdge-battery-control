@@ -40,6 +40,8 @@ template:
       # Custom IMPORT price sensor for EMHASS
       - name: "Nordpool SE3 Total Costs Import"
         unique_id: nordpool_se3_total_costs_import
+        availability: >
+          {{ states("sensor.nordpool_kwh_se3_sek_3_10_025") | is_number }}
         state: >
           {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
           {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
@@ -78,6 +80,8 @@ template:
       # Custom EXPORT price sensor for EMHASS
       - name: "Nordpool SE3 Total Revenue Export"
         unique_id: nordpool_se3_total_revenue_export
+        availability: >
+          {{ states("sensor.nordpool_kwh_se3_sek_3_10_025") | is_number }}
         state: >
           {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
           {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
@@ -106,8 +110,7 @@ template:
               }{% if not loop.last %},{% endif %}
             {% endfor %}
             ]
-        availability: >
-          {{ states("sensor.nordpool_kwh_se3_sek_3_10_025") | is_number }}
+
           
           
 ########################################################
@@ -119,6 +122,9 @@ template:
       - name: "EPEX Total Costs Import Forecast"
         unique_id: epex_total_costs_import
         unit_of_measurement: "SEK/kWh"
+        availability: >
+          {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
+             and states('sensor.eur_to_ore_factor') | is_number }}
         state: >
           {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') %}
           {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}
@@ -133,9 +139,6 @@ template:
           {% else %}
             unknown
           {% endif %}
-        availability: >
-          {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
-             and states('sensor.eur_to_ore_factor') | is_number }}
         attributes:
           forecast_merged: >
             {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') %}
@@ -165,6 +168,9 @@ template:
       - name: "EPEX Total Revenue Export Forecast"
         unique_id: epex_total_revenue_export
         unit_of_measurement: "SEK/kWh"
+        availability: >
+          {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
+             and states('sensor.eur_to_ore_factor') | is_number }}        
         state: >
           {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') or [] %}
           {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}
@@ -189,9 +195,7 @@ template:
           {% else %}
             unknown
           {% endif %}
-        availability: >
-          {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
-             and states('sensor.eur_to_ore_factor') | is_number }}
+
         attributes:
           forecast_merged: >
             {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') %}
@@ -288,6 +292,9 @@ template:
 
       - name: "Solcast PV Forecast 30min Intervals"
         unique_id: solcast_pv_forecast_30min_intervals
+        availability: >
+          {{ states('sensor.solcast_pv_forecast_forecast_today') | is_number or states('sensor.solcast_pv_forecast_forecast_tomorrow') | is_number }}
+
         state: >
           {% set forecast_today = state_attr('sensor.solcast_pv_forecast_forecast_today', 'detailedForecast') or [] %}
           {% set forecast_tomorrow = state_attr('sensor.solcast_pv_forecast_forecast_tomorrow', 'detailedForecast') or [] %}
@@ -321,8 +328,6 @@ template:
               }{% if not loop.last %},{% endif %}
             {%- endfor %}
             ]
-        availability: >
-          {{ states('sensor.solcast_pv_forecast_forecast_today') | is_number or states('sensor.solcast_pv_forecast_forecast_tomorrow') | is_number }}
 
 
       # Load forecast sensor for MPC

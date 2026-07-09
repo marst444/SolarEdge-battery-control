@@ -277,14 +277,14 @@ automation:
                       - service: script.set_dynamic_storage_discharge_limit
                       - delay: "00:00:02"
                       
-                  # PV > house load AND grid forecast <0 (export): set charglimit to 0
+                  # PV > house load AND grid forecast <0 (export): set discharglimit to 0
                   - conditions:
                       - condition: template
                         value_template: "{{ (pv > house_load) and (grid_fc <0) }}"
                     sequence:
                       - service: script.discharge_to_maximize_export_script
                       - delay: "00:00:02"
-                      - service: script.set_dynamic_storage_discharge_limit
+                      - service: script.set_storage_discharge_limit0
                       - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
@@ -292,14 +292,22 @@ automation:
                   # PV <= load and BattForecast is charging: charge from solar+grid
                   - conditions:
                       - condition: template
-                        value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc <=0) }}"
+                        value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc <0) }}"
                     sequence:
                       - service: script.charge_from_solar_power_and_grid_script
                       - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
-                      
-                      
+                    
+                  # PV <= load and BattForecast is discharging: maximize self consumption, discharge limit 0    
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc >=0) }}"
+                    sequence:
+                      - service: script.maximize_self_consumption_script
+                      - delay: "00:00:02"
+                      - service: script.set_storage_discharge_limit0
+                      - delay: "00:00:02"     
 
                   # No PV, BattForecast is charging and GridForecast is import
                   - conditions:
@@ -310,7 +318,16 @@ automation:
                       - delay: "00:00:02"
                       - service: script.set_dynamic_storage_charge_limit
                       - delay: "00:00:02"
-                      
+                  
+                  # No PV, BattForecast is discharging
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv == 0) and (batt_fc > 0) }}"
+                    sequence:
+                      - service: script.solar_power_only_script
+                      - delay: "00:00:02"
+                      - service: script.set_storage_discharge_limit0
+                      - delay: "00:00:02"    
                       
                       
                   # No PV, BattForecast is 0, grid is import and Prices have not gone up >20%      
