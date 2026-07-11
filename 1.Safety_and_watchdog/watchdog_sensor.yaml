@@ -5,10 +5,10 @@ template:
       - name: "EMHASS Health"
         unique_id: emhass_health
         state: >
-          {% if states('input_text.emhass_mpc_status') == 'RUNNING' %}
-            RUNNING
-          {% elif (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 %}
+          {% if (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'), 0)) > 2700 %}
             MPC stalled
+          {% elif states('input_text.emhass_mpc_status') == 'RUNNING' %}
+            RUNNING
           {% elif states('sensor.mpc_pv_optim_status') != 'Optimal' %}
             MPC problem
           {% else %}
@@ -17,6 +17,7 @@ template:
 
   - binary_sensor:
       - name: "EMHASS Healthy"
+        unique_id: emahss_healthy
         state: >
           {{ states('sensor.emhass_health') != 'OK' }}
         device_class: problem

@@ -20,63 +20,6 @@ rest_command:
     timeout: 240
     payload: "{{ payload }}"
 
-# My current setup #
-
-  trigger_dayahead_optim:
-    url: "http://192.168.10.3:5000/action/dayahead-optim"
-    method: POST
-    timeout: 60
-    headers:
-      Content-Type: "application/json"
-    payload: |
-      {% set now_time = now() %}
-      {% set next_interval = now_time + timedelta(minutes=15 - (now_time.minute % 15)) %}
-
-      {% set load_list = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') or [] %}
-      {% set prod_list = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') or [] %}
-      {% set pv_list = state_attr('sensor.solcast_pv_forecast_15min_intervals', 'forecast_merged') or [] %}
-
-      {% set future_load = load_list
-           | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M'))
-           | list %}
-      {% if future_load | length == 0 %}
-        {% set future_load = [{'price': 0}] %}
-      {% endif %}
-
-      {% set future_prod = prod_list
-           | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M'))
-           | list %}
-      {% if future_prod | length == 0 %}
-        {% set future_prod = [{'price': 0}] %}
-      {% endif %}
-
-      {% set future_pv = pv_list
-           | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M'))
-           | list %}
-      {% if future_pv | length == 0 %}
-        {% set future_pv = [{'pv_estimate': 0}] %}
-      {% endif %}
-
-      {% set horizon = [future_load | length, 96] | min %}
-
-      {% set padded_load = (future_load[:horizon] + [future_load[-1]] * (96 - horizon))
-                            if horizon < 96 else future_load[:horizon] %}
-      {% set padded_prod = (future_prod[:horizon] + [future_prod[-1]] * (96 - horizon))
-                            if horizon < 96 else future_prod[:horizon] %}
-      {% set padded_pv   = (future_pv[:horizon] + [future_pv[-1]] * (96 - horizon))
-                            if horizon < 96 else future_pv[:horizon] %}
-
-      {
-        "load_cost_forecast": [{{ padded_load | map(attribute='price') | join(', ') }}],
-        "prod_price_forecast": [{{ padded_prod | map(attribute='price') | join(', ') }}],
-        "pv_power_forecast": [
-          {% for item in padded_pv %}
-            {{ (item.pv_estimate * 1000) | round(0, 'floor') }}{{ ',' if not loop.last }}
-          {% endfor %}
-        ],
-        "prediction_horizon": 96
-      }
-      
 
   publish_data:
     url: http://192.168.10.3:5000/action/publish-data
@@ -94,9 +37,9 @@ rest_command:
       Content-Type: "application/json"
     payload: >
       {
-        "historic_days_to_retrieve": 40,
+        "historic_days_to_retrieve": 30,
         "model_type": "load_forecast",
-        "vars_model": ["sensor.power_myhouse_load_no_var_loads_no_ev"],
+        "var_model": "sensor.power_myhouse_load_no_var_loads_no_ev",
         "sklearn_model": "KNeighborsRegressor",
         "num_lags": 96,
         "split_date_delta": "48h",

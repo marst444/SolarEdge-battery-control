@@ -24,7 +24,7 @@ template:
           {% set panel_to_house_w = states('sensor.solar_panel_to_house_w') | float(0) %}
           {% set battery_to_house_w = states('sensor.solar_battery_to_house_w') | float(0) %}
           {% set grid_to_house_w = states('sensor.solar_grid_to_house_w') | float(0) %}
-          {% set ev_charge = states('sensor.ev_charging_w') | float(0) %}
+          {% set ev_charge = states('sensor.ev_charging_power_w') | float(0) %}
           {% set total_power = panel_to_house_w + battery_to_house_w + grid_to_house_w - ev_charge %}
           {{ [total_power, 0.0] | max }}
 

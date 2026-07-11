@@ -222,7 +222,7 @@ script:
 #    https://sigenergy.annable.me/
 #
 ####################################################
-  generate_emhass_energy_plan_dayahead_pv:
+  generate_emhass_energy_plan_dh_pv:
     alias: "generate EMHASS energy plan dayahead_PV"
     sequence:
       - variables:
@@ -232,7 +232,7 @@ script:
           battery_minimum_percent: 20
         alias: Configure critical settings
       - variables:
-          num_prediction_days: 5
+          num_prediction_days: 2
           optimization_time_step: 15
           weight_battery_charge: 0.02
           weight_battery_discharge: 0.02
@@ -340,7 +340,7 @@ script:
               {% endfor %}
               {{ ns.output }}
         alias: Calculate payload
-      - action: rest_command.emhass_naive_mpc_optim
+      - action: rest_command.emhass_dayahead_optim
         metadata: {}
         data:
           payload: >
@@ -404,61 +404,7 @@ script:
             {{ dict(common, **payload) | to_json }}
         alias: Publish Energy Plan to HA  
   
-
-  run_dayahead_optim:
-    alias: "Run day-ahead optimization"
-    mode: single
-    sequence:
-      - service: rest_command.trigger_dayahead_optim
-
-      - service: input_datetime.set_datetime
-        target:
-          entity_id: input_datetime.emhass_last_dayahead_run
-        data:
-          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-      - service: input_datetime.set_datetime
-        target:
-          entity_id: input_datetime.day_ahead_forecast_end
-        data:
-          timestamp: >
-            {% set now_time = now() %}
-            {% set minute_offset = 15 - (now_time.minute % 15) %}
-            {% set next_interval = (now_time + timedelta(minutes=minute_offset)).replace(second=0, microsecond=0) %}
-
-            {% set load_list = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') or [] %}
-
-            {% set future_load = load_list | selectattr('ts', '>=', next_interval.strftime('%Y-%m-%d %H:%M')) | list %}
-
-            {% set horizon = [future_load | length, 96] | min %}
-
-            {% if future_load %}
-              {# Pad list if it has fewer than 96 entries #}
-              {% set padded_list = (future_load[:horizon] + [future_load[-1]] * (96 - horizon))
-                 if horizon < 96 else future_load[:horizon] %}
-
-              {# Extract the timestamp from the range string #}
-              {% set last_ts_str = padded_list[-1].ts.split(' - ')[0] %}
-              {% set last_dt = last_ts_str | as_datetime %}
-            {% else %}
-              {# Fallback: +24h if no data #}
-              {% set last_dt = next_interval + timedelta(hours=24) %}
-            {% endif %}
-
-            {{ as_timestamp(last_dt) }}
-            
-      - delay: "00:00:05"
-      - service: rest_command.publish_data
-  
-  run_mpc_optimization:
-    alias: "Run naive MPC optimization"
-    sequence:
-      - service: rest_command.trigger_mpc_optim
-        data: {}
-      - delay: "00:00:05"
-      - service: rest_command.publish_data
     
-  
   run_mlforecast_fit_load:
     alias: "Run ML load Forecast Fit load"
     sequence:
