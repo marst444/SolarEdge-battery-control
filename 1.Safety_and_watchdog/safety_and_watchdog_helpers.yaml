@@ -97,6 +97,7 @@ input_boolean:
     name: Battery Charge Blocked
     icon: mdi:battery-off-outline
 
+# Killswitch for whole battery control system.
   effective_battery_control_enabled:
     name: Effective Battery Control Enabled
     icon: mdi:battery-cog

@@ -1,0 +1,440 @@
+################################################################################
+#
+# Main charge control logic for battery charge/discharge based on EMHASS MPC forecast
+# and actual SOC
+# 
+# p_pv: > 0 when pv energy available
+# p_batt_forecast: <0 when charging =0 when stable SOC, >0 when discharging
+# p_grid_forecast: >0 when import, =0 when self consumption, <0 when export to grid
+#      - solar_power_only
+#      - charge_from_clipped_solar
+#      - charge_from_solar_and_grid
+#      - discharge_to_maximize_export
+#      - maximize_self_consumption
+#
+################################################################################
+
+automation:
+
+  - id: emhass_battery_forecast_control
+    alias: "EMHASS Forecast Driven Battery Control"
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+        seconds: 0
+    condition:
+      - condition: state
+        entity_id: select.solaredge_i1_storage_control_mode
+        state: "Remote Control"
+    action:
+      - variables:
+          soc: "{{ (states('sensor.solaredge_b1_state_of_energy') | float(0)) }}"
+          soc_max: "{{ (states('input_number.maximum_state_of_charge') | float(90)) }}"
+          soc_min: "{{ (states('input_number.minimum_state_of_charge') | float(20)) }}"
+          target: "{{ states('sensor.soc_batt_forecast_smooth') | float(30) }}"
+          db: "{{ (states('input_number.soc_deadband') | float(0)) }}"
+          below: "{{ soc < (target - db) }}"
+          above: "{{ soc > (target + db) }}"
+          maintain: "{{ soc >= (target - db) and soc <= (target + db) }}"
+          pv: "{{ (states('sensor.solar_panel_production_w') | float(0)) }}"
+          ac_lim: "{{ (states('input_number.ac_maxpower') | float(0)) }}"
+          batt_fc: "{{ (states('sensor.mpc_pv_batt_power') | float(0)) }}"
+          grid_fc: "{{ (states('sensor.mpc_pv_grid_power') | float(0)) }}"
+          house_load: "{{ (states('sensor.power_myhouse_load_no_var_loads') | float(0)) }}"
+          ev: "{{ (states('binary_sensor.ev_charging_on')) }}"
+
+          price_import: "{{ (states('sensor.total_import_price') | float(0)) }}"
+          last_average_chargingprice: "{{ (states('input_number.average_last_chargingprice') | float(0) * 1.2) }}"
+
+      - choose:
+        
+          # ===== CLIPPED SOLAR =====
+          - conditions:
+              - condition: template
+                value_template: "{{ pv > ac_lim }}"
+              - condition: template
+                value_template: "{{ soc < soc_max }}"
+            sequence:
+             # Shadow/requested state
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.emhass_requested_storage_mode
+                data:
+                  option: "charge_from_clipped_solar"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_charge_limit
+                data:
+                  value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_discharge_limit
+                data:
+                  value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+                  
+
+
+          # ===== BELOW-SOC / Charging logic =====
+          - conditions:
+              - condition: template
+                value_template: "{{ below and (soc < soc_max) }}"
+            sequence:
+              - choose:
+                 
+                  # Below and PV > house load AND grid_forecast >=0 (no export/import): maximize self-consumption
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv > house_load) and (grid_fc >=0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "maximize_self_consumption"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+
+                      
+                  # Below and PV > house load AND grid forecast <0 (export): set discharglimit to 0
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv > house_load) and (grid_fc <0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "discharge_to_maximize_export"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                          
+
+                  # Below and PV <= load and BattForecast is charging: charge from solar+grid
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc <0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "charge_from_solar_and_grid"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                    
+                  # Below and PV <= load and BattForecast is discharging: maximize self consumption, discharge limit 0    
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc >=0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "maximize_self_consumption"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                          
+
+                  # Below and No PV, BattForecast is charging and GridForecast is import
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv == 0) and (batt_fc < 0) and (grid_fc > 0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "charge_from_solar_and_grid"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                          
+                  
+                  # Below and No PV, BattForecast is discharging
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv == 0) and (batt_fc > 0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "solar_power_only"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: 0
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                    
+                  
+                  # Below and no PV, batt_fc < 0 (charging) and grid_fc <= 0 (0 or discharging)
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv == 0) and (batt_fc < 0) and (grid_fc <= 0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "solar_power_only"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: 0
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0                  
+                      
+                  # Below  and No PV, BattForecast is 0, grid is import and Prices have not gone up >20%      
+                  # ===== PRICE-BASED FALLBACK (LAST) =====
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv == 0) and (batt_fc==0) and (price_import <= last_average_chargingprice) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "charge_from_solar_and_grid"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+                          
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                          
+
+                  # Below and No PV, BattForecast is 0, and prices up >20% fallback to solar-only (off)
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv == 0) and (batt_fc == 0) and (grid_fc > 0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "solar_power_only"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: 0
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                          
+
+          # ===== DISCHARGE MAX EXPORT =====
+          # SOC is maintain or above, EV is off, GridForecast is export, BattForecast is discharge
+          - conditions:
+              - condition: template
+                value_template: "{{ (maintain or above) and (soc > soc_min) and (grid_fc < 0) and (batt_fc > 0) }}"
+            sequence:
+            # Shadow/requested state
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.emhass_requested_storage_mode
+                data:
+                  option: "discharge_to_maximize_export"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_charge_limit
+                data:
+                  value: 0
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_discharge_limit
+                data:
+                  value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+                         
+
+          # ===== DISCHARGE MIN IMPORT / MAX SELF-CONSUMPTION =====
+          # Above and grid_fc >= 0 (import or 0) and batt_fc <= 0 (charge or 0)
+          - conditions:
+              - condition: template
+                value_template: "{{ above and (grid_fc >= 0) and (batt_fc <= 0) and (soc > soc_min) }}"
+            sequence:
+            # Shadow/requested state
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.emhass_requested_storage_mode
+                data:
+                  option: "maximize_self_consumption"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_charge_limit
+                data:
+                  value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_discharge_limit
+                data:
+                  value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+                          
+
+          # ===== MAINTAIN ZONE =====
+          - conditions:
+              - condition: template
+                value_template: "{{ maintain }}"
+            sequence:
+              - choose:
+
+                  # PV > load: allow max charge, dynamic discharge (EV charging allowed)
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv > house_load) and (soc < (target + db)) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "maximize_self_consumption"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: 5000
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+                          
+
+                  # Normal maintain zone: dynamic charge and discharge limits
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ (pv <= house_load) or (batt_fc < 0) }}"
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "maximize_self_consumption"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+                          
+
+                  # Fallback: solar power only
+                  - conditions: []
+                    sequence:
+            # Shadow/requested state
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "solar_power_only"
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: 0
+
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: 0
+                          

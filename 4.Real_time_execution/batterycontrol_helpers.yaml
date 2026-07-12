@@ -52,8 +52,8 @@ input_number:
   soc_target:
     name: SOC Target
     initial: 30
-    min: 10
-    max: 95
+    min: 0
+    max: 100
     step: 0.1    
     
   last_charge_limit:

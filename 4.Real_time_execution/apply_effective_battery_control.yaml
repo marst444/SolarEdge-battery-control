@@ -1,0 +1,81 @@
+###############################################################################
+#
+# 
+# Apply effective batterycontrol executes the commands after safety layer check via scripts 
+# and sends over modbusque to inverter
+#
+#
+#
+###############################################################################
+
+automation:
+
+  - id: apply_effective_battery_control_to_solaredge_inverter
+    alias: "Apply Effective Battery Control to Solaredge Inverter"
+    mode: restart
+
+    trigger:
+      - platform: state
+        entity_id:
+          - input_select.effective_storage_mode
+          - input_number.effective_charge_limit
+          - input_number.effective_discharge_limit
+
+    condition:
+      - condition: state
+        entity_id: input_boolean.effective_battery_control_enabled
+        state: "on"
+
+      - condition: state
+        entity_id: select.solaredge_i1_storage_control_mode
+        state: "Remote Control"
+
+    action:
+      - variables:
+          effective_mode: "{{ states('input_select.effective_storage_mode') }}"
+          effective_charge: "{{ states('input_number.effective_charge_limit') | float(0) }}"
+          effective_discharge: "{{ states('input_number.effective_discharge_limit') | float(0) }}"
+
+      - service: script.set_value_storage_command_timeout15m
+      - delay: "00:00:02"
+
+      - choose:
+
+          - conditions:
+              - condition: template
+                value_template: "{{ effective_mode == 'solar_power_only' }}"
+            sequence:
+              - service: script.solar_power_only_script
+
+          - conditions:
+              - condition: template
+                value_template: "{{ effective_mode == 'charge_from_clipped_solar' }}"
+            sequence:
+              - service: script.charge_from_clipped_solar_script
+
+          - conditions:
+              - condition: template
+                value_template: "{{ effective_mode == 'charge_from_solar_and_grid' }}"
+            sequence:
+              - service: script.charge_from_solar_power_and_grid_script
+
+          - conditions:
+              - condition: template
+                value_template: "{{ effective_mode == 'discharge_to_maximize_export' }}"
+            sequence:
+              - service: script.discharge_to_maximize_export_script
+
+          - conditions:
+              - condition: template
+                value_template: "{{ effective_mode == 'maximize_self_consumption' }}"
+            sequence:
+              - service: script.maximize_self_consumption_script
+
+      - delay: "00:00:02"
+
+      - service: script.set_effective_storage_charge_limit
+
+      - delay: "00:00:02"
+
+      - service: script.set_effective_storage_discharge_limit         
+            

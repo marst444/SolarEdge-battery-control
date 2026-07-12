@@ -33,16 +33,46 @@ automation:
           requested_mode: "{{ states('input_select.emhass_requested_storage_mode') }}"
           requested_charge: "{{ states('input_number.emhass_requested_charge_limit') | float(0) }}"
           requested_discharge: "{{ states('input_number.emhass_requested_discharge_limit') | float(0) }}"
-
+          dynamic_charge: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
+          
           ev_charging: "{{ is_state('binary_sensor.ev_charging_on', 'on') }}"
           grid_export_blocked: "{{ is_state('input_boolean.grid_export_blocked', 'on') }}"
           grid_export_limited: "{{ is_state('input_boolean.grid_export_limited', 'on') }}"
           negative_price_active: "{{ is_state('input_boolean.negative_price_active', 'on') }}"
-
+          
+            
       - choose:
+          # 0. SOC < 10 - CRITICAL RECOVERY
+          - conditions:
+              - condition: template
+                value_template: "{{ soc < 10 }}"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "charge_from_solar_and_grid"
 
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: 3000
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: 0
+
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: "SOC critical below 10 - forced recovery charge"
+                  
           # 1. SOC < MIN
-          # Hard lower SOC protection. Never allow discharge.
+          # Normal low-SOC recovery. Stop discharge and charge dynamically.
           - conditions:
               - condition: template
                 value_template: "{{ soc < soc_min }}"
@@ -51,25 +81,25 @@ automation:
                 target:
                   entity_id: input_select.effective_storage_mode
                 data:
-                  option: "{{ requested_mode }}"
-                  
+                  option: "charge_from_solar_and_grid"
+
               - service: input_number.set_value
                 target:
                   entity_id: input_number.effective_charge_limit
                 data:
-                  value: "{{ requested_charge }}"
+                  value: "{{ [requested_charge, dynamic_charge] | max }}"
 
               - service: input_number.set_value
                 target:
                   entity_id: input_number.effective_discharge_limit
                 data:
                   value: 0
-                  
+
               - service: input_text.set_value
                 target:
                   entity_id: input_text.effective_battery_reason
                 data:
-                  value: "SOC below minimum - discharge blocked"
+                  value: "SOC below minimum - dynamic recovery charge"
 
           # 2. SOC > MAX AND EXPORT BLOCKED / NEGATIVE PRICE
           # Allow discharge into house/EV load, but do not force export.
@@ -215,76 +245,4 @@ automation:
             target:
               entity_id: input_text.effective_battery_reason
             data:
-              value: Normal - effective follows requested"
-
-###############################################################################
-##
-##      EMHASS WATCHDOG
-##
-###############################################################################
-
-
-
-  - id: EMHASS_watchdog_dayahead_missing
-    alias: "EMHASS Watchdog – Day‑ahead missing or failed"
-    trigger:
-      - platform: time_pattern
-        minutes: "/15"
-
-    condition:
-    # Kör endast efter DA-fönstret
-      - condition: time
-        after: "00:15:00"
-
-    # Ingen lyckad DA idag 
-      - condition: template
-        value_template: >
-          {% set last = states('input_datetime.emhass_dayahead_last_success') %}
-          {% if last in ('unknown','unavailable','') %}
-            true
-          {% else %}
-            {{ as_datetime(last).date() != now().date() }}
-          {% endif %}
-
-    action:
-      - service: persistent_notification.create
-        data:
-          title: "⚠️ EMHASS Watchdog – Day‑ahead"
-          message: >
-            Day‑ahead optimization has NOT run successfully today.
-            Status: {{ states('input_text.emhass_dayahead_status') }}
-            Last success: {{ states('input_datetime.emhass_dayahead_last_success') }}
-      - service: notify.mobile_app_fp3_ms
-        data:
-          title: "⚠️ EMHASS Watchdog – Day‑ahead"
-          message: >
-            Day‑ahead optimization has NOT run successfully today.
-            Status: {{ states('input_text.emhass_dayahead_status') }}
-            Last success: {{ states('input_datetime.emhass_dayahead_last_success') }}
-            
-            
-  - id: EMHASS_watchdog_mpc_stalled
-    alias: "EMHASS Watchdog – MPC stalled"
-    trigger:
-      - platform: time_pattern
-        minutes: "/15"
-    condition:
-      - condition: template
-        value_template: >
-          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 }}   
-    
-    action:
-      - service: persistent_notification.create
-        data:
-          title: "⚠️ EMHASS Watchdog – MPC stalled"
-          message: >
-            MPC has not run successfully in over 45 minutes.
-            Status: {{ states('sensor.mpc_pv_optim_status') }}
-            Last success: {{ states('input_datetime.emhass_mpc_last_success') }}
-      - service: notify.mobile_app_fp3_ms
-        data:
-          title: "⚠️ EMHASS MPC stalled"
-          message: >
-            MPC has not run successfully in over 45 minutes.
-            Status: {{ states('sensor.mpc_pv_optim_status') }}
-            Last changed: {{ states.sensor.emhass_mpc_last_success }}
+              value: "Normal - effective follows requested"

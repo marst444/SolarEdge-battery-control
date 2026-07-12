@@ -31,7 +31,7 @@ script:
       - service: system_log.write
         data:
           message: "[{{ now() }}] Modbus Queue → Received command: {{ queue_service }}, Value: {{ queue_value }}, Modbus Busy: {{ states('input_boolean.modbus_busy') }}"
-          level: warning
+          level: debug
 
       # DEBUG START
       - service: system_log.write
@@ -41,7 +41,7 @@ script:
             queue_service="{{ queue_service }}",
             queue_value="{{ queue_value }}",
             busy="{{ states('input_boolean.modbus_busy') }}"
-          level: warning
+          level: debug
 
       # Wait until Modbus is free
       - wait_template: "{{ not is_state('input_boolean.modbus_busy', 'on') }}"
@@ -58,7 +58,7 @@ script:
           message: >
             DEBUG LOCK ACQUIRED →
             queue_service="{{ queue_service }}"
-          level: warning
+          level: debug
 
       # DEBUG BEFORE CHOOSE
       - service: system_log.write
@@ -66,7 +66,7 @@ script:
           message: >
             DEBUG BEFORE CHOOSE →
             queue_service="{{ queue_service }}"
-          level: warning
+          level: debug
 
       # CHOOSE BLOCK
       - choose:
@@ -89,7 +89,7 @@ script:
               - service: system_log.write
                 data:
                   message: "[{{ now() }}] Modbus Queue → SET MODE = Charge from Solar Power and Grid"
-                  level: warning
+                  level: debug
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
@@ -104,7 +104,7 @@ script:
               - service: system_log.write
                 data:
                   message: "[{{ now() }}] Modbus Queue → SET MODE = Maximize Self Consumption"
-                  level: warning
+                  level: debug
               - service: select.select_option
                 target:
                   entity_id: select.solaredge_i1_storage_command_mode
@@ -229,7 +229,7 @@ script:
           message: >
             DEBUG END →
             queue_service="{{ queue_service }}"
-          level: warning
+          level: debug
 
       # Release Modbus lock
       - service: input_boolean.turn_off
@@ -239,7 +239,7 @@ script:
       - service: system_log.write
         data:
           message: "[{{ now() }}] Modbus Queue → Lock released, command {{ queue_service }} completed"
-          level: warning
+          level: debug
 
     mode: queued
     max: 10

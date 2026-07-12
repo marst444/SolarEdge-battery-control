@@ -1,0 +1,71 @@
+###############################################################################
+##
+##      EMHASS WATCHDOG
+##
+###############################################################################
+
+automation:
+
+  - id: EMHASS_watchdog_dayahead_missing
+    alias: "EMHASS Watchdog – Day‑ahead missing or failed"
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+
+    condition:
+    # Kör endast efter DA-fönstret
+      - condition: time
+        after: "00:15:00"
+
+    # Ingen lyckad DA idag 
+      - condition: template
+        value_template: >
+          {% set last = states('input_datetime.emhass_dayahead_last_success') %}
+          {% if last in ('unknown','unavailable','') %}
+            true
+          {% else %}
+            {{ as_datetime(last).date() != now().date() }}
+          {% endif %}
+
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "⚠️ EMHASS Watchdog – Day‑ahead"
+          message: >
+            Day‑ahead optimization has NOT run successfully today.
+            Status: {{ states('input_text.emhass_dayahead_status') }}
+            Last success: {{ states('input_datetime.emhass_dayahead_last_success') }}
+      - service: notify.mobile_app_fp3_ms
+        data:
+          title: "⚠️ EMHASS Watchdog – Day‑ahead"
+          message: >
+            Day‑ahead optimization has NOT run successfully today.
+            Status: {{ states('input_text.emhass_dayahead_status') }}
+            Last success: {{ states('input_datetime.emhass_dayahead_last_success') }}
+            
+            
+  - id: EMHASS_watchdog_mpc_stalled
+    alias: "EMHASS Watchdog – MPC stalled"
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+    condition:
+      - condition: template
+        value_template: >
+          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 }}   
+    
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "⚠️ EMHASS Watchdog – MPC stalled"
+          message: >
+            MPC has not run successfully in over 45 minutes.
+            Status: {{ states('sensor.mpc_pv_optim_status') }}
+            Last success: {{ states('input_datetime.emhass_mpc_last_success') }}
+      - service: notify.mobile_app_fp3_ms
+        data:
+          title: "⚠️ EMHASS MPC stalled"
+          message: >
+            MPC has not run successfully in over 45 minutes.
+            Status: {{ states('sensor.mpc_pv_optim_status') }}
+            Last changed: {{ states.sensor.emhass_mpc_last_success }}
