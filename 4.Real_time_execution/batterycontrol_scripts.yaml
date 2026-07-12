@@ -80,6 +80,14 @@ script:
           queue_service: set_storage_discharge_limit
           queue_value: 100
 
+  set_storage_discharge_limit1000:
+    alias: Set Storage discharge Limit 1000
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_discharge_limit
+          queue_value: 1000  
+
   set_storage_discharge_limit3000:
     alias: Set storage discharge limit 3000
     sequence:
@@ -128,4 +136,18 @@ script:
           queue_service: set_dynamic_storage_charge_limit
           queue_value: "{{ states('input_number.dynamic_charge_limit') | int }}"
 
+  set_effective_storage_charge_limit:
+    alias: Set Effective Storage Charge Limit
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_charge_limit
+          queue_value: "{{ states('input_number.effective_charge_limit') | int(0) }}"
 
+  set_effective_storage_discharge_limit:
+    alias: Set Effective Storage Discharge Limit
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_storage_discharge_limit
+          queue_value: "{{ states('input_number.effective_discharge_limit') | int(0) }}"

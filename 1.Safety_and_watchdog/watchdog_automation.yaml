@@ -1,10 +1,229 @@
+################################################################################
+#
+# Safety limits check and choose override for effective battery control
+#
+#
+################################################################################
+automation:
+  - id: calculate_effective_battery_control
+    alias: "Calculate Effective Battery Control"
+    mode: restart
+
+    trigger:
+      - platform: state
+        entity_id:
+          - input_select.emhass_requested_storage_mode
+          - input_number.emhass_requested_charge_limit
+          - input_number.emhass_requested_discharge_limit
+          - binary_sensor.ev_charging_on
+          - input_boolean.grid_export_blocked
+          - input_boolean.grid_export_limited
+          - input_boolean.negative_price_active
+
+      - platform: state
+        entity_id:
+          - sensor.solaredge_b1_state_of_energy
+
+    action:
+      - variables:
+          soc: "{{ states('sensor.solaredge_b1_state_of_energy') | float(0) }}"
+          soc_max: "{{ states('input_number.maximum_state_of_charge') | float(90) }}"
+          soc_min: "{{ states('input_number.minimum_state_of_charge') | float(20) }}"
+
+          requested_mode: "{{ states('input_select.emhass_requested_storage_mode') }}"
+          requested_charge: "{{ states('input_number.emhass_requested_charge_limit') | float(0) }}"
+          requested_discharge: "{{ states('input_number.emhass_requested_discharge_limit') | float(0) }}"
+
+          ev_charging: "{{ is_state('binary_sensor.ev_charging_on', 'on') }}"
+          grid_export_blocked: "{{ is_state('input_boolean.grid_export_blocked', 'on') }}"
+          grid_export_limited: "{{ is_state('input_boolean.grid_export_limited', 'on') }}"
+          negative_price_active: "{{ is_state('input_boolean.negative_price_active', 'on') }}"
+
+      - choose:
+
+          # 1. SOC < MIN
+          # Hard lower SOC protection. Never allow discharge.
+          - conditions:
+              - condition: template
+                value_template: "{{ soc < soc_min }}"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "{{ requested_mode }}"
+                  
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: "{{ requested_charge }}"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: 0
+                  
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: "SOC below minimum - discharge blocked"
+
+          # 2. SOC > MAX AND EXPORT BLOCKED / NEGATIVE PRICE
+          # Allow discharge into house/EV load, but do not force export.
+          - conditions:
+              - condition: template
+                value_template: "{{ soc > soc_max and (grid_export_blocked or negative_price_active) }}"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "maximize_self_consumption"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: 0
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: "{{ [requested_discharge, 1000] | max }}"
+                  
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: "SOC above maximum - export blocked, discharge allowed to house/EV"
+                  
+          # 3. SOC > MAX
+          # Export is allowed, so actively reduce high SOC.
+          - conditions:
+              - condition: template
+                value_template: "{{ soc > soc_max }}"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "discharge_to_maximize_export"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: 0
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: "{{ [requested_discharge, 1000] | max }}"
+                  
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: "SOC above maximum - forced export discharge"
+                  
+          # 4. GRID EXPORT BLOCKED / NEGATIVE PRICE
+          # Normal SOC range: block battery discharge/export.
+          - conditions:
+              - condition: template
+                value_template: "{{ grid_export_blocked or negative_price_active }}"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "maximize_self_consumption"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: "{{ requested_charge }}"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: 0
+                  
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: "Export blocked or negative price - battery discharge blocked"
+                  
+          # 5. EV CHARGING
+          # Normal SOC range: allow only minimal battery support.
+          - conditions:
+              - condition: template
+                value_template: "{{ ev_charging }}"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "{{ requested_mode }}"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: "{{ requested_charge }}"
+
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: 100
+
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: "EV charging - battery discharge limited"
+                  
+        # 6. NORMAL CASE
+        default:
+          - service: input_select.select_option
+            target:
+              entity_id: input_select.effective_storage_mode
+            data:
+              option: "{{ requested_mode }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.effective_charge_limit
+            data:
+              value: "{{ requested_charge }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.effective_discharge_limit
+            data:
+              value: "{{ requested_discharge }}"
+
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.effective_battery_reason
+            data:
+              value: Normal - effective follows requested"
+
 ###############################################################################
 ##
 ##      EMHASS WATCHDOG
 ##
 ###############################################################################
 
-automation:
+
 
   - id: EMHASS_watchdog_dayahead_missing
     alias: "EMHASS Watchdog – Day‑ahead missing or failed"

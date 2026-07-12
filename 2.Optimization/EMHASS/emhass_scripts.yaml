@@ -37,6 +37,7 @@ script:
           weight_battery_discharge: 0.02
           sensor_prefix: mpc_pv_
           sensor_name_prefix: 'MPC_PV '
+          number_of_deferrable_loads: '{{ states("input_number.emhass_active_deferrable_loads") | int(0) }}'
         alias: Configure secondary settings
       - variables:
 
@@ -73,7 +74,7 @@ script:
             set_use_pv: true
             set_use_battery: true
             inverter_is_hybrid: true
-            number_of_deferrable_loads: 0
+            number_of_deferrable_loads: '{{ number_of_deferrable_loads | int(0) }}'
             set_nodischarge_to_grid: false
             pv_power_forecast_method: 'list'
             load_cost_forecast_method: 'list'
@@ -92,6 +93,11 @@ script:
             inverter_ac_input_max: '{{ max_inverter_power }}'
             soc_init: '{{ soc_init }}'
             soc_final: '{{ soc_final }}'
+            nominal_power_of_deferrable_loads: '{{ [11000] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            operating_hours_of_each_deferrable_load: '{{ [3] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            treat_deferrable_load_as_semi_cont: '{{ [true] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            set_deferrable_load_single_constant: '{{ [true] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            set_deferrable_startup_penalty: '{{ [0] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
             load_cost_forecast: |-
               {% set ns = namespace(output={}) %}
               {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
@@ -196,6 +202,11 @@ script:
               entity_id: sensor.{{ sensor_prefix }}optim_status
               unit_of_measurement: ''
               friendly_name: '{{ sensor_name_prefix }}Optimisation Status'
+            custom_deferrable_forecast_id:
+              -  entity_id: sensor.{{ sensor_prefix }}ev_power
+                 unit_of_measurement: W
+                 device_class: power
+                 friendly_name: '{{ sensor_name_prefix }}EV Power'
       - action: rest_command.emhass_publish_data
         metadata: {}
         data:
@@ -238,6 +249,7 @@ script:
           weight_battery_discharge: 0.02
           sensor_prefix: dh_pv_
           sensor_name_prefix: 'DH_PV '
+          number_of_deferrable_loads: '{{ states("input_number.emhass_active_deferrable_loads") | int(0) }}'
         alias: Configure secondary settings
       - variables:
       
@@ -274,7 +286,7 @@ script:
             set_use_pv: true
             set_use_battery: true
             inverter_is_hybrid: true
-            number_of_deferrable_loads: 0
+            number_of_deferrable_loads: '{{ number_of_deferrable_loads | int(0) }}'
             set_nodischarge_to_grid: false
             pv_power_forecast_method: 'list'
             load_cost_forecast_method: 'list'
@@ -293,6 +305,11 @@ script:
             inverter_ac_input_max: '{{ max_inverter_power }}'
             soc_init: '{{ soc_init }}'
             soc_final: '{{ soc_final }}'
+            nominal_power_of_deferrable_loads: '{{ [11000] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            operating_hours_of_each_deferrable_load: '{{ [3] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            treat_deferrable_load_as_semi_cont: '{{ [false] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            set_deferrable_load_single_constant: '{{ [false] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            set_deferrable_startup_penalty: '{{ [0] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
             load_cost_forecast: |-
               {% set ns = namespace(output={}) %}
               {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
@@ -397,6 +414,11 @@ script:
               entity_id: sensor.{{ sensor_prefix }}optim_status
               unit_of_measurement: ''
               friendly_name: '{{ sensor_name_prefix }}Optimisation Status'
+            custom_deferrable_forecast_id:
+              - entity_id: sensor.{{ sensor_prefix }}ev_power
+                unit_of_measurement: W
+                device_class: power
+                friendly_name: '{{ sensor_name_prefix }}EV Power'
       - action: rest_command.emhass_publish_data
         metadata: {}
         data:

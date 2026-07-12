@@ -1,0 +1,90 @@
+input_number:
+  effective_charge_limit:
+    name: Effective Charge Limit
+    min: 0
+    max: 5000
+    step: 1
+    unit_of_measurement: W
+    mode: box
+
+  effective_discharge_limit:
+    name: Effective Discharge Limit
+    min: 0
+    max: 5000
+    step: 1
+    unit_of_measurement: W
+    mode: box
+
+  grid_charge_price_total:
+    name: Grid Charge Price Total
+    initial: 0
+    min: 0
+    max: 100000
+    step: 0.01
+
+  grid_charge_intervals:
+    name: Grid Charge Intervals
+    initial: 0
+    min: 0
+    max: 1000
+    step: 1
+
+  average_last_chargingprice:
+    initial: 0
+    min: 0
+    max: 1000
+    step: 0.01    
+    
+  dynamic_discharge_limit:
+    name: Dynamic Discharge Power
+    initial: 3300
+    min: 0
+    max: 5000
+    step: 1
+
+  dynamic_charge_limit:
+    name: Dynamic Charge Power
+    initial: 3300
+    min: 0
+    max: 5000
+    step: 1
+
+  soc_target:
+    name: SOC Target
+    initial: 30
+    min: 10
+    max: 95
+    step: 0.1    
+    
+  last_charge_limit:
+    name: Last Charge Limit
+    min: 0
+    max: 5000
+    step: 1
+
+  last_discharge_limit:
+    name: Last Discharge Limit
+    min: 0
+    max: 5000
+    step: 1
+  
+  soc_deadband:
+    name: SOC Deadband
+    initial: 3.33
+    min: 0
+    max: 10
+    step: 0.1
+    
+
+    
+input_select:
+  effective_storage_mode:
+    name: Effective Storage Mode
+    options:
+      - solar_power_only
+      - charge_from_clipped_solar
+      - charge_from_solar_and_grid
+      - discharge_to_maximize_export
+      - maximize_self_consumption
+    icon: mdi:battery-cog
+    

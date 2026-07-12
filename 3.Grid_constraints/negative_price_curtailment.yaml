@@ -1,52 +1,63 @@
 automation:
   - id: negative_price_curtailment
     alias: "Curtail Export When Price Negative"
+    mode: restart
 
     trigger:
-      # ✅ instant reaction
+      # Instant reaction
       - platform: state
         entity_id: sensor.total_export_price
 
-      # ✅ periodic enforcement (stability)
+      # Periodic enforcement
       - platform: time_pattern
         seconds: "/30"
 
     action:
       - choose:
 
-          # 🔴 NEGATIVE PRICE → ACTIVATE CURTAILMENT
+          # NEGATIVE PRICE -> ACTIVATE CURTAILMENT
           - conditions:
               - condition: template
                 value_template: >
                   {{ states('sensor.total_export_price') | float(0) < 0 }}
-              - condition: state
-                entity_id: switch.solaredge_i1_negative_site_limit
-                state: "off"
             sequence:
-              # ✅ activate inverter-level export block
+              # Set grid constraint helpers
+              - service: input_boolean.turn_on
+                target:
+                  entity_id:
+                    - input_boolean.negative_price_active
+                    - input_boolean.grid_export_blocked
+
+              # Activate inverter-level export block
               - service: switch.turn_on
                 target:
                   entity_id: switch.solaredge_i1_negative_site_limit
 
               - delay: "00:00:02"
 
-              # ✅ ensure correct mode (no forced export logic)
+              # Ensure no forced export logic
               - service: script.maximize_self_consumption_script
               - delay: "00:00:02"
 
-              # ✅ block battery discharge to grid
+              # Block battery discharge
               - service: script.set_storage_discharge_limit0
 
-          # 🟢 NORMAL PRICE → RELEASE CURTAILMENT
+          # NORMAL PRICE -> RELEASE CURTAILMENT
           - conditions:
               - condition: template
                 value_template: >
                   {{ states('sensor.total_export_price') | float(0) >= 0 }}
-              - condition: state
-                entity_id: switch.solaredge_i1_negative_site_limit
-                state: "on"
             sequence:
-              # ✅ restore inverter export capability
+              # Restore inverter export capability
               - service: switch.turn_off
                 target:
                   entity_id: switch.solaredge_i1_negative_site_limit
+
+              - delay: "00:00:02"
+
+              # Clear grid constraint helpers
+              - service: input_boolean.turn_off
+                target:
+                  entity_id:
+                    - input_boolean.negative_price_active
+                    - input_boolean.grid_export_blocked

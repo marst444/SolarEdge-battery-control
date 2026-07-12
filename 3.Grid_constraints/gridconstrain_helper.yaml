@@ -1,0 +1,14 @@
+
+
+input_boolean:
+  grid_export_blocked:
+    name: Grid Export Blocked
+    icon: mdi:transmission-tower-off
+
+  grid_export_limited:
+    name: Grid Export Limited
+    icon: mdi:transmission-tower-export
+
+  negative_price_active:
+    name: Negative Price Active
+    icon: mdi:currency-usd-off

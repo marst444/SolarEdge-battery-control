@@ -31,6 +31,32 @@ input_number:
     step: 1
     mode: box
     
+  emhass_requested_charge_limit:
+    name: EMHASS Requested Charge Limit
+    min: 0
+    max: 5000
+    step: 1
+    unit_of_measurement: W
+    mode: box
+
+  emhass_requested_discharge_limit:
+    name: EMHASS Requested Discharge Limit
+    min: 0
+    max: 5000
+    step: 1
+    unit_of_measurement: W
+    mode: box    
+    
+# Currently only 1 or 0 def loads in helper. If adding more, Max must be increased, and the EMHASS DH and MPC script must be updated accordingly!
+
+#
+  emhass_active_deferrable_loads:
+    name: EMHASS Active Deferrable Loads
+    min: 0
+    max: 1
+    step: 1
+    mode: box 
+    
 input_datetime:
 
   day_ahead_forecast_end:
@@ -38,7 +64,16 @@ input_datetime:
     has_date: true
     has_time: true
     
-
+input_select:
+  emhass_requested_storage_mode:
+    name: EMHASS Requested Storage Mode
+    options:
+      - solar_power_only
+      - charge_from_clipped_solar
+      - charge_from_solar_and_grid
+      - discharge_to_maximize_export
+      - maximize_self_consumption
+    icon: mdi:battery-sync
   
 
 
