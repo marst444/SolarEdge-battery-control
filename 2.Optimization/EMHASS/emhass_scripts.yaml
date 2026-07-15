@@ -37,7 +37,7 @@ script:
           weight_battery_discharge: 0.02
           sensor_prefix: mpc_pv_
           sensor_name_prefix: 'MPC_PV '
-          number_of_deferrable_loads: '{{ states("input_number.emhass_active_deferrable_loads") | int(0) }}'
+          number_of_deferrable_loads: 1
         alias: Configure secondary settings
       - variables:
 
@@ -57,6 +57,12 @@ script:
             prices:
               import: sensor.merged_total_costs_import_forecast
               export: sensor.merged_total_revenue_export_forecast
+            ev:
+              planning_energy: sensor.ev_planning_energy_needed_kwh
+              nominal_power: input_number.ev_nominal_charging_power_w
+              minimum_power: input_number.ev_min_charging_power_w
+              departure: input_datetime.ev_next_departure
+              
         alias: Configure sensor entities
 
       - variables:
@@ -74,7 +80,7 @@ script:
             set_use_pv: true
             set_use_battery: true
             inverter_is_hybrid: true
-            number_of_deferrable_loads: '{{ number_of_deferrable_loads | int(0) }}'
+            number_of_deferrable_loads: '{{ number_of_deferrable_loads }}'
             set_nodischarge_to_grid: false
             pv_power_forecast_method: 'list'
             load_cost_forecast_method: 'list'
@@ -93,11 +99,20 @@ script:
             inverter_ac_input_max: '{{ max_inverter_power }}'
             soc_init: '{{ soc_init }}'
             soc_final: '{{ soc_final }}'
-            nominal_power_of_deferrable_loads: '{{ [11000] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            operating_hours_of_each_deferrable_load: '{{ [3] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            treat_deferrable_load_as_semi_cont: '{{ [true] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            set_deferrable_load_single_constant: '{{ [true] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            set_deferrable_startup_penalty: '{{ [0] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            nominal_power_of_deferrable_loads: >
+              {{ [states(sensors.ev.nominal_power) | int(0)] }}
+            minimum_power_of_deferrable_loads: >
+              {{ [states(sensors.ev.minimum_power) | int(0)] }}
+            operating_hours_of_each_deferrable_load: >
+              {{ [states('sensor.ev_deferrable_total_hours') | float(0)] }}
+            start_timesteps_of_each_deferrable_load: >
+              {{ [states('sensor.ev_deferrable_start_timestep') | int(0)] }}
+            end_timesteps_of_each_deferrable_load: >
+              {{ [states('sensor.ev_deferrable_end_timestep') | int(0)] }}
+            treat_deferrable_load_as_semi_cont: "{{ [false] }}"
+            set_deferrable_load_single_constant: "{{ [false] }}"
+            set_deferrable_startup_penalty: "{{ [0] }}"
+            
             load_cost_forecast: |-
               {% set ns = namespace(output={}) %}
               {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
@@ -249,7 +264,7 @@ script:
           weight_battery_discharge: 0.02
           sensor_prefix: dh_pv_
           sensor_name_prefix: 'DH_PV '
-          number_of_deferrable_loads: '{{ states("input_number.emhass_active_deferrable_loads") | int(0) }}'
+          number_of_deferrable_loads: 1
         alias: Configure secondary settings
       - variables:
       
@@ -269,6 +284,13 @@ script:
             prices:
               import: sensor.merged_total_costs_import_forecast
               export: sensor.merged_total_revenue_export_forecast
+            ev:
+              planning_energy: sensor.ev_planning_energy_needed_kwh
+              nominal_power: input_number.ev_nominal_charging_power_w
+              minimum_power: input_number.ev_min_charging_power_w
+              departure: input_datetime.ev_next_departure  
+              
+              
         alias: Configure sensor entities
 
       - variables:
@@ -286,7 +308,7 @@ script:
             set_use_pv: true
             set_use_battery: true
             inverter_is_hybrid: true
-            number_of_deferrable_loads: '{{ number_of_deferrable_loads | int(0) }}'
+            number_of_deferrable_loads: '{{ number_of_deferrable_loads }}'
             set_nodischarge_to_grid: false
             pv_power_forecast_method: 'list'
             load_cost_forecast_method: 'list'
@@ -305,11 +327,19 @@ script:
             inverter_ac_input_max: '{{ max_inverter_power }}'
             soc_init: '{{ soc_init }}'
             soc_final: '{{ soc_final }}'
-            nominal_power_of_deferrable_loads: '{{ [11000] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            operating_hours_of_each_deferrable_load: '{{ [3] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            treat_deferrable_load_as_semi_cont: '{{ [false] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            set_deferrable_load_single_constant: '{{ [false] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
-            set_deferrable_startup_penalty: '{{ [0] if number_of_deferrable_loads | int(0) >= 1 else [] }}'
+            nominal_power_of_deferrable_loads: >
+              {{ [states(sensors.ev.nominal_power) | int(0)] }}
+            minimum_power_of_deferrable_loads: >
+              {{ [states(sensors.ev.minimum_power) | int(0)] }}
+            operating_hours_of_each_deferrable_load: >
+              {{ [states('sensor.ev_deferrable_total_hours') | float(0)] }}
+            start_timesteps_of_each_deferrable_load: >
+              {{ [states('sensor.ev_deferrable_start_timestep') | int(0)] }}
+            end_timesteps_of_each_deferrable_load: >
+              {{ [states('sensor.ev_deferrable_end_timestep') | int(0)] }}
+            treat_deferrable_load_as_semi_cont: "{{ [false] }}"
+            set_deferrable_load_single_constant: "{{ [false] }}"
+            set_deferrable_startup_penalty: "{{ [0] }}"
             load_cost_forecast: |-
               {% set ns = namespace(output={}) %}
               {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
