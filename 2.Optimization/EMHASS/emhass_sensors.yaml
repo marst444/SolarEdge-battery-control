@@ -43,21 +43,21 @@ template:
         availability: >
           {{ states("sensor.nordpool_kwh_se3_sek_3_10_025") | is_number }}
         state: >
-          {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
-          {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
+          {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") or [] %}
+          {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") or [] %}
           {% set gridfee = states("input_number.grid_fee") | float(0) %}
           {% set import_energy_tax = states("input_number.import_energy_tax") | float(0) %}
           {% set tibberfee = states("input_number.tibber_fee") | float(0) %}
           {% set vat = states("input_number.vat") | float(0) %}
           {% set merged = today_raw + tomorrow_raw %}
-          {{ (merged[0] | float + gridfee + import_energy_tax + tibberfee)/100 * (1 + vat/100) | round(2) }}
+          {{ (merged[0] | float + gridfee + import_energy_tax + tibberfee)/100 * (1 + vat/100) | round(2) if merged else 0 }}
 
         attributes:
           forecast_merged: >
-            {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
-            {% set today_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_today") %}
-            {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
-            {% set tomorrow_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_tomorrow") %}
+            {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") or [] %}
+            {% set today_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_today") or [] %}
+            {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") or [] %}
+            {% set tomorrow_ts = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "raw_tomorrow") or [] %}
             {% set gridfee = states("input_number.grid_fee") | float(0) %}
             {% set import_energy_tax = states("input_number.import_energy_tax") | float(0) %}
             {% set tibberfee = states("input_number.tibber_fee") | float(0) %}
@@ -83,11 +83,11 @@ template:
         availability: >
           {{ states("sensor.nordpool_kwh_se3_sek_3_10_025") | is_number }}
         state: >
-          {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") %}
-          {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") %}
+          {% set today_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "today") or [] %}
+          {% set tomorrow_raw = state_attr("sensor.nordpool_kwh_se3_sek_3_10_025", "tomorrow") or [] %}
           {% set exportcompensation = states("input_number.export_compensation") | float(0) %}
           {% set merged = today_raw + tomorrow_raw %}
-          {{ (merged[0] | float + exportcompensation)/100 | round(2) }}
+          {{ (merged[0] | float + exportcompensation)/100 | round(2) if merged else 0 }}
 
         attributes:
           forecast_merged: >
@@ -137,7 +137,7 @@ template:
             {% set price_ore = (forecast[0]['price'] | float(0)) * eur_to_ore %}
             {{ ((price_ore + gridfee + import_energy_tax + tibberfee) / 100 * (1 + vat / 100)) | round(3) }}
           {% else %}
-            unknown
+            0
           {% endif %}
         attributes:
           forecast_merged: >
@@ -193,7 +193,7 @@ template:
             {% set price_ore = (forecast[0]['price'] | float(0)) * eur_to_ore %}
             {{ ((price_ore + exportcompensation) / 100) | round(3) }}
           {% else %}
-            unknown
+            0
           {% endif %}
 
         attributes:
@@ -384,7 +384,7 @@ template:
         state: >
           {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
           {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
-          {% set np = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set np = (state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') or []) if np_age < 7200 else [] %}
           {% set epex = state_attr('sensor.epex_total_costs_import_forecast', 'forecast_merged') or [] %}
           {% set now_ts = as_timestamp(now()) %}
           {% set ns = namespace(price=none) %}
@@ -417,12 +417,12 @@ template:
             {% endif %}
           {% endif %}
 
-          {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 'unknown')) }}
+          {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 0)) }}
 
         availability: >
           {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
           {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
-          {% set np = state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set np = (state_attr('sensor.nordpool_se3_total_costs_import', 'forecast_merged') or []) if np_age < 7200 else [] %}
           {% set epex = state_attr('sensor.epex_total_costs_import_forecast', 'forecast_merged') or [] %}
           {{ (np | count > 0) or (epex | count > 0) }}
 
@@ -507,7 +507,7 @@ template:
             {% endif %}
           {% endif %}
 
-          {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 'unknown')) }}
+          {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 0)) }}
 
         availability: >
           {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}

@@ -1,6 +1,6 @@
 #######################################################
-#. Valid options: 
-#  Solar Power Only (Off) 
+#. Valid options:
+#  Solar Power Only (Off)
 #. Charge from Clipped Solar Power
 #. Charge from Solar Power
 #. Charge from Solar Power and Grid
@@ -30,7 +30,7 @@ script:
       # Log incoming command
       - service: system_log.write
         data:
-          message: "[{{ now() }}] Modbus Queue → Received command: {{ queue_service }}, Value: {{ queue_value }}, Modbus Busy: {{ states('input_boolean.modbus_busy') }}"
+          message: "[{{ now() }}] Modbus Queue → Received command: {{ queue_service }}, Value: {{ queue_value | default(0) }}, Modbus Busy: {{ states('input_boolean.modbus_busy') }}"
           level: debug
 
       # DEBUG START
@@ -39,7 +39,7 @@ script:
           message: >
             DEBUG START →
             queue_service="{{ queue_service }}",
-            queue_value="{{ queue_value }}",
+            queue_value="{{ queue_value | default(0) }}",
             busy="{{ states('input_boolean.modbus_busy') }}"
           level: debug
 
@@ -166,7 +166,7 @@ script:
                 data:
                   option: Solar Power Only (Off)
               - delay: "00:00:02"
-              
+
 # charge limit
           - conditions:
               - condition: template
@@ -178,7 +178,7 @@ script:
                 data:
                   value: "{{ queue_value | int }}"
               - delay: "00:00:02"
-              
+
 # discharge limit
           - conditions:
               - condition: template
@@ -190,7 +190,7 @@ script:
                 data:
                   value: "{{ queue_value | int }}"
               - delay: "00:00:02"
-              
+
 # dynamic discharge limit
           - conditions:
               - condition: template
@@ -202,7 +202,7 @@ script:
                 data:
                   value: "{{ queue_value | float }}"
               - delay: "00:00:02"
-              
+
 # dynamic charge limit
           - conditions:
               - condition: template
@@ -213,6 +213,41 @@ script:
                   entity_id: number.solaredge_i1_storage_charge_limit
                 data:
                   value: "{{ queue_value | float }}"
+              - delay: "00:00:02"
+
+# export curtailment/site limit when neg. prices ON
+
+              # export curtailment/site limit when neg. prices ON
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'negative_site_limit_on' }}"
+            sequence:
+            # Ensure site limit value is 0 before activating negative site limit
+              - if:
+                - condition: template
+                  value_template: >-
+                    {{ states('number.solaredge_i1_site_limit') | float(999) != 0 }}
+                then:
+                  - service: number.set_value
+                    target:
+                      entity_id: number.solaredge_i1_site_limit
+                    data:
+                      value: 0
+                  - delay: "00:00:02"
+
+            # Activate negative site limit switch
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.solaredge_i1_negative_site_limit
+              - delay: "00:00:02"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'negative_site_limit_off' }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.solaredge_i1_negative_site_limit
               - delay: "00:00:02"
 
         default:

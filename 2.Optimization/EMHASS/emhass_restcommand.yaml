@@ -26,7 +26,7 @@ rest_command:
     method: POST
     headers:
       Content-Type: application/json
-    payload: '{}'  
+    payload: '{}'
 
 
   mlforecast_fit_load:
@@ -64,7 +64,16 @@ rest_command:
       {
         "model_type": "load_forecast",
         "model_predict_publish": true,
+        "var_model": "sensor.power_myhouse_load_no_var_loads_no_ev",
         "model_predict_entity_id": "sensor.p_load_forecast_ml_pv",
         "model_predict_unit_of_measurement": "W",
-        "model_predict_friendly_name": "Load Power Forecast ML PV"
+        "model_predict_friendly_name": "Load Power Forecast ML PV",
+        "retrieve_method": "influxdb",
+        "influxdb_host": "192.168.10.3",
+        "influxdb_port": 8086,
+        "influxdb_dbname": "home_assistant",
+        "influxdb_ssl": false,
+        "influxdb_verify_ssl": false,
+        "influxdb_measurement_attr": "last_state",
+        "influxdb_measurement": "sensor.power_myhouse_load_no_var_loads_no_ev"
       }
