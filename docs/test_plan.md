@@ -657,6 +657,27 @@ Dynamic Discharge Limit = 92W
 
 Helper Dynamic Charge = 0W
 Helper Dynamic Discharge = 92W
+```
+### Notes
+```
+Dynamic discharge path was verified.
+
+When current SOC was above SOC Target, dynamic charge limit was zero and
+dynamic discharge limit became positive.
+
+Because the SOC difference was still within the configured deadband,
+the resulting discharge limit was small, consistent with maintain-zone
+behaviour.
+
+Sensor values and helper values matched:
+
+Dynamic Discharge Limit = 92W
+Helper Dynamic Discharge = 92W
+
+Last-value helpers were unavailable / unknown during this observation and
+should be investigated separately if they are expected to be populated.
+```
+
 ---
 
 # Layer 3 - Grid Constraints
