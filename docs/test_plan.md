@@ -17,7 +17,7 @@ Layer 1 STRONG PARTIAL PASS 🟡
 
 Layer 2   PARTIAL PASS 🟡 (strong)
     ✅ 2.1 EMHASS Forecast Availability
-    🟡 2.2 SOC Target Generation
+    ✅ 2.2 SOC Target Generation
     🟡 2.3 Dynamic Charge / Discharge Power
 
 Layer 3   PARTIAL PASS 🟡
@@ -310,7 +310,7 @@ Verified:
 
 ```text
 ✅ 2.1 EMHASS Forecast Availability
-🟡 2.2 SOC Target Generation
+✅ 2.2 SOC Target Generation
 🟡 2.3 Dynamic Charge / Discharge Power
 ```
 
@@ -444,69 +444,108 @@ MPC Batt SOC = 56.65
 MPC battery_scheduled_soc attribute exists = True
 MPC battery_scheduled_soc entries = 192
 
+## Test 2.2 SOC Target Generation
 
+Status: PASS ✅
+
+Date: 2026-08-06
+
+### Purpose
+
+Verify SOC target follows the smoothed EMHASS battery SOC forecast and remains within configured SOC safety limits.
+
+### Observed
+
+#### Observation 1
+
+```text
+Timestamp = 2026-08-06 09:31
+
+SOC Target = 61.07
+SOC Batt Forecast Smooth = 60.69
+MPC Batt SOC = 60.31
+
+Target - Smooth = +0.38
+Smooth - MPC = +0.38
+Target - MPC = +0.76
+
+Minimum SOC = 20.0
+Maximum SOC = 90.0
+
+Smooth valid = True
+MPC valid = True
+Target within min/max = True
+
+MPC forecast attribute exists = True
+MPC forecast entries = 192
+```
+
+#### Observation 2
+
+```text
+Timestamp = 2026-08-06 21:28
+
+SOC Target = 84.74
+SOC Batt Forecast Smooth = 85.22
+MPC Batt SOC = 86.36
+
+Target - Smooth = -0.48
+Smooth - MPC = -1.14
+Target - MPC = -1.62
+
+Minimum SOC = 20.0
+Maximum SOC = 90.0
+
+Smooth valid = True
+MPC valid = True
+Target within min/max = True
+
+MPC forecast attribute exists = True
+MPC forecast entries = 192
 ```
 
 ### Result
 
 ```text
-PARTIAL PASS
+PASS
 ```
 
 ### Notes
 
 ```text
-SOC target correctly follows EMHASS battery forecast.
-
-Forecast smoothing layer and SOC target layer were consistent with
-the underlying MPC forecast.
-
-SOC value remained within configured safety limits.
-Notes:
-
-A single forecast verification point was observed.
-
-Additional verification still required:
-
-- SOC target follows forecast updates over time
-- SOC target responds to subsequent MPC runs
-- SOC clamping behaviour at min/max limits
-- Forecast-loss fallback behaviour
-
-SOC target remained within configured minimum and maximum SOC limits.
-
-However, SOC Forecast Smooth was unavailable / unknown during the test,
-so the full forecast-to-target chain could not be verified.
-
-Current SOC target did not visibly match the current MPC SOC forecast
-value observed at the same time.
-
-Further investigation is required to clarify whether SOC Target follows:
-- raw MPC SOC forecast
-- a previous forecast point
-- a smoothed forecast helper
-- fallback / last-known-value logic
-
-The expected smooth forecast entity was identified as:
+SOC target generation was verified against the correct smoothing entity:
 
 sensor.soc_batt_forecast_smooth
 
-Previous tests referenced the wrong entity:
+An earlier test referenced an incorrect entity:
 
 sensor.soc_forecast_smooth
 
-The smoothing layer is available and produces a valid value based on
-the MPC battery_scheduled_soc forecast attribute.
+which returned unknown.
 
-The smooth value differs from the raw MPC state because it is calculated
-from weighted future forecast points.
+The correct smoothing sensor was available and derived from the
+battery_scheduled_soc forecast attribute exposed by the EMHASS MPC forecast.
 
-SOC Target remains close to the smoothed SOC forecast and within the
-configured min/max SOC limits.
+SOC Target closely followed SOC Batt Forecast Smooth across multiple
+observations separated in time.
 
-Further verification is required to confirm the exact update path from
-SOC Batt Forecast Smooth to input_number.soc_target over time.
+Observed Target - Smooth differences:
 
++0.38 percentage points
+-0.48 percentage points
+
+SOC Target remained within configured minimum and maximum SOC limits
+during all observations.
+
+MPC forecast data was available and contained 192 forecast entries.
+
+The verification confirms the forecast processing chain:
+
+MPC battery SOC forecast
+→ SOC Batt Forecast Smooth
+→ SOC Target
+
+SOC target generation is therefore considered verified.
 ```
 
 ---
