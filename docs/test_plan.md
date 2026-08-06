@@ -424,6 +424,17 @@ Forecast Entries = 192
 Next Forecast Entry:
 2026-07-30T01:15:00+02:00
 SOC = 42.98
+
+Current SOC = 55.56%
+SOC Target = 41.71%
+SOC Forecast Smooth = unknown
+MPC SOC Forecast = 56.65%
+
+Minimum SOC = 20.0%
+Maximum SOC = 90.0%
+
+Target >= Minimum = True
+Target <= Maximum = True
 ```
 
 ### Result
@@ -451,6 +462,20 @@ Additional verification still required:
 - SOC target responds to subsequent MPC runs
 - SOC clamping behaviour at min/max limits
 - Forecast-loss fallback behaviour
+
+SOC target remained within configured minimum and maximum SOC limits.
+
+However, SOC Forecast Smooth was unavailable / unknown during the test,
+so the full forecast-to-target chain could not be verified.
+
+Current SOC target did not visibly match the current MPC SOC forecast
+value observed at the same time.
+
+Further investigation is required to clarify whether SOC Target follows:
+- raw MPC SOC forecast
+- a previous forecast point
+- a smoothed forecast helper
+- fallback / last-known-value logic
 ```
 
 ---
