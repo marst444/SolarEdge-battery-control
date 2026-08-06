@@ -1503,3 +1503,6 @@ System remains stable throughout the observation period.
 ```text
 -
 ```
+### Mixed final notes:
+Maintain-zone scenario observed with low positive discharge request.
+Charge request remained high at 5000 W despite SOC above target.
