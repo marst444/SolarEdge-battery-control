@@ -378,15 +378,15 @@ MPC and Day-Ahead runs both completed successfully.
 ## Test 2.2 SOC Target Generation
 ```
 Test 2.2 = PASS ✅
-✅ SOC target uppdateras från MPC forecast
-✅ Värdet ligger inom min/max SOC
-✅ Forecast-data existerar
-✅ Rätt smoothing-entity identifierad: sensor.soc_batt_forecast_smooth
-✅ Forecast → smoothing → target-kedjan fungerar
-✅ SOC target följer förändringar över tiden
-✅ SOC target reagerar korrekt på ny MPC/smooth-uppdatering
-⏳ SOC target klampar korrekt vid min/max-gränser
-⏳ Fallback-beteende om MPC forecast saknas
+✅ SOC target updates from MPC forecast
+✅ SOC target remains within configured min/max SOC
+✅ MPC forecast data exists
+✅ Correct smoothing entity identified: sensor.soc_batt_forecast_smooth
+✅ Forecast → smoothing → target chain verified
+✅ SOC target follows forecast changes over time
+✅ SOC target reacts correctly to new MPC/smooth updates
+⏳ SOC target clamping at min/max boundaries
+⏳ Fallback behaviour when MPC forecast is missing
 ```
 
 Date: 2026-07-30
