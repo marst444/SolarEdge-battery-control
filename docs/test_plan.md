@@ -377,13 +377,14 @@ MPC and Day-Ahead runs both completed successfully.
 
 ## Test 2.2 SOC Target Generation
 ```
-Test 2.2 = PARTIAL PASS 🟡
+Test 2.2 = PASS ✅
 ✅ SOC target uppdateras från MPC forecast
 ✅ Värdet ligger inom min/max SOC
 ✅ Forecast-data existerar
+✅ Rätt smoothing-entity identifierad: sensor.soc_batt_forecast_smooth
 ✅ Forecast → smoothing → target-kedjan fungerar
-⏳ SOC target följer förändringar över tiden
-⏳ SOC target reagerar korrekt på en ny MPC-körning
+✅ SOC target följer förändringar över tiden
+✅ SOC target reagerar korrekt på ny MPC/smooth-uppdatering
 ⏳ SOC target klampar korrekt vid min/max-gränser
 ⏳ Fallback-beteende om MPC forecast saknas
 ```
@@ -556,6 +557,11 @@ SOC target generation is therefore considered verified.
  ✅ Forecast ger 0 discharge när mål-SOC ligger över aktuell SOC
  ✅ Sensor → helper-synk fungerar
  ✅ Last-value-hjälparna uppdateras
+ ✅ Discharge direction: SOC > Target → discharge > 0, charge = 0
+ ✅ Sensor → helper sync för discharge
+ ✅ Maintain-zone ger liten discharge
+ ⏳ Charge direction: SOC < Target → charge > 0, discharge = 0
+ ⏳ Last Charge/Discharge Limit helpers, om de fortfarande ska användas
  ⏳ Scenario där discharge limit blir positiv
  ⏳ Scenario där target SOC sjunker under aktuell SOC
  ⏳ Fallback till last_* när forecast saknas
