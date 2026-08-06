@@ -427,7 +427,7 @@ SOC = 42.98
 
 Current SOC = 55.56%
 SOC Target = 41.71%
-SOC Forecast Smooth = unknown
+SOC Forecast Smooth = unknown! wrong entitiy id!
 MPC SOC Forecast = 56.65%
 
 Minimum SOC = 20.0%
@@ -435,6 +435,17 @@ Maximum SOC = 90.0%
 
 Target >= Minimum = True
 Target <= Maximum = True
+
+### Observed
+
+SOC Target = 60.98
+SOC Batt Forecast Smooth = 59.68
+MPC Batt SOC = 56.65
+
+MPC battery_scheduled_soc attribute exists = True
+MPC battery_scheduled_soc entries = 192
+
+
 ```
 
 ### Result
@@ -476,6 +487,27 @@ Further investigation is required to clarify whether SOC Target follows:
 - a previous forecast point
 - a smoothed forecast helper
 - fallback / last-known-value logic
+
+The expected smooth forecast entity was identified as:
+
+sensor.soc_batt_forecast_smooth
+
+Previous tests referenced the wrong entity:
+
+sensor.soc_forecast_smooth
+
+The smoothing layer is available and produces a valid value based on
+the MPC battery_scheduled_soc forecast attribute.
+
+The smooth value differs from the raw MPC state because it is calculated
+from weighted future forecast points.
+
+SOC Target remains close to the smoothed SOC forecast and within the
+configured min/max SOC limits.
+
+Further verification is required to confirm the exact update path from
+SOC Batt Forecast Smooth to input_number.soc_target over time.
+
 ```
 
 ---
