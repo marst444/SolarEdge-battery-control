@@ -73,19 +73,18 @@ Future documentation should clarify the intended control chain.
 
 # Layer 1 - Safety and Watchdog
 
-Layer 1 = NOT VERIFIED
+Layer 1 = STRONG PARTIAL PASS 🟡
 
 Verified:
 
 ```text
--
+1.1 Minimum SOC Protection
+1.2 Maximum SOC Protection
 ```
 
 Outstanding:
 
 ```text
-1.1 Minimum SOC Protection
-1.2 Maximum SOC Protection
 1.3 Recovery Mode
 ```
 
