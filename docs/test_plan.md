@@ -9,9 +9,9 @@ A layer is only considered verified when all critical tests have passed.
 # Current Status
 
 ```text
-Layer 1 PARTIAL PASS 🟡
+Layer 1 STRONG PARTIAL PASS 🟡
 
-    ⏳ 1.1 Minimum SOC Protection
+    ✅ 1.1 Minimum SOC Protection
     ✅ 1.2 Maximum SOC Protection
     ⏳ 1.3 Recovery Mode
 
@@ -93,47 +93,79 @@ Outstanding:
 
 ## Test 1.1 Minimum SOC Protection
 
-Status: NOT VERIFIED
+Status: PASS ✅
+
+Date: 2026-08-06
 
 ### Purpose
 
 Verify battery discharge is blocked when SOC falls below configured minimum SOC.
 
-### Preconditions
-
-```text
-Current SOC below input_number.minimum_state_of_charge
-```
-
-### Verify
-
-```text
-effective_discharge_limit = 0
-effective_battery_reason updated
-```
-
-### Pass
-
-```text
-Battery discharge is blocked and recovery logic is activated.
-```
-
 ### Observed
 
-```text
--
+#### Enter Recovery
+
+```
+Current SOC: 54.44%
+Minimum SOC: 65.0%
+
+SOC < Min:
+True
+
+Effective Mode:
+charge_from_solar_and_grid
+
+Effective Charge Limit:
+5000W
+
+Effective Discharge Limit:
+0W
+
+Reason:
+SOC below minimum - dynamic recovery charge
 ```
 
-### Result
+#### Exit Recovery
 
+```
+Current SOC: 54.44%
+Minimum SOC: 20.0%
+
+SOC < Min:
+False
+
+Effective Mode:
+maximize_self_consumption
+
+Effective Charge Limit:
+5000W
+
+Effective Discharge Limit:
+0W
+
+Reason:
+Normal - effective follows requested
+```
+### Result
 ```text
--
+
+PASS
 ```
 
 ### Notes
 
 ```text
--
+Minimum SOC protection activated correctly when SOC fell below
+the configured minimum threshold.
+
+Battery discharge was blocked and dynamic recovery charging
+was enabled.
+
+When the minimum SOC threshold was restored below the current SOC,
+the system exited recovery mode and returned to normal control.
+
+Layer 1 override behaviour was verified in both directions
+(enter and exit recovery state).
 ```
 
 ---
