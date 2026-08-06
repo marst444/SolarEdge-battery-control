@@ -376,7 +376,7 @@ MPC and Day-Ahead runs both completed successfully.
 
 
 ## Test 2.2 SOC Target Generation
-
+```
 Test 2.2 = PARTIAL PASS 🟡
 ✅ SOC target uppdateras från MPC forecast
 ✅ Värdet ligger inom min/max SOC
@@ -386,13 +386,14 @@ Test 2.2 = PARTIAL PASS 🟡
 ⏳ SOC target reagerar korrekt på en ny MPC-körning
 ⏳ SOC target klampar korrekt vid min/max-gränser
 ⏳ Fallback-beteende om MPC forecast saknas
-
+```
 
 Date: 2026-07-30
 
 ### Purpose
-
+```
 Verify SOC target follows EMHASS battery forecast.
+```
 
 ### Verify
 
@@ -638,7 +639,24 @@ Current assessment:
 PARTIAL PASS is appropriate until both charge and discharge paths
 have been observed and verified.
 ```
+#### Observation - Discharge Direction / Maintain Zone
 
+```text
+Timestamp = 2026-08-06 21:37
+
+Current SOC = 86.67%
+SOC Target = 84.66%
+Difference Target - Current = -2.01%
+SOC Deadband = 3.33%
+
+SOC > Target = True
+SOC ~= Target = True
+
+Dynamic Charge Limit = 0W
+Dynamic Discharge Limit = 92W
+
+Helper Dynamic Charge = 0W
+Helper Dynamic Discharge = 92W
 ---
 
 # Layer 3 - Grid Constraints
