@@ -250,6 +250,25 @@ Normal control logic was restored.
 
 The previous forced export-discharge strategy has been replaced by
 a hysteresis-based charge hold state.
+
+### Observation 2026-08-06
+
+High SOC ping-pong was not observed after introducing High SOC Hold.
+
+However, SOC continued rising after crossing 90% and reached 94.44%.
+Charge limit was set to 0 only after SOC had already reached the upper range.
+
+This indicates that High SOC Hold should enter earlier than the configured
+maximum SOC to compensate for SOC quantization and apply latency.
+
+Proposed adjustment:
+
+Enter High SOC Hold at:
+SOC >= Maximum SOC - 1%
+
+Exit High SOC Hold at:
+SOC <= Maximum SOC - 3%
+
 ```
 
 ---
