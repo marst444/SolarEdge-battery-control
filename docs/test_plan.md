@@ -11,8 +11,8 @@ A layer is only considered verified when all critical tests have passed.
 ```text
 Layer 1 PARTIAL PASS 🟡
 
-    🟡 1.1 Minimum SOC Protection
-    🟡 1.2 Maximum SOC Protection
+    ⏳ 1.1 Minimum SOC Protection
+    ✅ 1.2 Maximum SOC Protection
     ⏳ 1.3 Recovery Mode
 
 Layer 2   PARTIAL PASS 🟡 (strong)
@@ -141,92 +141,84 @@ Battery discharge is blocked and recovery logic is activated.
 
 ## Test 1.2 Maximum SOC Protection
 
-Status: PARTIAL PASS 🟡
+Status: PASS ✅
+
+Date: 2026-08-06
 
 ### Purpose
 
-Verify charging is blocked when SOC exceeds configured maximum SOC,
-without forcing export discharge.
+Verify charging is blocked when SOC exceeds configured maximum SOC.
 
 ### Design
 
-Upper SOC protection uses a dedicated hysteresis state:
-```
-Enter: SOC >= Maximum SOC
-Exit: SOC <= Maximum SOC - 3%
-Hold:   effective_storage_mode = maximize_self_consumption
-        effective_charge_limit = 0
-        effective_discharge_limit = requested_discharge
-```
+Upper SOC protection uses High SOC Hold with hysteresis.
 
-Status: NOT VERIFIED
-
-
-### Preconditions
+Enter:
 
 ```text
-Current SOC above input_number.maximum_state_of_charge
+SOC >= Maximum SOC
 ```
 
-### Verify
+Exit:
 
-```
-battery_high_soc_hold = on
-effective_charge_limit = 0
-effective_storage_mode = maximize_self_consumption
-```
-
-### Pass
-
-```
-Charging blocked at upper SOC limit.
-
-No oscillation between charging and forced discharge.
-
-Battery remains available for normal self-consumption support.
+```text
+SOC <= Maximum SOC - 3%
 ```
 
 ### Observed
 
+#### Enter Hold
+
+```text
+Current SOC: 54.44%
+Maximum SOC: 40.00%
+
+High SOC Hold: on
+
+Effective Mode: maximize_self_consumption
+Effective Charge Limit: 0W
+Effective Discharge Limit: 53W
+
+Reason:
+High SOC hold - charge blocked with hysteresis
 ```
-2026-08-06
 
-Previous implementation:
+#### Exit Hold
 
-SOC > MAX
-→ discharge_to_maximize_export
-→ discharge_limit >= 1000W
+```text
+Current SOC: 54.44%
+Maximum SOC: 80.00%
 
-This created repeated oscillation near 90% SOC.
+High SOC Hold: off
 
-New implementation:
+Effective Mode: maximize_self_consumption
+Effective Charge Limit: 5000W
+Effective Discharge Limit: 7W
 
-SOC >= MAX
-→ battery_high_soc_hold = on
-→ charge_limit = 0
-→ maximize_self_consumption
-
-SOC <= MAX - 3%
-→ battery_high_soc_hold = off
+Reason:
+Normal - effective follows requested
 ```
 
 ### Result
 
-```
-PARTIAL PASS
+```text
+PASS
 ```
 
 ### Notes
 
-```
-Design updated to remove bang-bang oscillation.
+```text
+High SOC Hold entered correctly when SOC exceeded Maximum SOC.
 
-Verification pending:
+Charging was blocked while preserving normal self-consumption mode.
 
-- Hold entry
-- Hold exit
-- Long-term stability
-- No recurrence of high-SOC flip-flop
+High SOC Hold exited correctly when Maximum SOC was increased and
+SOC no longer met the entry condition.
+
+Normal control logic was restored.
+
+The previous forced export-discharge strategy has been replaced by
+a hysteresis-based charge hold state.
 ```
 
 ---
