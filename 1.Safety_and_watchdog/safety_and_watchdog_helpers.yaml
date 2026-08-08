@@ -96,8 +96,16 @@ input_boolean:
   battery_charge_blocked:
     name: Battery Charge Blocked
     icon: mdi:battery-off-outline
+    
+  battery_high_soc_hold:
+    name: Battery High SOC Hold
+    icon: mdi:battery-off-outline
+    
 
 # Killswitch for whole battery control system.
   effective_battery_control_enabled:
     name: Effective Battery Control Enabled
     icon: mdi:battery-cog
+
+
+    

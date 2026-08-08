@@ -14,7 +14,21 @@ template:
           {% else %}
             OK
           {% endif %}
+          
+      - name: SolarEdge I1 AC Power Age Seconds
+        unique_id: solaredge_i1_ac_power_age_seconds
+        unit_of_measurement: "s"
+        state: >
+          {% set last = states.sensor.solaredge_i1_ac_power.last_updated %}
+          {{ (now() - last).total_seconds() | round(0) }}
 
+      - name: SolarEdge M1 AC Power Age Seconds
+        unique_id: solaredge_m1_ac_power_age_seconds
+        unit_of_measurement: "s"
+        state: >
+          {% set last = states.sensor.solaredge_m1_ac_power.last_updated %}
+          {{ (now() - last).total_seconds() | round(0) }}
+          
   - binary_sensor:
       - name: "EMHASS Healthy"
         unique_id: emahss_healthy
@@ -22,4 +36,9 @@ template:
           {{ states('sensor.emhass_health') != 'OK' }}
         device_class: problem
 
-        
+      - name: SolarEdge Modbus Data Fresh
+        unique_id: solaredge_modbus_data_fresh
+        device_class: connectivity
+        state: >
+          {{ states('sensor.solaredge_i1_ac_power_age_seconds') | float(999) < 30
+             and states('sensor.solaredge_m1_ac_power_age_seconds') | float(999) < 30 }}
