@@ -1,17 +1,6 @@
 ################################################################################
-#
-# Main charge control logic for battery charge/discharge based on EMHASS MPC forecast
-# and actual SOC
-# 
-# p_pv: > 0 when pv energy available
-# p_batt_forecast: <0 when charging =0 when stable SOC, >0 when discharging
-# p_grid_forecast: >0 when import, =0 when self consumption, <0 when export to grid
-#      - solar_power_only
-#      - charge_from_clipped_solar
-#      - charge_from_solar_and_grid
-#      - discharge_to_maximize_export
-#      - maximize_self_consumption
-#
+# Layer 4A decision engine: charge/discharge mode from EMHASS MPC forecast +
+# SOC. Sign conventions and mode list: architecture.md - Layer 4A.
 ################################################################################
 
 automation:
@@ -47,7 +36,7 @@ automation:
           last_average_chargingprice: "{{ (states('input_number.average_last_chargingprice') | float(0) * 1.2) }}"
 
       - choose:
-        
+
           # ===== CLIPPED SOLAR =====
           - conditions:
               - condition: template
@@ -73,7 +62,6 @@ automation:
                   entity_id: input_number.emhass_requested_discharge_limit
                 data:
                   value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
-                  
 
 
           # ===== BELOW-SOC / Charging logic =====
@@ -82,7 +70,7 @@ automation:
                 value_template: "{{ below and (soc < soc_max) }}"
             sequence:
               - choose:
-                 
+
                   # Below and PV > house load AND grid_forecast >=0 (no export/import): maximize self-consumption
                   - conditions:
                       - condition: template
@@ -100,14 +88,14 @@ automation:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
 
-                      
+
                   # Below and PV > house load AND grid forecast <0 (export): set discharglimit to 0
                   - conditions:
                       - condition: template
@@ -125,13 +113,13 @@ automation:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                          
+
 
                   # Below and PV <= load and BattForecast is charging: charge from solar+grid
                   - conditions:
@@ -150,14 +138,14 @@ automation:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                    
-                  # Below and PV <= load and BattForecast is discharging: maximize self consumption, discharge limit 0    
+
+                  # Below and PV <= load and BattForecast is discharging: maximize self consumption, discharge limit 0
                   - conditions:
                       - condition: template
                         value_template: "{{ (pv <= house_load) and (pv > 0) and (batt_fc >=0) }}"
@@ -168,19 +156,19 @@ automation:
                           entity_id: input_select.emhass_requested_storage_mode
                         data:
                           option: "maximize_self_consumption"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                          
+
 
                   # Below and No PV, BattForecast is charging and GridForecast is import
                   - conditions:
@@ -199,14 +187,14 @@ automation:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                          
-                  
+
+
                   # Below and No PV, BattForecast is discharging
                   - conditions:
                       - condition: template
@@ -218,20 +206,20 @@ automation:
                           entity_id: input_select.emhass_requested_storage_mode
                         data:
                           option: "solar_power_only"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: 0
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                    
-                  
+
+
                   # Below and no PV, batt_fc < 0 (charging) and grid_fc <= 0 (0 or discharging)
                   - conditions:
                       - condition: template
@@ -243,20 +231,20 @@ automation:
                           entity_id: input_select.emhass_requested_storage_mode
                         data:
                           option: "solar_power_only"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: 0
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
-                          value: 0                  
-                      
-                  # Below  and No PV, BattForecast is 0, grid is import and Prices have not gone up >20%      
+                          value: 0
+
+                  # Below  and No PV, BattForecast is 0, grid is import and Prices have not gone up >20%
                   # ===== PRICE-BASED FALLBACK (LAST) =====
                   - conditions:
                       - condition: template
@@ -274,13 +262,13 @@ automation:
                           entity_id: input_number.emhass_requested_charge_limit
                         data:
                           value: "{{ states('input_number.dynamic_charge_limit') | float(0) }}"
-                          
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                          
+
 
                   # Below and No PV, BattForecast is 0, and prices up >20% fallback to solar-only (off)
                   - conditions:
@@ -305,7 +293,7 @@ automation:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                          
+
 
           # ===== DISCHARGE MAX EXPORT =====
           # SOC is maintain or above, EV is off, GridForecast is export, BattForecast is discharge
@@ -331,7 +319,7 @@ automation:
                   entity_id: input_number.emhass_requested_discharge_limit
                 data:
                   value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
-                         
+
 
           # ===== DISCHARGE MIN IMPORT / MAX SELF-CONSUMPTION =====
           # Above and grid_fc >= 0 (import or 0) and batt_fc <= 0 (charge or 0)
@@ -357,7 +345,7 @@ automation:
                   entity_id: input_number.emhass_requested_discharge_limit
                 data:
                   value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
-                          
+
 
           # ===== MAINTAIN ZONE =====
           - conditions:
@@ -389,7 +377,7 @@ automation:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
-                          
+
 
                   # Normal maintain zone: dynamic charge and discharge limits
                   - conditions:
@@ -414,7 +402,7 @@ automation:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
-                          
+
 
                   # Fallback: solar power only
                   - conditions: []
@@ -437,4 +425,3 @@ automation:
                           entity_id: input_number.emhass_requested_discharge_limit
                         data:
                           value: 0
-                          

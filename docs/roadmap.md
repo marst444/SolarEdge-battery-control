@@ -239,6 +239,35 @@ limited retry
 backoff after failure
 ```
 
+### Update 2026-08-26 - Mode Command Guard implemented
+
+`automation.apply_effective_battery_control_to_solaredge_inverter` now skips
+the mode-select command and the 15-minute command timeout reset whenever the
+effective mode is `maximize_self_consumption` (the most-used fallback mode),
+`select.solaredge_i1_storage_command_mode` already confirms the inverter is
+in that mode, AND `select.solaredge_i1_storage_default_mode` confirms the
+inverter's own configured fallback is also Maximize Self Consumption (so
+letting the command timeout lapse is verified safe, not assumed). Only the
+charge/discharge limit writes still go out in that case, instead of the
+full 4-write sequence (timeout reset, mode select, charge limit, discharge
+limit) on every trigger.
+
+This directly reduces write frequency for the dominant steady-state case
+(dynamic limit changes while already in Maximize Self Consumption), without
+introducing a minimum write interval or delta threshold. `sensor.
+battery_mode_command_guard` exposes whether the guard is currently active for
+observability.
+
+Still outstanding from this investigation:
+
+```text
+Whether reduced mode-command write frequency measurably improves Modbus
+stability (needs a before/after observation window)
+Minimum write interval / delta threshold for the charge/discharge limit
+writes themselves, which the guard does not throttle
+limited retry / backoff after failure
+```
+
 ---
 
 ## Negative Price Curtailment
@@ -272,6 +301,10 @@ Pending command count
 Command delta
 Skipped writes
 ```
+
+`sensor.battery_mode_command_guard` (added 2026-08-26) partially covers
+"Skipped writes" for the mode-select command specifically - it does not yet
+cover skipped/deduplicated charge or discharge limit writes.
 
 ---
 

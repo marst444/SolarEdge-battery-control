@@ -44,6 +44,7 @@ Layer 4D  PARTIAL PASS 🟡 (strong)
     ✅ 7.3 Discharge Limit Apply
     ⏳ 7.4 Mode Change Verification
     ⏳ 7.5 Modbus Long-Term Stability
+    ⏳ 7.6 Mode Command Guard
 
 System    NOT VERIFIED
 
@@ -1256,6 +1257,7 @@ Outstanding:
 ⏳ Verify non-zero charge limit apply
 ⏳ 7.4 Mode Change Verification
 ⏳ 7.5 Modbus Long-Term Stability
+⏳ 7.6 Mode Command Guard
 `
 
 ```
@@ -1466,6 +1468,89 @@ No stuck modbus_busy
 
 ```text
 System remains operational throughout the observation period.
+```
+
+### Observed
+
+```text
+-
+```
+
+### Result
+
+```text
+-
+```
+
+### Notes
+
+```text
+-
+```
+
+---
+
+## Test 7.6 Mode Command Guard
+
+Status: NOT VERIFIED
+
+### Purpose
+
+Verify that `automation.apply_effective_battery_control_to_solaredge_inverter`
+correctly skips the mode-select command and 15-minute command timeout reset
+when continuing in `maximize_self_consumption`, and correctly still sends
+the full command sequence for any real mode transition or when the guard's
+preconditions are not met.
+
+### Preconditions
+
+```text
+input_select.effective_storage_mode = maximize_self_consumption
+select.solaredge_i1_storage_command_mode = "Maximize Self Consumption"
+select.solaredge_i1_storage_default_mode = "Maximize Self Consumption"
+```
+
+### Verify
+
+Guard active (mode command skipped):
+
+```text
+sensor.battery_mode_command_guard = "guarded"
+Only script.set_effective_storage_charge_limit and
+script.set_effective_storage_discharge_limit run when
+input_number.effective_charge_limit / effective_discharge_limit change.
+select.solaredge_i1_storage_command_mode is NOT rewritten.
+number.solaredge_i1_storage_command_timeout is NOT rewritten.
+```
+
+Guard inactive (full command sent) - test each of these separately:
+
+```text
+a) effective_storage_mode transitions away from maximize_self_consumption
+   -> full command sequence sent (timeout reset + mode select + limits),
+      sensor.battery_mode_command_guard = "active"
+
+b) effective_storage_mode transitions back into maximize_self_consumption
+   from another mode
+   -> full command sequence sent once, sensor.battery_mode_command_guard
+      transitions active -> guarded only after the live command mode
+      confirms Maximize Self Consumption
+
+c) select.solaredge_i1_storage_default_mode is set to something other than
+   "Maximize Self Consumption" while effective mode stays
+   maximize_self_consumption
+   -> guard stays inactive; mode command keeps being resent every trigger;
+      sensor.battery_mode_command_guard = "active"
+```
+
+### Pass
+
+```text
+Mode command is skipped only when effective mode, live command mode, and
+configured default mode all agree on Maximize Self Consumption. Any
+mismatch - including a non-msc configured default mode - results in the
+full command sequence being sent, so no unintended control authority is
+ceded to a misconfigured fallback.
 ```
 
 ### Observed

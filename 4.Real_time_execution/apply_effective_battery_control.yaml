@@ -1,11 +1,12 @@
 ###############################################################################
+# Applies the effective battery mode/limits to SolarEdge via the Modbus
+# Queue after the safety layer check.
 #
-# 
-# Apply effective batterycontrol executes the commands after safety layer check via scripts 
-# and sends over modbusque to inverter
-#
-#
-#
+# Mode Command Guard: skips the mode-select command + 15min timeout reset
+# when staying in maximize_self_consumption and both
+# select.solaredge_i1_storage_command_mode and
+# select.solaredge_i1_storage_default_mode already confirm it. Full details:
+# architecture.md - Layer 4B - Mode Command Guard.
 ###############################################################################
 
 automation:
@@ -35,47 +36,61 @@ automation:
           effective_mode: "{{ states('input_select.effective_storage_mode') }}"
           effective_charge: "{{ states('input_number.effective_charge_limit') | float(0) }}"
           effective_discharge: "{{ states('input_number.effective_discharge_limit') | float(0) }}"
+          inverter_command_mode: "{{ states('select.solaredge_i1_storage_command_mode') }}"
+          inverter_default_mode: "{{ states('select.solaredge_i1_storage_default_mode') }}"
 
-      - service: script.set_value_storage_command_timeout15m
-      - delay: "00:00:02"
+          # True when we want to continue in the fallback mode, the inverter
+          # already confirms it is there, AND the inverter's configured
+          # default/backup mode is confirmed to actually be Maximize Self
+          # Consumption - see Mode Command Guard note above.
+          mode_guard_active: >-
+            {{ effective_mode == 'maximize_self_consumption'
+               and inverter_command_mode == 'Maximize Self Consumption'
+               and inverter_default_mode == 'Maximize Self Consumption' }}
 
-      - choose:
+      - if:
+          - condition: template
+            value_template: "{{ not mode_guard_active }}"
+        then:
+          - service: script.set_value_storage_command_timeout15m
+          - delay: "00:00:02"
 
-          - conditions:
-              - condition: template
-                value_template: "{{ effective_mode == 'solar_power_only' }}"
-            sequence:
-              - service: script.solar_power_only_script
+          - choose:
 
-          - conditions:
-              - condition: template
-                value_template: "{{ effective_mode == 'charge_from_clipped_solar' }}"
-            sequence:
-              - service: script.charge_from_clipped_solar_script
+              - conditions:
+                  - condition: template
+                    value_template: "{{ effective_mode == 'solar_power_only' }}"
+                sequence:
+                  - service: script.solar_power_only_script
 
-          - conditions:
-              - condition: template
-                value_template: "{{ effective_mode == 'charge_from_solar_and_grid' }}"
-            sequence:
-              - service: script.charge_from_solar_power_and_grid_script
+              - conditions:
+                  - condition: template
+                    value_template: "{{ effective_mode == 'charge_from_clipped_solar' }}"
+                sequence:
+                  - service: script.charge_from_clipped_solar_script
 
-          - conditions:
-              - condition: template
-                value_template: "{{ effective_mode == 'discharge_to_maximize_export' }}"
-            sequence:
-              - service: script.discharge_to_maximize_export_script
+              - conditions:
+                  - condition: template
+                    value_template: "{{ effective_mode == 'charge_from_solar_and_grid' }}"
+                sequence:
+                  - service: script.charge_from_solar_power_and_grid_script
 
-          - conditions:
-              - condition: template
-                value_template: "{{ effective_mode == 'maximize_self_consumption' }}"
-            sequence:
-              - service: script.maximize_self_consumption_script
+              - conditions:
+                  - condition: template
+                    value_template: "{{ effective_mode == 'discharge_to_maximize_export' }}"
+                sequence:
+                  - service: script.discharge_to_maximize_export_script
 
-      - delay: "00:00:02"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ effective_mode == 'maximize_self_consumption' }}"
+                sequence:
+                  - service: script.maximize_self_consumption_script
+
+          - delay: "00:00:02"
 
       - service: script.set_effective_storage_charge_limit
 
       - delay: "00:00:02"
 
-      - service: script.set_effective_storage_discharge_limit         
-            
+      - service: script.set_effective_storage_discharge_limit

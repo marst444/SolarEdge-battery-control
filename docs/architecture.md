@@ -337,6 +337,14 @@ Dynamic discharge limit
 Safety state
 Grid constraint state
 ```
+
+### Sign Conventions
+
+```
+p_pv            > 0 when PV energy is available
+p_batt_forecast < 0 charging, = 0 stable SOC, > 0 discharging
+p_grid_forecast > 0 import,   = 0 self consumption, < 0 export to grid
+```
 ### Decision Outputs
 
 
@@ -383,6 +391,53 @@ Storage command timeout request
 Mode changes are relatively heavy and should be infrequent.
 
 Power limit updates can be more frequent, but should still be throttled to avoid excessive Modbus write pressure.
+
+### Mode Command Guard
+
+`automation.apply_effective_battery_control_to_solaredge_inverter` is triggered
+whenever the effective mode OR either effective limit changes state - and the
+effective limits can change every cycle simply because they track the
+EMHASS-derived dynamic charge/discharge limits. Without a guard this would
+resend the mode-select command (plus a 15-minute command timeout reset) on
+every such trigger, even when the mode itself hasn't changed.
+
+`maximize_self_consumption` is the most frequently requested effective mode.
+It is also, when the inverter is configured that way, the mode SolarEdge
+falls back to internally once its own Remote Control command timeout lapses
+without a refreshed command - that configured fallback is exposed as
+`select.solaredge_i1_storage_default_mode`. The automation skips the
+mode-select command and timeout reset only when ALL of the following hold:
+
+```
+effective mode == maximize_self_consumption
+AND
+select.solaredge_i1_storage_command_mode == "Maximize Self Consumption"
+AND
+select.solaredge_i1_storage_default_mode == "Maximize Self Consumption"
+```
+
+The first two conditions confirm we want to stay in Maximize Self
+Consumption and the inverter is already there (so there's no pending
+transition to apply). The third confirms letting the command timeout lapse
+is actually safe - it checks the inverter's real configured fallback rather
+than assuming it. If the default/backup mode is ever reconfigured to
+something else, the guard simply stays inactive and the mode command keeps
+being refreshed every cycle, so control authority is never silently ceded
+to an unexpected fallback mode.
+
+In the guarded case only the charge/discharge limit scripts run - which,
+per the Layer 4D command types below, apply independently of the storage
+command mode/timeout cycle. Any other effective mode, or either SolarEdge
+mode entity not (yet/still) confirming Maximize Self Consumption, still
+sends the full command sequence, so real mode transitions remain immediate.
+The guard is self-healing: it reads the inverter's live reported state
+rather than trusting a locally cached "last sent" value, so a manual mode
+change, restart, reconfiguration of the default mode, or Modbus hiccup
+simply causes the guard to re-arm rather than silently drift.
+
+`sensor.battery_mode_command_guard` mirrors this three-part condition as a
+standalone diagnostic ("guarded" vs "active") for observability, independent
+of the automation actually firing.
 
 ---
 
@@ -478,5 +533,7 @@ SolarEdge Modbus appears sensitive to frequent or overlapping writes.
 
 Write logic should avoid repeated commands when the requested value has not changed significantly.
 
-
-
+The Layer 4B Mode Command Guard (see above) is a concrete application of this
+principle: it stops the automation from resending an unchanged
+`maximize_self_consumption` mode command every 15 minutes purely because a
+dynamic power limit changed, while still updating the limits themselves.

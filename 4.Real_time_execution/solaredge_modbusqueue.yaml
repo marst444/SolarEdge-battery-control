@@ -1,14 +1,7 @@
-#######################################################
-#. Valid options:
-#  Solar Power Only (Off)
-#. Charge from Clipped Solar Power
-#. Charge from Solar Power
-#. Charge from Solar Power and Grid
-#. Discharge to Maximize Export
-#. Discharge to Minimize Import
-#. Maximize Self Consumption
-#
-########################################################
+###############################################################################
+# Layer 4C Modbus Queue: serializes all SolarEdge writes. Mode list and
+# semantics: README.md - Storage Control Modes Explained.
+###############################################################################
 
 input_boolean:
   modbus_busy:

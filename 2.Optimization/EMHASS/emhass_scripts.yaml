@@ -59,9 +59,9 @@ script:
               export: sensor.merged_total_revenue_export_forecast
             ev:
               planning_energy: sensor.ev_planning_energy_needed_kwh
-              nominal_power: input_number.ev_nominal_charging_power_w
-              minimum_power: input_number.ev_min_charging_power_w
-              departure: input_datetime.ev_next_departure
+              nominal_power: sensor.emhass_ev_nominal_charging_power_w
+              minimum_power: sensor.emhass_ev_minimum_charging_power_w
+              departure: sensor.ev_effective_departure
               
         alias: Configure sensor entities
 
@@ -111,8 +111,12 @@ script:
               {{ [states('sensor.ev_deferrable_end_timestep') | int(0)] }}
             treat_deferrable_load_as_semi_cont: "{{ [false] }}"
             set_deferrable_load_single_constant: "{{ [false] }}"
-            set_deferrable_startup_penalty: "{{ [0] }}"
-            
+            set_deferrable_startup_penalty: "{{ [0.5] }}"
+            def_minimum_on_time: "{{ [4] }}"
+            def_minimum_off_time: "{{ [2] }}"
+            set_deferrable_max_startups: "{{ [2] }}"
+
+
             load_cost_forecast: |-
               {% set ns = namespace(output={}) %}
               {% for forecast in (state_attr(sensors.prices.import, 'forecast_merged') or []) %}
@@ -286,10 +290,9 @@ script:
               export: sensor.merged_total_revenue_export_forecast
             ev:
               planning_energy: sensor.ev_planning_energy_needed_kwh
-              nominal_power: input_number.ev_nominal_charging_power_w
-              minimum_power: input_number.ev_min_charging_power_w
-              departure: input_datetime.ev_next_departure  
-              
+              nominal_power: sensor.emhass_ev_nominal_charging_power_w
+              minimum_power: sensor.emhass_ev_minimum_charging_power_w
+              departure: sensor.ev_effective_departure
               
         alias: Configure sensor entities
 

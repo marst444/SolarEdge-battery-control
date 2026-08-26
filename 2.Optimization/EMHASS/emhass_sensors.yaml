@@ -472,9 +472,9 @@ template:
         unique_id: merged_total_revenue_export_forecast
         unit_of_measurement: "SEK/kWh"
         state: >
-          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated, none) %}
           {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
-          {% set np = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set np = (state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') or []) if np_age < 7200 else [] %}
           {% set epex = state_attr('sensor.epex_total_revenue_export_forecast', 'forecast_merged') or [] %}
           {% set now_ts = as_timestamp(now()) %}
           {% set ns = namespace(price=none) %}
@@ -510,22 +510,22 @@ template:
           {{ ns.price if ns.price is not none else (np[0]['price'] if np | count > 0 else (epex[0]['price'] if epex | count > 0 else 0)) }}
 
         availability: >
-          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+          {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated, none) %}
           {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
-          {% set np = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') if np_age < 7200 else [] %}
+          {% set np = (state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') or []) if np_age < 7200 else [] %}
           {% set epex = state_attr('sensor.epex_total_revenue_export_forecast', 'forecast_merged') or [] %}
           {{ (np | count > 0) or (epex | count > 0) }}
 
         attributes:
           source_status: >
-            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated, none) %}
             {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
             {{ 'nordpool_ok' if np_age < 7200 else 'fallback_epex_only' }}
 
           forecast_merged: >
-            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated) %}
+            {% set np_last = as_timestamp(states.sensor.nordpool_kwh_se3_sek_3_10_025.last_updated, none) %}
             {% set np_age = as_timestamp(now()) - np_last if np_last is not none else 999999 %}
-            {% set np = state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') if np_age < 7200 else [] %}
+            {% set np = (state_attr('sensor.nordpool_se3_total_revenue_export', 'forecast_merged') or []) if np_age < 7200 else [] %}
             {% set epex = state_attr('sensor.epex_total_revenue_export_forecast', 'forecast_merged') or [] %}
 
             {% set np = np if np is not none else [] %}

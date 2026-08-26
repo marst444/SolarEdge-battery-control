@@ -822,7 +822,29 @@ input_number.effective_discharge_limit
 
 ```text
 automation.apply_effective_battery_control_to_solaredge_inverter
--> Applies effective battery control to SolarEdge.
+-> Applies effective battery control to SolarEdge. Includes a mode command
+   guard: when the effective mode is maximize_self_consumption, the inverter
+   already confirms that mode (select.solaredge_i1_storage_command_mode), AND
+   the inverter's configured default/backup mode is confirmed to also be
+   Maximize Self Consumption (select.solaredge_i1_storage_default_mode), the
+   mode-select command and the 15-minute command timeout reset are skipped,
+   and only the charge/discharge limits are sent. Any other mode, an
+   unconfirmed live mode, or a default mode other than Maximize Self
+   Consumption, still sends the full command sequence.
+```
+
+---
+
+## Write Guard Diagnostics
+
+```text
+sensor.battery_mode_command_guard
+-> Pure-template diagnostic mirroring the guard condition above (effective
+   mode, live command mode, and configured default mode all confirmed as
+   Maximize Self Consumption). State is "guarded" when the mode-select
+   command + timeout reset would currently be skipped (only limits are
+   being pushed), or "active" when the full command sequence is/would be
+   sent on the next trigger.
 ```
 
 ---
@@ -1019,7 +1041,22 @@ select.solaredge_i1_storage_control_mode
 
 ```text
 select.solaredge_i1_storage_command_mode
--> Active SolarEdge storage command mode.
+-> Active SolarEdge storage command mode. Also read live by the Layer 4B
+   mode command guard to confirm the inverter is already in Maximize Self
+   Consumption before deciding whether the mode-select command can be
+   skipped.
+```
+
+---
+
+```text
+select.solaredge_i1_storage_default_mode
+-> SolarEdge's configured default/backup storage mode - the mode the
+   inverter falls back to internally once its Remote Control command
+   timeout lapses without a refreshed command. Read live by the Layer 4B
+   mode command guard: the mode-select command is only skipped when this is
+   confirmed to be Maximize Self Consumption, so letting the timeout lapse
+   is verified safe rather than assumed.
 ```
 
 ---

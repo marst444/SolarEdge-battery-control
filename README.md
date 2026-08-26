@@ -236,6 +236,15 @@ House load
 
 → Default mode for maintain zone, self-consumption optimization, and fine-grained real-time control.
 
+# SolarEdge default/backup mode
+
+select.solaredge_i1_storage_default_mode configures the mode SolarEdge falls
+back to internally once a Remote Control command's timeout lapses without a
+refreshed command. In this setup it is kept as Maximize Self Consumption,
+matching the mode used above for maintain-zone/self-consumption control —
+this lets Layer 4B's Mode Command Guard (see architecture.md) safely skip
+resending an unchanged mode command while staying in that mode.
+
 
 # Storage Power Limits
 
@@ -353,3 +362,5 @@ These limits are updated independently of the 15-minute mode cycle, allowing the
 @kipe (https://github.com/kipe)
 @BJReplay( https://github.com/BJReplay)
 @davidusbgeek (https://github.com/davidusb-geek)
+@BrendanAnnable — EMHASS energy-plan scripts (emhass_scripts.yaml) are a
+modification of his SiegenEnergy script (https://sigenergy.annable.me/)
