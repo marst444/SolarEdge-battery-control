@@ -355,6 +355,52 @@ Requested discharge limit
 Battery control reason
 Effective battery control state
 ```
+
+### Grid Charge Export Cooldown
+
+`automation.emhass_battery_forecast_control` (battery_forecast_control.yaml)
+picks its mode every 15 minutes from a momentary read of `p_pv`,
+`house_load`, `p_batt_forecast` and `p_grid_forecast` at that exact tick,
+with no averaging. A brief appliance spike or a passing cloud lasting only
+a few seconds at that instant can flip `pv <= house_load`, sending the
+decision engine into `charge_from_solar_and_grid` (real grid import) for
+the full 15-minute interval - even though PV comfortably covered load for
+almost all of it. None of the branches that decide `charge_from_solar_and_grid`
+or `discharge_to_maximize_export` check price; the one existing price
+mechanism (`input_number.average_last_chargingprice`) only gates the
+deeply-nested no-PV fallback branch and is a running average of price
+already paid during an active charging session, not an upfront price
+ceiling - it cannot prevent an initial bad charge decision.
+
+Observed 2026-08-27: `charge_from_solar_and_grid` fired at 11:00 and 14:00
+on exactly this kind of momentary PV-dip/load-spike coincidence (PV
+briefly ~430-480W and ~800-1000W respectively against a load spike to
+~2500-2800W, sampled in the same second as the trigger), while
+`sensor.total_import_price` (~2.2-2.3 SEK/kWh) was more than double
+`sensor.total_export_price` (~0.95-1.05 SEK/kWh) for the whole window.
+Each charge was followed within 15-75 minutes by
+`discharge_to_maximize_export`, selling the same energy back at the same
+depressed export price - a guaranteed loss on the round trip.
+
+The Grid Charge Export Cooldown closes this specific failure mode without
+requiring price forecasting: whenever a `charge_from_solar_and_grid`
+branch fires, it stamps `input_datetime.last_grid_charge_command_time`.
+The `DISCHARGE MAX EXPORT` branch then only executes
+`discharge_to_maximize_export` if
+`input_number.grid_charge_export_cooldown_minutes` (default 60) has
+elapsed since that stamp; otherwise it falls back to
+`maximize_self_consumption` with the normal dynamic discharge limit,
+letting the battery serve house load instead of being sold straight back
+to the grid. Once the cooldown elapses, normal max-export behaviour
+resumes unchanged. Layer 1 safety recovery charging
+(`safety_limits_and_override.yaml`, SOC < minimum) is intentionally not
+covered by this cooldown - that is a safety concern, not an economic one,
+and is self-limiting because SOC is still low immediately afterward.
+
+This is a hysteresis/circuit-breaker fix, not a root-cause fix for the
+underlying momentary-sampling and EMHASS MPC re-plan volatility (see
+roadmap.md - Active Investigations - Midday Charge/Discharge Oscillation).
+
 ---
 
 # Layer 4B - Command Generation

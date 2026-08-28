@@ -655,6 +655,24 @@ input_number.soc_deadband
 
 ---
 
+```text
+input_number.grid_charge_export_cooldown_minutes
+-> Minutes that must elapse after a charge_from_solar_and_grid command
+   before discharge_to_maximize_export is allowed to fire again. Default
+   60. See architecture.md - Layer 4A - Grid Charge Export Cooldown.
+```
+
+---
+
+```text
+input_datetime.last_grid_charge_command_time
+-> Timestamp stamped whenever the decision engine requests
+   charge_from_solar_and_grid. Used to gate discharge_to_maximize_export
+   during the cooldown window above.
+```
+
+---
+
 ## Requested Battery Control
 
 ```text
@@ -728,7 +746,11 @@ sensor.soc_batt_forecast_smooth
 
 ```text
 automation.emhass_battery_forecast_control
--> Main EMHASS-driven battery decision logic.
+-> Main EMHASS-driven battery decision logic. Includes the Grid Charge
+   Export Cooldown: discharge_to_maximize_export is held back in favour of
+   maximize_self_consumption until grid_charge_export_cooldown_minutes has
+   elapsed since the last charge_from_solar_and_grid command, to prevent
+   selling recently grid-charged energy straight back out at a loss.
 ```
 
 ---

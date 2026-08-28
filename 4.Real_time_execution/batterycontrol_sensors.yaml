@@ -118,3 +118,30 @@ template:
           {% endif %}
 
           {{ [[raw, soc_min] | max, soc_max] | min | round(2) }}
+
+      # === Mode Command Guard status ===
+      # Pure-template diagnostic (no automation dependency) mirroring the
+      # guard condition in apply_effective_battery_control.yaml. "guarded"
+      # means the mode-select command + 15min timeout reset would currently
+      # be skipped (effective mode is maximize_self_consumption, the
+      # inverter's live command mode already confirms that mode, AND the
+      # inverter's configured default/backup mode is also confirmed to be
+      # Maximize Self Consumption, so letting the timeout lapse is safe) -
+      # only charge/discharge limits are being pushed. "active" means the
+      # full command sequence is/would be sent on the next trigger (real
+      # mode change, live mode not yet confirmed, or the configured default
+      # mode is something other than Maximize Self Consumption).
+      - name: "Battery Mode Command Guard"
+        unique_id: battery_mode_command_guard
+        icon: mdi:shield-check
+        state: >
+          {% set effective_mode = states('input_select.effective_storage_mode') %}
+          {% set inverter_mode = states('select.solaredge_i1_storage_command_mode') %}
+          {% set default_mode = states('select.solaredge_i1_storage_default_mode') %}
+          {% if effective_mode == 'maximize_self_consumption'
+                and inverter_mode == 'Maximize Self Consumption'
+                and default_mode == 'Maximize Self Consumption' %}
+            guarded
+          {% else %}
+            active
+          {% endif %}

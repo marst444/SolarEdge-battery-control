@@ -28,6 +28,7 @@ Layer 4A  PARTIAL PASS 🟡 (strong)
     🟡 4A.1 Charge Decision (Maintain-Zone Scenario)
     ⏳ 4A.2 Discharge Decision
     ⏳ 4A.3 Maintain Zone (Additional Scenarios)
+    ⏳ 4A.4 Grid Charge Export Cooldown
 
 Layer 4B  PARTIAL PASS 🟡
     ✅ 5.1 Command Generation
@@ -44,7 +45,7 @@ Layer 4D  PARTIAL PASS 🟡 (strong)
     ✅ 7.3 Discharge Limit Apply
     ⏳ 7.4 Mode Change Verification
     ⏳ 7.5 Modbus Long-Term Stability
-    ⏳ 7.6 Mode Command Guard
+    🟡 7.6 Mode Command Guard
 
 System    NOT VERIFIED
 
@@ -568,6 +569,19 @@ MPC battery SOC forecast
 → SOC Target
 
 SOC target generation is therefore considered verified.
+
+### Update 2026-08-27 - Volatility observed between successive MPC runs
+
+While investigating a separate uneconomical charge/discharge report (see
+roadmap.md - Active Investigations - Midday Charge/Discharge Oscillation),
+history for input_number.soc_target and sensor.soc_batt_forecast_smooth
+on 2026-08-27 showed swings of 10-40 percentage points between reads only
+1-2 minutes apart (e.g. soc_target: 45.02 at 11:00:01, then 24.44 at
+11:02:00). This does not contradict the forecast -> smoothing -> target
+chain verified above (the chain still faithfully follows whatever the
+latest MPC run publishes) - it indicates the underlying MPC plan itself
+is volatile run-to-run, which "SOC Target Generation" as tested here does
+not cover. Flagged as a follow-up item, not a regression of this test.
 ```
 
 ---
@@ -831,6 +845,7 @@ Verified:
 utstanding: 
 ⏳Charge scenario ⏳
 4A.2 Discharge Decision
+⏳ 4A.4 Grid Charge Export Cooldown
 ```
 
 ---
@@ -997,6 +1012,100 @@ och
 SOC inom deadband men under target
 ```
 
+
+---
+
+## Test 4A.4 Grid Charge Export Cooldown
+
+Status: NOT VERIFIED
+
+### Purpose
+
+Verify that after `automation.emhass_battery_forecast_control` requests
+`charge_from_solar_and_grid`, it does not request
+`discharge_to_maximize_export` again until
+`input_number.grid_charge_export_cooldown_minutes` (default 60) has
+elapsed - preventing a grid-assisted charge from being sold straight back
+out at a loss, as observed on 2026-08-27 (see roadmap.md - Active
+Investigations - Midday Charge/Discharge Oscillation, and
+architecture.md - Layer 4A - Grid Charge Export Cooldown).
+
+### Design
+
+```text
+charge_from_solar_and_grid branches stamp
+input_datetime.last_grid_charge_command_time = now()
+
+DISCHARGE MAX EXPORT branch:
+  if (maintain or above) and soc > soc_min and grid_fc < 0 and batt_fc > 0:
+    if cooldown_elapsed (now - last_grid_charge_command_time >=
+       grid_charge_export_cooldown_minutes):
+      -> discharge_to_maximize_export (unchanged behaviour)
+    else:
+      -> maximize_self_consumption with dynamic discharge limit
+         (held back, does not force export)
+```
+
+### Preconditions
+
+```text
+input_number.grid_charge_export_cooldown_minutes = 60 (default)
+```
+
+### Verify
+
+```text
+a) charge_from_solar_and_grid fires
+   -> input_datetime.last_grid_charge_command_time updates to the trigger
+      time
+
+b) Within cooldown window, conditions for DISCHARGE MAX EXPORT become true
+   (maintain/above, soc > soc_min, grid_fc < 0, batt_fc > 0)
+   -> emhass_requested_storage_mode = maximize_self_consumption (NOT
+      discharge_to_maximize_export)
+   -> emhass_requested_discharge_limit = dynamic_discharge_limit (not
+      forced to export aggressively, but not blocked either)
+
+c) After cooldown window elapses, same DISCHARGE MAX EXPORT conditions
+   -> emhass_requested_storage_mode = discharge_to_maximize_export
+      (normal behaviour resumes)
+
+d) No charge_from_solar_and_grid in recent history (cooldown "cold")
+   -> DISCHARGE MAX EXPORT behaves exactly as before this change
+      (input_datetime defaults far in the past, so cooldown_elapsed = true)
+```
+
+### Pass
+
+```text
+discharge_to_maximize_export is never requested within
+grid_charge_export_cooldown_minutes of a charge_from_solar_and_grid
+request; normal max-export behaviour resumes unchanged once the cooldown
+elapses; behaviour is unaffected when no recent grid charge occurred.
+```
+
+### Observed
+
+```text
+-
+```
+
+### Result
+
+```text
+-
+```
+
+### Notes
+
+```text
+Implemented 2026-08-27 in battery_forecast_control.yaml and
+batterycontrol_helpers.yaml, in response to the charge-then-immediately-
+export pattern observed the same day. Not yet verified live - needs a
+real charge_from_solar_and_grid event followed by conditions that would
+otherwise trigger discharge_to_maximize_export within the cooldown
+window, ideally also one case observed after the cooldown has elapsed.
+```
 
 ---
 
@@ -1556,19 +1665,69 @@ ceded to a misconfigured fallback.
 ### Observed
 
 ```text
--
+Live evaluation 2026-08-27, via HA MCP (state, automation trace, logbook, logs).
+
+Trace run_id 83276d1d92e8bb49a69e2f61c0082c9f (2026-08-27T08:30:00 UTC),
+triggered by state of input_number.effective_discharge_limit:
+
+  effective_mode        = maximize_self_consumption
+  inverter_command_mode = "Maximize Self Consumption"
+  inverter_default_mode = "Maximize Self Consumption"
+  mode_guard_active      = true
+
+action/1/if evaluated to false (guard branch taken) - the mode-select +
+timeout-reset block was skipped entirely. Only
+script.set_effective_storage_charge_limit and
+script.set_effective_storage_discharge_limit ran. Confirms the guard
+condition, the skip behaviour, and that mode_guard_active is computed
+correctly from live entity state (not a cached "last sent" value).
+
+select.solaredge_i1_storage_command_mode history over the prior 24h shows
+7 real mode transitions (maximize_self_consumption <-> discharge_to_maximize_export,
+one brief charge_from_solar_and_grid during a HA restart), each one
+correctly triggering the full command sequence per the logbook
+(context_name: "Apply Effective Battery Control to Solaredge Inverter").
+
+One anomaly: command_mode flipped Maximize Self Consumption -> Discharge to
+Maximize Export at 09:30:19 -> 09:30:31 (12s apart), while
+input_select.effective_storage_mode shows no corresponding change in its
+own history at that time. Not yet explained - possibly a manual/live test
+during this same evaluation session rather than a control-loop issue,
+since it doesn't correlate with any automation-driven effective_storage_mode
+transition. Flagged for follow-up, not treated as a guard defect given the
+directly-traced run above is unambiguous.
+
+ISSUE FOUND: sensor.battery_mode_command_guard (the standalone diagnostic
+added alongside the guard) does not exist on the live system -
+ha_get_state and the unique_id resolver both return ENTITY_NOT_FOUND, and
+it does not appear anywhere in the logs (not even a "Setting up" or
+validation-error line), despite ~24 other template sensors being freshly
+set up around the same reload. This points to the live
+batterycontrol_sensors.yaml on the HA instance not yet containing the new
+sensor block from the project doc - the automation-side guard logic is
+live and correct, but the diagnostic sensor's file wasn't copied/reloaded.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - core guard behaviour (skip on confirmed continuation,
+full sequence on real transitions) verified live. Diagnostic sensor
+missing on the live instance; anomalous 12s mode flip unexplained.
 ```
 
 ### Notes
 
 ```text
--
+Action needed: re-copy the current batterycontrol_sensors.yaml (with the
+Battery Mode Command Guard template sensor) to the live config and reload
+template entities, then re-check sensor.battery_mode_command_guard exists
+and tracks "guarded"/"active" correctly.
+
+Still outstanding: explicit test of the guard staying inactive when
+select.solaredge_i1_storage_default_mode is not Maximize Self Consumption
+(case c in Verify above) - not observed in this session since the live
+default mode has stayed at Maximize Self Consumption throughout.
 ```
 
 ---

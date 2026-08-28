@@ -35,6 +35,10 @@ automation:
           price_import: "{{ (states('sensor.total_import_price') | float(0)) }}"
           last_average_chargingprice: "{{ (states('input_number.average_last_chargingprice') | float(0) * 1.2) }}"
 
+          cooldown_elapsed: >-
+            {{ (as_timestamp(now()) - as_timestamp(states('input_datetime.last_grid_charge_command_time'), 0))
+               >= (states('input_number.grid_charge_export_cooldown_minutes') | float(60) * 60) }}
+
       - choose:
 
           # ===== CLIPPED SOLAR =====
@@ -133,6 +137,13 @@ automation:
                         data:
                           option: "charge_from_solar_and_grid"
 
+                      # Stamp cooldown start: see architecture.md - Layer 4A - Grid Charge Export Cooldown
+                      - service: input_datetime.set_datetime
+                        target:
+                          entity_id: input_datetime.last_grid_charge_command_time
+                        data:
+                          timestamp: "{{ now().timestamp() }}"
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_charge_limit
@@ -181,6 +192,13 @@ automation:
                           entity_id: input_select.emhass_requested_storage_mode
                         data:
                           option: "charge_from_solar_and_grid"
+
+                      # Stamp cooldown start: see architecture.md - Layer 4A - Grid Charge Export Cooldown
+                      - service: input_datetime.set_datetime
+                        target:
+                          entity_id: input_datetime.last_grid_charge_command_time
+                        data:
+                          timestamp: "{{ now().timestamp() }}"
 
                       - service: input_number.set_value
                         target:
@@ -257,6 +275,13 @@ automation:
                         data:
                           option: "charge_from_solar_and_grid"
 
+                      # Stamp cooldown start: see architecture.md - Layer 4A - Grid Charge Export Cooldown
+                      - service: input_datetime.set_datetime
+                        target:
+                          entity_id: input_datetime.last_grid_charge_command_time
+                        data:
+                          timestamp: "{{ now().timestamp() }}"
+
                       - service: input_number.set_value
                         target:
                           entity_id: input_number.emhass_requested_charge_limit
@@ -301,24 +326,54 @@ automation:
               - condition: template
                 value_template: "{{ (maintain or above) and (soc > soc_min) and (grid_fc < 0) and (batt_fc > 0) }}"
             sequence:
+              - choose:
+
+                  # Grid Charge Export Cooldown elapsed (or no recent grid charge): normal max-export.
+                  # See architecture.md - Layer 4A - Grid Charge Export Cooldown.
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ cooldown_elapsed }}"
+                    sequence:
             # Shadow/requested state
-              - service: input_select.select_option
-                target:
-                  entity_id: input_select.emhass_requested_storage_mode
-                data:
-                  option: "discharge_to_maximize_export"
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.emhass_requested_storage_mode
+                        data:
+                          option: "discharge_to_maximize_export"
 
-              - service: input_number.set_value
-                target:
-                  entity_id: input_number.emhass_requested_charge_limit
-                data:
-                  value: 0
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_charge_limit
+                        data:
+                          value: 0
 
-              - service: input_number.set_value
-                target:
-                  entity_id: input_number.emhass_requested_discharge_limit
-                data:
-                  value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.emhass_requested_discharge_limit
+                        data:
+                          value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
+
+              # Still within cooldown of a grid-assisted charge: do not sell it straight back out.
+              # Stay in normal self-consumption instead of forcing export.
+                default:
+            # Shadow/requested state
+                  - service: input_select.select_option
+                    target:
+                      entity_id: input_select.emhass_requested_storage_mode
+                    data:
+                      option: "maximize_self_consumption"
+
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.emhass_requested_charge_limit
+                    data:
+                      value: 0
+
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.emhass_requested_discharge_limit
+                    data:
+                      value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
 
 
           # ===== DISCHARGE MIN IMPORT / MAX SELF-CONSUMPTION =====
