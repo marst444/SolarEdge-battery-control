@@ -145,3 +145,43 @@ template:
           {% else %}
             active
           {% endif %}
+
+###############################################################################
+# PV / House Load Smoothing (Layer 4A input smoothing)
+#
+# automation.emhass_battery_forecast_control (battery_forecast_control.yaml)
+# samples PV production and house load once every 15 minutes, at the exact
+# trigger instant. A momentary appliance spike or a few-second PV dip
+# sampled at that instant can flip the pv <= house_load comparison used
+# throughout Layer 4A's branching, authorizing charge_from_solar_and_grid
+# for the full 15-minute interval even though PV covered load for nearly
+# all of it - see roadmap.md - Active Investigations - Midday
+# Charge/Discharge Oscillation, and architecture.md - Layer 4A - PV/Load
+# Sampling Smoothing.
+#
+# These two statistics-platform sensors provide a trailing mean over the
+# last 4 minutes for exactly this purpose. battery_forecast_control.yaml
+# reads these instead of the raw instantaneous sensors for its pv/house_load
+# decision variables. The raw sensors (sensor.solar_panel_production_w,
+# sensor.power_myhouse_load_no_var_loads) are unaffected and still used
+# directly everywhere else (dashboards, other automations, etc).
+###############################################################################
+
+sensor:
+  - platform: statistics
+    name: "PV Production Smoothed"
+    unique_id: pv_production_smoothed
+    entity_id: sensor.solar_panel_production_w
+    state_characteristic: mean
+    max_age:
+      minutes: 4
+    precision: 0
+
+  - platform: statistics
+    name: "House Load Smoothed"
+    unique_id: house_load_smoothed
+    entity_id: sensor.power_myhouse_load_no_var_loads
+    state_characteristic: mean
+    max_age:
+      minutes: 4
+    precision: 0

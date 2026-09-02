@@ -25,11 +25,27 @@ automation:
           below: "{{ soc < (target - db) }}"
           above: "{{ soc > (target + db) }}"
           maintain: "{{ soc >= (target - db) and soc <= (target + db) }}"
-          pv: "{{ (states('sensor.solar_panel_production_w') | float(0)) }}"
+          # PV/Load Smoothing: use the 4-minute trailing mean sensors
+          # (batterycontrol_sensors.yaml) for every comparison that selects
+          # between distinct storage MODES, to avoid a momentary spike/dip
+          # at this 15-min trigger instant flipping the requested mode. See
+          # architecture.md - Layer 4A - PV/Load Sampling Smoothing.
+          pv: "{{ (states('sensor.pv_production_smoothed') | float(0)) }}"
+          house_load: "{{ (states('sensor.house_load_smoothed') | float(0)) }}"
+
+          # Instantaneous (unsmoothed) readings: used only in Maintain Zone,
+          # to choose between two charge-limit ceilings within the SAME mode
+          # (maximize_self_consumption either way) - no mode-flapping risk,
+          # so the current snapshot is used instead of a 4-minute-old
+          # average, letting that ceiling react to a real short PV/load
+          # change at each 15-min tick. See architecture.md - Layer 4A -
+          # PV/Load Sampling Smoothing.
+          pv_now: "{{ (states('sensor.solar_panel_production_w') | float(0)) }}"
+          house_load_now: "{{ (states('sensor.power_myhouse_load_no_var_loads') | float(0)) }}"
+
           ac_lim: "{{ (states('input_number.ac_maxpower') | float(0)) }}"
           batt_fc: "{{ (states('sensor.mpc_pv_batt_power') | float(0)) }}"
           grid_fc: "{{ (states('sensor.mpc_pv_grid_power') | float(0)) }}"
-          house_load: "{{ (states('sensor.power_myhouse_load_no_var_loads') | float(0)) }}"
           ev: "{{ (states('binary_sensor.ev_charging_on')) }}"
 
           price_import: "{{ (states('sensor.total_import_price') | float(0)) }}"
@@ -412,7 +428,7 @@ automation:
                   # PV > load: allow max charge, dynamic discharge (EV charging allowed)
                   - conditions:
                       - condition: template
-                        value_template: "{{ (pv > house_load) and (soc < (target + db)) }}"
+                        value_template: "{{ (pv_now > house_load_now) and (soc < (target + db)) }}"
                     sequence:
             # Shadow/requested state
                       - service: input_select.select_option
@@ -437,7 +453,7 @@ automation:
                   # Normal maintain zone: dynamic charge and discharge limits
                   - conditions:
                       - condition: template
-                        value_template: "{{ (pv <= house_load) or (batt_fc < 0) }}"
+                        value_template: "{{ (pv_now <= house_load_now) or (batt_fc < 0) }}"
                     sequence:
             # Shadow/requested state
                       - service: input_select.select_option

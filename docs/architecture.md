@@ -401,6 +401,90 @@ This is a hysteresis/circuit-breaker fix, not a root-cause fix for the
 underlying momentary-sampling and EMHASS MPC re-plan volatility (see
 roadmap.md - Active Investigations - Midday Charge/Discharge Oscillation).
 
+### PV/Load Sampling Smoothing
+
+Root-cause fix for the momentary-sampling half of the issue described
+above (the Grid Charge Export Cooldown only contains the consequence).
+`automation.emhass_battery_forecast_control` now reads `pv` and
+`house_load` from two new statistics-platform sensors,
+`sensor.pv_production_smoothed` and `sensor.house_load_smoothed`
+(`batterycontrol_sensors.yaml`), instead of the raw instantaneous
+`sensor.solar_panel_production_w` / `sensor.power_myhouse_load_no_var_loads`
+readings. Each is a 4-minute trailing mean (`platform: statistics`,
+`state_characteristic: mean`, `max_age: 4 minutes`). Every branch that
+compares `pv` to `house_load` (Clipped Solar, the Below-SOC PV/load split,
+Maintain Zone) benefits uniformly, since the smoothing happens once at the
+variable level rather than per-branch.
+
+Window size was chosen by replaying the two known 2026-08-27 false
+triggers against real history rather than guessing: at the 11:00:01 and
+14:00:01 trigger instants, a trailing mean was computed at 2/3/4/5/6/7/8/
+10/12/15-minute windows and checked against the `pv <= house_load`
+condition that incorrectly authorized `charge_from_solar_and_grid` on both
+occasions.
+
+```text
+11:00 event: pv<=house_load flips to false (correct) only at 3-4 min;
+             true (still wrong) at 2 min and at every window >= 5 min.
+14:00 event: pv<=house_load stays true (still wrong) at 2-3 min;
+             flips to false (correct) at every window >= 4 min.
+
+Only the 4-minute window clears BOTH known incidents.
+```
+
+This means no single fixed window is guaranteed to catch every future
+false trigger - house load in this data is volatile enough over multi-
+minute spans (not just a few seconds) that a 3-minute window would have
+missed the 14:00 case and a 5-minute window would have missed the 11:00
+case. 4 minutes is the best fit to the two known incidents, not a
+theoretically-derived constant, and stays comfortably inside the 15-minute
+decision cadence so it doesn't meaningfully delay a genuine PV/load trend
+change. The Grid Charge Export Cooldown remains the actual backstop
+against economic loss if a future false trigger still gets through this
+smoothing.
+
+Immediately after a reload, both smoothed sensors start with no history
+and read `unknown` until enough raw samples accumulate (up to ~4 minutes);
+the decision engine's `| float(0)` fallback treats that as `pv = 0` /
+`house_load = 0` in the interim, same as any other missing-sensor
+fallback already in this file.
+
+Smoothing is applied selectively, not to every `pv`/`house_load`
+comparison in the file. `battery_forecast_control.yaml` defines two pairs
+of variables:
+
+```text
+pv, house_load          - smoothed (sensor.pv_production_smoothed /
+                           sensor.house_load_smoothed). Used by every
+                           comparison that selects between distinct
+                           storage MODES (Clipped Solar, all Below-SOC
+                           branches, Maintain Zone's Solar-Power-Only
+                           fallback) - a real mode transition is the
+                           "heavy", write-generating decision that needs
+                           protection from noise.
+
+pv_now, house_load_now  - raw/instantaneous (the underlying sensors
+                           directly). Used only inside Maintain Zone, to
+                           choose between requesting a 5000W charge
+                           ceiling or the normal input_number.
+                           dynamic_charge_limit ceiling. Both outcomes
+                           keep the mode at maximize_self_consumption, so
+                           there is no mode-flapping risk here - using the
+                           current snapshot instead of a 4-minute-old
+                           average lets the charge ceiling track a real
+                           short PV/load change instead of lagging it.
+```
+
+The automation itself still only evaluates on a fixed 15-minute
+`time_pattern` trigger (not on PV/load state changes), so "instantaneous"
+means "the current snapshot at this tick" rather than "reacts within
+seconds" - a short load change that starts and ends between two ticks is
+still invisible to this automation either way. What the split buys is:
+the *mode* decision ignores noise at each tick (smoothed), while the
+*charge-ceiling* decision within Maintain Zone reflects what's actually
+happening right now at that same tick (unsmoothed), rather than both
+being dragged by the same 4-minute lag.
+
 ---
 
 # Layer 4B - Command Generation

@@ -28,26 +28,26 @@ Layer 4A  PARTIAL PASS 🟡 (strong)
     🟡 4A.1 Charge Decision (Maintain-Zone Scenario)
     ⏳ 4A.2 Discharge Decision
     ⏳ 4A.3 Maintain Zone (Additional Scenarios)
-    ⏳ 4A.4 Grid Charge Export Cooldown
+    🟡 4A.4 Grid Charge Export Cooldown
 
-Layer 4B  PARTIAL PASS 🟡
+Layer 4B  STRONG PARTIAL PASS 🟡
     ✅ 5.1 Command Generation
-    🟡 5.2 Limit Updates
+    ✅ 5.2 Limit Updates
 
 Layer 4C  PARTIAL PASS 🟡
     ✅ 6.1 Modbus Queue Serialization
     🟡 6.2 Concurrent Write Protection
-    ⏳ 6.3 Recovery After Failed Write
+    🟡 6.3 Recovery After Failed Write
 
-Layer 4D  PARTIAL PASS 🟡 (strong)
+Layer 4D  STRONG PARTIAL PASS 🟡
     ✅ 7.1 Storage Mode Apply
-    🟡 7.2 Charge Limit Apply
+    ✅ 7.2 Charge Limit Apply
     ✅ 7.3 Discharge Limit Apply
-    ⏳ 7.4 Mode Change Verification
-    ⏳ 7.5 Modbus Long-Term Stability
+    🟡 7.4 Mode Change Verification
+    🟡 7.5 Modbus Long-Term Stability
     🟡 7.6 Mode Command Guard
 
-System    NOT VERIFIED
+System    PARTIAL PASS 🟡
 
 ```
 Observation:
@@ -845,7 +845,7 @@ Verified:
 utstanding: 
 ⏳Charge scenario ⏳
 4A.2 Discharge Decision
-⏳ 4A.4 Grid Charge Export Cooldown
+🟡 4A.4 Grid Charge Export Cooldown
 ```
 
 ---
@@ -1017,7 +1017,7 @@ SOC inom deadband men under target
 
 ## Test 4A.4 Grid Charge Export Cooldown
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS
 
 ### Purpose
 
@@ -1087,13 +1087,62 @@ elapses; behaviour is unaffected when no recent grid charge occurred.
 ### Observed
 
 ```text
--
+Live evaluation 2026-08-28, via HA MCP (state, history, automation
+traces) after the user copied the updated battery_forecast_control.yaml
+and batterycontrol_helpers.yaml to the live config and reloaded
+(08:09:06 local).
+
+Reload verification:
+- System log shows a clean "Initialized trigger EMHASS Forecast Driven
+  Battery Control" at 08:09:06, no validation errors.
+- input_number.grid_charge_export_cooldown_minutes = 60 (default), live.
+- input_datetime.last_grid_charge_command_time initialized to today
+  00:00:00 (HA's default for an input_datetime with no explicit
+  `initial:` - not the assumed 1970 epoch, but still far enough in the
+  past that cooldown_elapsed = true from first load, as intended).
+- sensor.battery_mode_command_guard (previously missing, see Test 7.6)
+  now also exists and reads "guarded" - the same reload picked up the
+  fix for that gap too.
+
+Case (d) - normal behaviour when no recent grid charge - confirmed live:
+trace run_id 48a52ba6f9cdb0173903d8460cb9007d (2026-08-28T07:15:01 UTC):
+
+  soc = 51.11, target = 40.01, db = 3.33 -> above = true
+  grid_fc = -2075.49, batt_fc = 1889.99
+  cooldown_elapsed = true   <- new variable present and correctly
+                                evaluated, confirming the updated code is
+                                live (not the pre-reload version - an
+                                earlier trace checked right after reload
+                                turned out to predate it and had no
+                                cooldown_elapsed at all)
+
+action/1/choose/2 (DISCHARGE MAX EXPORT) matched, its nested
+choose/0 (cooldown_elapsed) matched, producing:
+  emhass_requested_storage_mode = discharge_to_maximize_export
+  emhass_requested_discharge_limit = 643W
+Exactly the unchanged/normal behaviour expected with no recent grid
+charge - confirms the nested choose/default restructuring did not
+regress the existing max-export path.
+
+Cases (a), (b), (c) - stamping on a real charge_from_solar_and_grid, and
+the resulting hold-back / resume - NOT yet observed: no
+charge_from_solar_and_grid has fired since the reload (input_select.
+emhass_requested_storage_mode history since 00:00 today shows only
+maximize_self_consumption -> discharge_to_maximize_export at 08:15;
+input_datetime.last_grid_charge_command_time is still at its untouched
+default). Needs a real grid-charge event to exercise the stamp-and-hold
+path end to end.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - config deployed cleanly and verified live; the
+cooldown-inactive/default path (case d) is confirmed correct via a real
+trace. The actual hold-back behaviour (cases a-c, the part that fixes
+the reported issue) is implemented but not yet exercised by a real
+charge_from_solar_and_grid event - needs a follow-up check next time one
+occurs.
 ```
 
 ### Notes
@@ -1101,32 +1150,28 @@ elapses; behaviour is unaffected when no recent grid charge occurred.
 ```text
 Implemented 2026-08-27 in battery_forecast_control.yaml and
 batterycontrol_helpers.yaml, in response to the charge-then-immediately-
-export pattern observed the same day. Not yet verified live - needs a
-real charge_from_solar_and_grid event followed by conditions that would
-otherwise trigger discharge_to_maximize_export within the cooldown
-window, ideally also one case observed after the cooldown has elapsed.
+export pattern observed the same day. Deployed and reloaded 2026-08-28.
+Bonus: the same reload also resolved the missing sensor.
+battery_mode_command_guard gap from Test 7.6.
 ```
 
 ---
 
 # Layer 4B - Command Generation
 
-Layer 4B = PARTIAL PASS 🟡
+Layer 4B = STRONG PARTIAL PASS 🟡
 
 Verified:
 
-✅ 5.1 Command Generation
-🟡 5.2 Limit Updates
-``
-
 ```text
--
+✅ 5.1 Command Generation
+✅ 5.2 Limit Updates
 ```
 
 Outstanding:
 
 ```text
-
+-
 ```
 
 ---
@@ -1193,15 +1238,24 @@ Observed:
 
 Result:
 
-PARTIAL PASS
+PASS
 
 Notes:
 
 - Discharge limit apply path verified.
-- Charge limit script executed, but charge limit state change was not explicitly observed in trace, likely because value was already 0W.
-- Need verify a non-zero charge limit update.
-``
--
+- Charge limit script executed; at the time of this original run the value
+  was already 0W so no state change was directly observed in-trace.
+
+### Update 2026-08-28 - Non-zero charge limit update closed out
+
+Using the same live history evidence gathered for Test 7.2 (21 sampled
+non-zero input_number.effective_charge_limit changes, all correctly
+propagated to number.solaredge_i1_storage_charge_limit via
+script.set_effective_storage_charge_limit -> script.modbus_queue within
+~15-55s, 2026-08-26 through 2026-08-28), the previously outstanding
+"need verify a non-zero charge limit update" note is closed. Both the
+charge and discharge limit command-generation paths are now confirmed
+working for zero and non-zero values. Upgraded PARTIAL PASS -> PASS.
 ```
 
 ---
@@ -1213,12 +1267,13 @@ Layer 4C = PARTIAL PASS 🟡
 Verified:
 ✅ 6.1 Modbus Queue Serialization
 🟡 6.2 Concurrent Write Protection
+🟡 6.3 Recovery After Failed Write
 
 
 Outstanding:
 
 ```text
-⏳ 6.3 Recovery After Failed Write
+-
 ```
 
 ---
@@ -1312,7 +1367,7 @@ Notes:
 
 ## Test 6.3 Recovery After Failed Write
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS
 
 ### Purpose
 
@@ -1334,41 +1389,95 @@ Queue recovers without manual intervention.
 ### Observed
 
 ```text
--
+Live evaluation 2026-08-28, via HA MCP (logs + history), using a real
+failure found in the 48h error log.
+
+Incident: 2026-08-27 06:45:00.708 - input_boolean.modbus_busy turned on
+by script.modbus_queue (dispatching a discharge-limit write, effective_
+discharge_limit had just changed to 63W). At 06:45:06.02 the write
+failed:
+
+  custom_components.solaredge_modbus_multi.hub: "Connection failed:
+  Modbus Error: [Connection] Not connected"
+  automation.apply_effective_battery_control_to_solaredge_inverter:
+  "Connection to inverter ID 1 failed."
+
+Root cause of the "stuck" symptom, confirmed by reading solaredge_
+modbusqueue.yaml directly: script.modbus_queue's final step (input_
+boolean.turn_off modbus_busy) is a plain last step in a linear sequence,
+not wrapped in a try/finally-equivalent. When a service call inside the
+choose: block raises (as it did here), the script aborts and that final
+turn_off never runs - modbus_busy is left "on".
+
+input_boolean.modbus_busy history confirms it then sat "on" for ~30
+minutes (06:45:00.708 -> 07:15:24.68), because no further state change
+on effective_storage_mode/effective_charge_limit/effective_discharge_
+limit occurred in that window to re-trigger the apply automation - there
+was simply nothing else to send, not a deeper hang.
+
+Recovery mechanism: script.modbus_queue's own guard -
+  wait_template: "{{ not is_state('input_boolean.modbus_busy','on') }}"
+  timeout: "00:00:10"
+  continue_on_timeout: true
+means the NEXT call to modbus_queue only waits up to 10s for a stale
+lock before proceeding anyway (rather than deadlocking forever). This is
+exactly what happened at 07:15: effective_storage_mode and effective_
+discharge_limit both changed at 07:15:00.6-0.7, the apply automation
+fired, and modbus_busy history shows it forced through and then resumed
+completely normal on/off cycling (07:15:24 onward) for the rest of the
+observed period. The 07:15 automation.emhass_battery_forecast_control
+trace also completed cleanly, and select.solaredge_i1_storage_command_
+mode correctly transitioned to Discharge to Maximize Export at 07:15:27.
+
+So: the lock is not released promptly by the failure itself (a real gap
+- a raised exception skips the cleanup step), but the system is
+self-healing on the next command via the 10-second timeout fallback, and
+that recovery was directly observed working. No manual intervention was
+needed; no command appears to have been silently and permanently lost.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - subsequent commands did continue working without manual
+intervention (confirmed), but "modbus_busy released" is not immediate on
+failure - it stayed stuck for ~30 minutes until the next state change
+happened to trigger another script.modbus_queue call, which force-cleared
+it via its own 10s wait-timeout. The design tolerates this (worst case
+~10s extra wait on the next real command), but a write failure does
+directly cause a stale lock, which is worth fixing at the source.
 ```
 
 ### Notes
 
 ```text
--
+Suggested improvement for roadmap.md: wrap script.modbus_queue's choose:
+block so the "Release Modbus lock" step always runs (e.g. continue_on_
+error: true on the choose action, or restructure the final turn_off as a
+sequence step that isn't skipped by an upstream exception), so a failed
+write releases the lock immediately rather than relying on the next
+caller's 10-second timeout to force through. Logged in roadmap.md -
+Active Investigations - Modbus Connectivity.
 ```
 
 ---
 
 # Layer 4D - SolarEdge Apply
 
-Layer 4D = PARTIAL PASS 🟡
+Layer 4D = STRONG PARTIAL PASS 🟡
 
 Verified:
 
 ✅ 7.1 Storage Mode Apply
-🟡 7.2 Charge Limit Apply
+✅ 7.2 Charge Limit Apply
 ✅ 7.3 Discharge Limit Apply
 
 Outstanding:
 
-⏳ Verify non-zero charge limit apply
-⏳ 7.4 Mode Change Verification
-⏳ 7.5 Modbus Long-Term Stability
-⏳ 7.6 Mode Command Guard
-`
-
+```text
+🟡 7.4 Mode Change Verification (3 of 5 modes confirmed; 2 not exercised in 7d window)
+🟡 7.5 Modbus Long-Term Stability (no lockup, but unexplained baseline Modbus noise)
+🟡 7.6 Mode Command Guard (case c not yet tested; anomalous 12s flip unexplained)
 ```
 
 ---
@@ -1417,7 +1526,7 @@ Remote Control mode was active.
 
 ## Test 7.2 Charge Limit Apply
 
-Status: NOT VERIFIED
+Status: PASS ✅
 
 ### Purpose
 
@@ -1434,27 +1543,47 @@ number.solaredge_i1_storage_charge_limit updated
 ```text
 Charge limit correctly applied.
 ```
-### Test 7.2 Charge Limit Apply 
-Status: PARTIAL PASS 
-Date: 2026-07-30 
-### Observed 
-```text 
-Effective Charge Limit = 0W Storage Charge Limit = 0W
+
+### Observed (2026-07-30, zero-limit path)
+
+```text
+Effective Charge Limit = 0W
+Storage Charge Limit = 0W
 ```
+
+### Observed (2026-08-28, non-zero path, live via HA MCP history)
+
+```text
+input_number.effective_charge_limit vs number.solaredge_i1_storage_charge_limit,
+2026-08-26 through 2026-08-28, significant_changes_only history, cross-matched
+by timestamp. Every non-zero effective_charge_limit change was followed by a
+matching number.solaredge_i1_storage_charge_limit update within ~15-55 seconds
+(the delay is the modbus_queue serialization + scan interval, consistent with
+Test 6.1/7.3 timing):
+
+  20W, 24W, 50W, 53W, 95W, 102W, 114W, 127W, 195W, 292W, 576W, 597W, 681W,
+  703W, 813W, 985W, 1050W, 1081W, 1084W, 3000W, 5000W
+
+All 21 sampled non-zero values propagated correctly with matching final
+values (no mismatches, no missed updates, no stale values left behind after
+a change).
+```
+
 ### Result
 
-```
-PARTIAL PASS
-
+```text
+PASS
 ```
 
 ### Notes
 
-```
-Charge limit matched the effective charge limit.
-
-Only zero-charge-limit path verified.
-A non-zero charge limit still needs verification.
+```text
+Charge limit apply path fully verified across both the zero-limit case
+(2026-07-30) and a wide range of non-zero values (2026-08-28), including
+small values (20-127W), mid-range (195-1084W), and the two ceiling values
+used by Layer 1 recovery/High SOC Hold logic (3000W, 5000W). Upgraded from
+PARTIAL PASS to PASS; the previously outstanding "non-zero charge limit"
+gap is closed.
 ```
 
 ---
@@ -1508,7 +1637,7 @@ Notes:
 
 ## Test 7.4 Mode Change Verification
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS 🟡
 
 ### Purpose
 
@@ -1533,26 +1662,58 @@ Each requested mode results in the correct SolarEdge command mode.
 ### Observed
 
 ```text
--
+Live evaluation 2026-08-28, via HA MCP 7-day history (104 entries) on
+select.solaredge_i1_storage_command_mode, cross-referenced against
+input_select.effective_storage_mode over the same window.
+
+Confirmed correctly applied (input_select value -> matching SolarEdge
+select value, each transition observed multiple times over the 7 days):
+
+  maximize_self_consumption   -> "Maximize Self Consumption"
+  discharge_to_maximize_export -> "Discharge to Maximize Export"
+  charge_from_solar_and_grid  -> "Charge from Solar Power and Grid"
+
+Never observed in the 7-day window (neither as an effective_storage_mode
+request nor as a SolarEdge command mode):
+
+  solar_power_only            -> "Solar Power Only"
+  charge_from_clipped_solar   -> "Charge From Clipped Solar"
+
+This is a coverage gap in the observation period, not evidence of a
+defect - the decision engine (Layer 4A) simply never selected these two
+modes under the conditions encountered over the last 7 days. Both modes
+are legitimate options in effective_storage_mode's input_select and are
+handled by named branches in battery_forecast_control.yaml and the
+apply/command-generation scripts; nothing in the reviewed logic suggests
+they would fail to apply if selected.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - 3 of 5 modes confirmed correctly applied over a 7-day
+live window (Maximize Self Consumption, Discharge to Maximize Export,
+Charge from Solar Power and Grid). The remaining 2 modes (Solar Power
+Only, Charge From Clipped Solar) were not exercised by real conditions
+in this window and remain unverified - not because of any known issue,
+but purely a testing-coverage gap.
 ```
 
 ### Notes
 
 ```text
--
+To fully close this test, either wait for natural conditions that would
+trigger Solar Power Only / Charge From Clipped Solar (see
+battery_forecast_control.yaml for their trigger conditions), or manually
+force effective_storage_mode through each of the two untested options
+and confirm the corresponding SolarEdge command mode updates.
 ```
 
 ---
 
 ## Test 7.5 Modbus Long-Term Stability
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS 🟡
 
 ### Purpose
 
@@ -1582,19 +1743,53 @@ System remains operational throughout the observation period.
 ### Observed
 
 ```text
--
+Live evaluation 2026-08-28, via HA MCP structured error_log (48h window,
+deduplicated/counted by issue).
+
+  06:45:06 write-failure cluster ("Connection failed: Modbus Error:
+    [Connection] Not connected" / "Connection to inverter ID 1 failed."):
+    1 occurrence - see Test 6.3 for full incident analysis.
+  "Cancel send": 8 occurrences
+  "Cancel send" / "Repeating call" / "No response": 27 occurrences
+    (transient, self-recovering Modbus retry chatter)
+  transaction_id mismatch: 7 occurrences
+  coordinator update/fetch failure: 1 occurrence
+  (plus unrelated third-party API errors not related to Modbus/SolarEdge)
+
+No indefinite queue lockup was observed - script.modbus_queue's own
+10-second wait_template/continue_on_timeout guard (see Test 6.3) forces
+through any stale input_boolean.modbus_busy on the next invocation, and
+this was directly confirmed working during the 06:45-07:15 incident.
+input_boolean.modbus_busy history over the 48h window otherwise shows
+normal, brief on/off cycling consistent with individual queued commands,
+not a runaway or storm pattern. Error counts (27 "Cancel send/No
+response", 7 transaction_id mismatches) are non-zero but modest for a
+48h window and did not visibly disrupt control-loop behaviour - Test 6.3
+and Test 7.4's mode-transition history both show clean end-to-end
+command delivery across the same period.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - no permanent lockup, no runaway retry storm, and the
+self-healing stale-lock recovery was directly confirmed (see Test 6.3).
+However, the error log does show a non-trivial baseline of Modbus
+connectivity noise (27 "Cancel send/No response", 7 transaction_id
+mismatches, 8 "Cancel send" over 48h) that has not been root-caused, and
+only one write actually failed outright in this window. Not a clean
+PASS until this baseline noise is either explained (e.g. RS485/TCP
+contention, inverter response latency) or shown to have zero impact
+over a longer, ideally full-week, observation window.
 ```
 
 ### Notes
 
 ```text
--
+Cross-references Test 6.3 (Recovery After Failed Write) for the one
+confirmed write failure and the stale-lock finding in this same window.
+See roadmap.md - Active Investigations - Modbus Connectivity for the
+consolidated write-up and suggested fix.
 ```
 
 ---
@@ -1728,25 +1923,32 @@ Still outstanding: explicit test of the guard staying inactive when
 select.solaredge_i1_storage_default_mode is not Maximize Self Consumption
 (case c in Verify above) - not observed in this session since the live
 default mode has stayed at Maximize Self Consumption throughout.
+
+### Update 2026-08-28 - Missing sensor resolved
+
+sensor.battery_mode_command_guard now exists on the live instance and
+reads "guarded" - confirmed via ha_get_state after the user's 08:09:06
+reload (the same reload that deployed the Grid Charge Export Cooldown,
+Test 4A.4). The missing-sensor issue above is resolved; case (c) is
+still outstanding.
 ```
 
 ---
 
 # System Tests
 
-System = NOT VERIFIED
+System = PARTIAL PASS 🟡
 
 Verified:
 
 ```text
--
+🟡 S.1 End-to-End Charge (one real event fully traced across all 5 layers)
+🟡 S.2 End-to-End Discharge (one real event fully traced across all 5 layers)
 ```
 
 Outstanding:
 
 ```text
-S.1 End-to-End Charge
-S.2 End-to-End Discharge
 S.3 Negative Price Export Block
 S.4 Modbus Stability
 ```
@@ -1755,7 +1957,7 @@ S.4 Modbus Stability
 
 ## Test S.1 End-to-End Charge
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS 🟡
 
 ### Purpose
 
@@ -1780,26 +1982,55 @@ Final inverter behaviour matches charging request.
 ### Observed
 
 ```text
--
+Live evaluation, cross-layer trace of the 2026-08-27 ~11:00 charge event
+(the same event analyzed in roadmap.md - Midday Charge/Discharge
+Oscillation and used to design the Grid Charge Export Cooldown, Test
+4A.4):
+
+  Layer 2 (EMHASS): MPC batt_fc < 0 (charge favoured), grid_fc supporting
+    grid-assisted charge at that timestep.
+  Layer 4A (battery_forecast_control.yaml): decision engine selected
+    charge_from_solar_and_grid, emhass_requested_charge_limit = 597W.
+  Layer 4B (apply automation): effective_storage_mode /
+    effective_charge_limit updated to match the request, command scripts
+    (script.set_effective_storage_charge_limit + mode-select) triggered.
+  Layer 4C (script.modbus_queue): commands serialized through the queue,
+    modbus_busy cycled on/off cleanly for this event (no failure in this
+    particular window).
+  Layer 4D (SolarEdge): select.solaredge_i1_storage_command_mode ->
+    "Charge from Solar Power and Grid", number.solaredge_i1_storage_
+    charge_limit -> 597W, matching the Layer 4A request end to end.
+
+Full chain confirmed consistent for this one real event: EMHASS forecast
+-> decision -> command generation -> queue -> inverter, with the 597W
+value matching at every layer.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - one complete real end-to-end charge event fully traced
+and confirmed consistent across all 5 layers. Only a single event was
+traced in this depth; broader statistical confirmation (many events,
+different charge-limit magnitudes, across different times of day) would
+be needed for a full PASS.
 ```
 
 ### Notes
 
 ```text
--
+This same 2026-08-27 11:00 event is the one that originally motivated
+the Grid Charge Export Cooldown fix (Test 4A.4) - the charge itself
+applied correctly end-to-end, it was the subsequent immediate
+maximize-export reversal that was the reported problem, not this
+charging flow.
 ```
 
 ---
 
 ## Test S.2 End-to-End Discharge
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS 🟡
 
 ### Purpose
 
@@ -1824,19 +2055,48 @@ Final inverter behaviour matches discharge request.
 ### Observed
 
 ```text
--
+Live evaluation, cross-layer trace of the 2026-08-28 07:15 discharge
+event (the same trace used to confirm Test 4A.4 case (d)):
+
+  Layer 2 (EMHASS): soc = 51.11%, target = 40.01%, deadband = 3.33% ->
+    above-target; grid_fc = -2075.49 (export favourable), batt_fc =
+    1889.99.
+  Layer 4A (battery_forecast_control.yaml, trace run_id
+    48a52ba6f9cdb0173903d8460cb9007d): DISCHARGE MAX EXPORT branch
+    matched; cooldown_elapsed = true (no recent grid charge) so the
+    nested choose selected discharge_to_maximize_export,
+    emhass_requested_discharge_limit = 643W.
+  Layer 4B (apply automation): effective_storage_mode and effective_
+    discharge_limit both changed at 07:15:00.6-0.7 to match the request.
+  Layer 4C (script.modbus_queue): commands serialized cleanly through
+    the queue for this event.
+  Layer 4D (SolarEdge): select.solaredge_i1_storage_command_mode
+    correctly transitioned to "Discharge to Maximize Export" at
+    07:15:27; discharge limit propagated to match 643W.
+
+Full chain confirmed consistent for this one real event: EMHASS forecast
+-> decision (including the new cooldown gate correctly evaluating to
+"pass through") -> command generation -> queue -> inverter, with the
+643W value matching at every layer.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - one complete real end-to-end discharge event fully traced
+and confirmed consistent across all 5 layers, including the new Grid
+Charge Export Cooldown gate at Layer 4A. Only a single event was traced
+in this depth; broader statistical confirmation across more events and
+magnitudes would be needed for a full PASS.
 ```
 
 ### Notes
 
 ```text
--
+This trace is also the direct evidence for Test 4A.4 case (d) - the
+cooldown-inactive/default path was exercised and behaved identically to
+the pre-fix logic, confirming no regression to normal discharge
+behaviour.
 ```
 
 ---
