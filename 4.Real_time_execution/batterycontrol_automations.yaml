@@ -1,15 +1,24 @@
+################################################################################
+# Layer 4A support automations: EV-charging discharge limiting, dynamic
+# charge/discharge helper synchronization from the SOC-forecast-derived
+# sensors, SOC target tracking from the latest EMHASS forecast, and grid-
+# charge average price tracking used by the Grid Charge Export Cooldown
+# logic. See architecture.md - Layer 4A for the wider decision engine
+# these automations feed and are fed by.
+################################################################################
+
 automation:
 
   - id: ev_charging_discharge_control
     alias: "EV Charging Discharge Control"
     trigger:
       - platform: state
-        entity_id: binary_sensor.ev_charging_on
+        entity_id: binary_sensor.ev_charging_active
     action:
       - choose:
           - conditions:
               - condition: state
-                entity_id: binary_sensor.ev_charging_on
+                entity_id: binary_sensor.ev_charging_active
                 state: "on"
             sequence:
             
@@ -22,7 +31,7 @@ automation:
 
           - conditions:
               - condition: state
-                entity_id: binary_sensor.ev_charging_on
+                entity_id: binary_sensor.ev_charging_active
                 state: "off"
             sequence:
        # Shadow/requested state
@@ -181,7 +190,3 @@ automation:
           entity_id: input_number.average_last_chargingprice
         data:
           value: 0
-
-
-
-

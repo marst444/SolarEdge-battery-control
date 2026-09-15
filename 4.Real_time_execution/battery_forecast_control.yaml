@@ -46,7 +46,7 @@ automation:
           ac_lim: "{{ (states('input_number.ac_maxpower') | float(0)) }}"
           batt_fc: "{{ (states('sensor.mpc_pv_batt_power') | float(0)) }}"
           grid_fc: "{{ (states('sensor.mpc_pv_grid_power') | float(0)) }}"
-          ev: "{{ (states('binary_sensor.ev_charging_on')) }}"
+          ev: "{{ (states('binary_sensor.ev_charging_active')) }}"
 
           price_import: "{{ (states('sensor.total_import_price') | float(0)) }}"
           last_average_chargingprice: "{{ (states('input_number.average_last_chargingprice') | float(0) * 1.2) }}"
@@ -311,10 +311,11 @@ automation:
                           value: 0
 
 
-                  # Below and No PV, BattForecast is 0, and prices up >20% fallback to solar-only (off)
+                  # Below and No PV, BattForecast is 0: reached only if the price-based
+                  # fallback above didn't match - solar-only regardless of grid_fc sign.
                   - conditions:
                       - condition: template
-                        value_template: "{{ (pv == 0) and (batt_fc == 0) and (grid_fc > 0) }}"
+                        value_template: "{{ (pv == 0) and (batt_fc == 0) }}"
                     sequence:
             # Shadow/requested state
                       - service: input_select.select_option
@@ -335,12 +336,13 @@ automation:
                         data:
                           value: 0
 
-
           # ===== DISCHARGE MAX EXPORT =====
-          # SOC is maintain or above, EV is off, GridForecast is export, BattForecast is discharge
+          # SOC is maintain or above, EV is off, GridForecast is export, BattForecast is
+          # discharge or flat. Still subject to the Grid Charge Export Cooldown check below,
+          # so a recent grid-assisted charge is not immediately sold back.
           - conditions:
               - condition: template
-                value_template: "{{ (maintain or above) and (soc > soc_min) and (grid_fc < 0) and (batt_fc > 0) }}"
+                value_template: "{{ (maintain or above) and (soc > soc_min) and (grid_fc < 0) and (batt_fc >= 0) }}"
             sequence:
               - choose:
 

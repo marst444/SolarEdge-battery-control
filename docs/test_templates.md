@@ -77,8 +77,8 @@ House Load No Var Loads No EV:
 EV Charging Power:
 {{ states('sensor.ev_charging_power_w') }}
 
-EV Charging On:
-{{ states('binary_sensor.ev_charging_on') }}
+EV Charging Active:
+{{ states('binary_sensor.ev_charging_active') }}
 
 
 ## SolarEdge / Grid Meter

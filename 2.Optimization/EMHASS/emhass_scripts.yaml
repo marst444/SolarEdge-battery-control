@@ -1,23 +1,27 @@
 #####################################################
 #    Sensors in "Generate EMHASS energy plan mpc_pv"
 #
-#.   Sensors:   
-#    Energy_capacity: kWh
-#    Chargin/discharging_power: W
-#    Max inverter power: kw
+#    Sensors:
+#    Energy capacity: kWh
+#    Charging/discharging power: W
+#    Max inverter power: kW
 #    Battery SOC: %
-#    Consumed power = sensor no load var loads W
-#    Current power = solar panel production W
-#    electricity_price: Sek/kWh
+#    Consumed power = sensor no load var loads (W)
+#    Current power = solar panel production (W)
+#    Electricity price: SEK/kWh
 #
-#    The plan uses a forecast produced by EMHASS using ML predict and publish to sensor.p_load_forecast_ml 
-#    The plan use the MPC (Model Predictive Control)
-#    An Automation use a timebased trigger to run the script and set up the plan.
+#    The plan uses a load forecast produced by EMHASS's ML predict step,
+#    published to sensor.p_load_forecast_ml_pv.
+#    The plan uses MPC (Model Predictive Control).
+#    An automation uses a time-based trigger to run this script and set
+#    up the plan.
 #
-#    This script is a modification of the script created by Brendan Annable for SiegenEnergy
-#    https://sigenergy.annable.me/
-#
-####################################################
+#    This script is a modification of the script created by Brendan
+#    Annable for Sigenergy: https://sigenergy.annable.me/
+#####################################################
+# MPC energy plan: builds payload from live sensors, calls EMHASS naive-mpc
+# optim, publishes results. Attribution/details: README.md.
+#####################################################
 
 script:
 
@@ -28,7 +32,7 @@ script:
           costfun: profit
           maximum_power_from_grid: 15000
           maximum_power_to_grid: 5000
-          battery_minimum_percent: 20
+          battery_minimum_percent: "{{ states('input_number.minimum_state_of_charge') | float(20) }}"
         alias: Configure critical settings
       - variables:
           num_prediction_days: 2
@@ -43,13 +47,13 @@ script:
 
           sensors:
             energy_capacity: sensor.solaredge_b1_maximum_energy
-            charging_power: sensor.solaredge_b1_max_charge_power 
-            discharging_power: sensor.solaredge_b1_max_discharge_power 
+            charging_power: sensor.solaredge_b1_max_charge_power
+            discharging_power: sensor.solaredge_b1_max_discharge_power
             max_inverter_power: sensor.max_active_power_1
-            battery_soc: sensor.solaredge_b1_state_of_energy 
-            consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev 
+            battery_soc: sensor.solaredge_b1_state_of_energy
+            consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev
             solar:
-              current_power: sensor.solar_panel_production_w 
+              current_power: sensor.solar_panel_production_w
               forecasts:
               - sensor.solcast_pv_forecast_forecast_today
               - sensor.solcast_pv_forecast_forecast_tomorrow
@@ -62,7 +66,7 @@ script:
               nominal_power: sensor.emhass_ev_nominal_charging_power_w
               minimum_power: sensor.emhass_ev_minimum_charging_power_w
               departure: sensor.ev_effective_departure
-              
+
         alias: Configure sensor entities
 
       - variables:
@@ -89,7 +93,7 @@ script:
             weight_battery_charge: '{{ weight_battery_charge }}'
             weight_battery_discharge: '{{ weight_battery_discharge }}'
             battery_minimum_state_of_charge: '{{ battery_minimum_percent / 100 }}'
-            battery_maximum_state_of_charge: 0.9
+            battery_maximum_state_of_charge: "{{ states('input_number.maximum_state_of_charge') | float(90) / 100 }}"
             battery_nominal_energy_capacity: '{{ (states(sensors.energy_capacity) | float(0) * 1000) | round }}'
             battery_charge_power_max: '{{ (states(sensors.charging_power) | float(0)) | round }}'
             battery_discharge_power_max: '{{ (states(sensors.discharging_power) | float(0)) | round }}'
@@ -232,26 +236,22 @@ script:
           payload: >
             {{ dict(common, **payload) | to_json }}
         alias: Publish Energy Plan to HA
-        
+
 #####################################################
 #    Sensors in "Generate EMHASS energy plan dayahead_pv"
 #
-#.   Sensors:   
-#    Energy_capacity: kWh
-#    Chargin/discharging_power: W
-#    Max inverter power: kw
-#    Battery SOC: %
-#    Consumed power = sensor no load var loads W
-#    Current power = solar panel production W
-#    electricity_price: Sek/kWh
+#    Same sensor set as the MPC plan above (see the header on
+#    generate_emhass_energy_plan_mpc_pv) - Energy capacity, charging/
+#    discharging power, max inverter power, battery SOC, consumed power,
+#    current PV power, electricity price.
 #
-#    The plan uses a forecast produced by EMHASS using ML predict and publish to sensor.p_load_forecast_ml 
-#    The plan use the dayahead plan function in EMHASS
-#    An Automation run everey evening as trigger to run the script and set up the plan.
-#    This script is a modification of the script created by Brendan Annable for SiegenEnergy
-#    https://sigenergy.annable.me/
-#
-####################################################
+#    Builds EMHASS's day-ahead optimisation plan (dayahead-optim) rather
+#    than the rolling MPC plan. An automation triggers this script once
+#    per day.
+#####################################################
+# Day-ahead energy plan: same pattern as MPC (see above), using EMHASS
+# dayahead-optim. Attribution/details: README.md.
+#####################################################
   generate_emhass_energy_plan_dh_pv:
     alias: "generate EMHASS energy plan dayahead_PV"
     sequence:
@@ -259,7 +259,7 @@ script:
           costfun: profit
           maximum_power_from_grid: 15000
           maximum_power_to_grid: 5000
-          battery_minimum_percent: 20
+          battery_minimum_percent: "{{ states('input_number.minimum_state_of_charge') | float(20) }}"
         alias: Configure critical settings
       - variables:
           num_prediction_days: 2
@@ -271,16 +271,16 @@ script:
           number_of_deferrable_loads: 1
         alias: Configure secondary settings
       - variables:
-      
+
           sensors:
             energy_capacity: sensor.solaredge_b1_maximum_energy
-            charging_power: sensor.solaredge_b1_max_charge_power 
-            discharging_power: sensor.solaredge_b1_max_discharge_power 
+            charging_power: sensor.solaredge_b1_max_charge_power
+            discharging_power: sensor.solaredge_b1_max_discharge_power
             max_inverter_power: sensor.max_active_power_1
-            battery_soc: sensor.solaredge_b1_state_of_energy 
-            consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev 
+            battery_soc: sensor.solaredge_b1_state_of_energy
+            consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev
             solar:
-              current_power: sensor.solar_panel_production_w 
+              current_power: sensor.solar_panel_production_w
               forecasts:
               - sensor.solcast_pv_forecast_forecast_today
               - sensor.solcast_pv_forecast_forecast_tomorrow
@@ -293,7 +293,7 @@ script:
               nominal_power: sensor.emhass_ev_nominal_charging_power_w
               minimum_power: sensor.emhass_ev_minimum_charging_power_w
               departure: sensor.ev_effective_departure
-              
+
         alias: Configure sensor entities
 
       - variables:
@@ -320,7 +320,7 @@ script:
             weight_battery_charge: '{{ weight_battery_charge }}'
             weight_battery_discharge: '{{ weight_battery_discharge }}'
             battery_minimum_state_of_charge: '{{ battery_minimum_percent / 100 }}'
-            battery_maximum_state_of_charge: 0.9
+            battery_maximum_state_of_charge: "{{ states('input_number.maximum_state_of_charge') | float(90) / 100 }}"
             battery_nominal_energy_capacity: '{{ (states(sensors.energy_capacity) | float(0) * 1000) | round }}'
             battery_charge_power_max: '{{ (states(sensors.charging_power) | float(0)) | round }}'
             battery_discharge_power_max: '{{ (states(sensors.discharging_power) | float(0)) | round }}'
@@ -457,9 +457,9 @@ script:
         data:
           payload: >
             {{ dict(common, **payload) | to_json }}
-        alias: Publish Energy Plan to HA  
-  
-    
+        alias: Publish Energy Plan to HA
+
+
   run_mlforecast_fit_load:
     alias: "Run ML load Forecast Fit load"
     sequence:
@@ -518,7 +518,7 @@ script:
           entity_id: input_number.mpc_prediction_horizon
         data:
           value: "{{ prediction_horizon | float(0) }}"
-          
+
 
   set_mpc_soc_final_target:
     alias: "Set MPC SOC Final Target"

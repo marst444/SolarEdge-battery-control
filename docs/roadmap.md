@@ -1,6 +1,6 @@
 # SolarEdge Battery Control Roadmap
 
-This document tracks future improvements, cleanup activities, investigations and diagnostics enhancements for the SolarEdge Battery Control package.
+This document tracks future improvements, cleanup activities, investigations and diagnostics enhancements for the SolarEdge Battery Control package. Implemented fixes and known issues - including deployment/verification status - are tracked separately in `known_issues_and_fixes.md`, most recent first. Everything in this document is still open.
 
 ---
 
@@ -8,18 +8,7 @@ This document tracks future improvements, cleanup activities, investigations and
 
 ## HIGH
 
-### Align Safety SOC Limits And EMHASS SOC Limits
-
-Safety layer and EMHASS currently maintain separate minimum SOC settings.
-
-Examples:
-
-```text
-input_number.minimum_state_of_charge
-battery_minimum_percent
-```
-
-Evaluate using a single source of truth for battery minimum SOC.
+(No open HIGH items - "Align Safety SOC Limits And EMHASS SOC Limits" was fixed 2026-09-03, see known_issues_and_fixes.md.)
 
 ---
 
@@ -39,6 +28,8 @@ maximum_power_to_grid
 ```
 
 Evaluate moving these values into dedicated helpers so that they can be adjusted without modifying scripts.
+
+Note: `battery_minimum_percent` and `battery_maximum_state_of_charge` were already moved onto existing helpers as part of the Align Safety/EMHASS SOC Limits fix (2026-09-03, see known_issues_and_fixes.md) - only `maximum_power_from_grid` and `maximum_power_to_grid` remain hardcoded and in scope here.
 
 ---
 
@@ -249,6 +240,45 @@ observation window to see whether these correlate with write bursts,
 mode-command-guard skip patterns, or something environmental (RS485/TCP
 contention, inverter response latency).
 
+Note: the same 48h error-log review used for test_plan.md Test 7.5 found a
+non-trivial baseline of Modbus connectivity noise (27x "Cancel send"/
+"Repeating call"/"No response", 7x transaction_id mismatch) that made this
+stale-lock fix unsafe to reintroduce naively - a bare `continue_on_error:
+true` on script.modbus_queue's release step could let a queued backlog
+(mode: queued, max: 10) drain rapidly with no pacing against a connection
+that's still struggling, which is plausibly what caused a past attempt at
+that same fix to flood the system with commands. That fix is intentionally
+left alone for now (self-healing via the existing 10s wait-timeout is
+considered acceptable, see test_plan.md Test 6.3) in favour of lower-risk
+fixes elsewhere.
+
+### Update 2026-09-10 - Two new real Modbus write failures found
+
+The deeper charge/discharge review's Modbus sampling (5 windows across
+2026-09-04 through 2026-09-10, explicitly not exhaustive 6-day coverage)
+turned up two actual command **write** failures - not the usual poll/read
+noise - on 2026-09-08 22:45:02 and 2026-09-10 13:30:03: "Modbus
+Queue...Modbus Error: [Input/Output] Request cancelled outside library".
+Not previously documented. Same sampling also re-confirmed the baseline
+connectivity noise is essentially unchanged from the 2026-08-28 finding
+above (still present, similar magnitude). Not yet root-caused or
+correlated with anything specific; noted here for whoever picks up this
+investigation next.
+
+### SOC-sensor unavailable false-trigger - fixed 2026-09-03
+
+A separate, higher-severity issue in the same connectivity family (a
+transient `sensor.solaredge_b1_state_of_energy` dropout spuriously
+commanding a real Layer 1 grid-charge) was found and fixed 2026-09-03,
+and confirmed durably effective over a full week as of 2026-09-10 - see
+known_issues_and_fixes.md for the full write-up. The underlying nightly
+dropout itself (root cause still in this Modbus Connectivity
+investigation, not the SOC-sensor fix) continues unchanged at 6/6 nights,
+38-45s each, with a newly-noticed pattern: each night's episode lands
+~11-13 minutes earlier than the previous night's (drifting ~22:00 ->
+~21:13 over the 6 nights checked 2026-09-04 through 2026-09-09) - a
+possible clue for whoever chases the ~22:00 clustering question above.
+
 ---
 
 ## Dynamic Discharge Oscillation
@@ -267,7 +297,7 @@ control loop instability
 
 ## Midday Charge/Discharge Oscillation (Uneconomical)
 
-### Update 2026-08-27 - Diagnosed and mitigated with Grid Charge Export Cooldown
+### Update 2026-08-27 - Diagnosed root cause
 
 Reported: on 2026-08-27, during a low-export-price midday window
 (`sensor.total_export_price` ~0.95-1.05 SEK/kWh vs.
@@ -325,19 +355,9 @@ little disincentive against a chattering trajectory. This was NOT fixed
 in this pass - see "Still open" below.
 ```
 
-Fix implemented (`battery_forecast_control.yaml`, `batterycontrol_helpers.yaml`):
-a **Grid Charge Export Cooldown**, following the same hysteresis pattern
-already used by `battery_high_soc_hold`. Whenever
-`charge_from_solar_and_grid` fires, `input_datetime.
-last_grid_charge_command_time` is stamped. The `DISCHARGE MAX EXPORT`
-branch only executes `discharge_to_maximize_export` if `input_number.
-grid_charge_export_cooldown_minutes` (default 60) has elapsed since that
-stamp; otherwise it falls back to `maximize_self_consumption` with the
-normal dynamic discharge limit, so the battery serves house load instead
-of being sold straight back to the grid. Full design and rationale:
-architecture.md - Layer 4A - Grid Charge Export Cooldown.
-
-This is a circuit breaker on the *consequence* (immediate loss-making
+Fix implemented for the immediate consequence: a **Grid Charge Export
+Cooldown** - see known_issues_and_fixes.md for the full write-up. This
+is a circuit breaker on the *consequence* (immediate loss-making
 reversal), not a fix for the *causes* above. Still open:
 
 ```text
@@ -349,128 +369,34 @@ MPC optimisation needs a "stay near previous plan" penalty or coarser
 re-plan cadence. This is an EMHASS-side change, out of scope for a single
 HA package edit - needs its own investigation.
 
+Related: the EMHASS solver itself hit its internal `user_limit` (time/
+iteration limit) once, on 2026-09-04 06:45-06:49, causing a 490.6s
+optimisation request that exceeded the `timeout: 240` on
+`rest_command.emhass_naive_mpc_optim`/`emhass_dayahead_optim`
+(`emhass_restcommand.yaml`); the system self-recovered by the 07:00 run.
+Reassessed 2026-09-10: no evidence of recurrence found in the available
+(partial, sampled) log coverage across the following 6 days - both log
+sources have limited retention and can't see the original incident
+window itself, so this is "no evidence of recurrence," not certainty. No
+change to weight_battery_charge/discharge was made on this evidence; a
+modest rest_command timeout increase (from 240s) was floated as cheap
+insurance but is still the user's call, not yet decided. Not yet logged
+as its own known_issues_and_fixes.md entry - captured here for now.
+
 Whether 60 minutes is the right default cooldown - only bounded by one
 day of observation (first discharge event trailed its charge event by 75
 minutes; a second charge/discharge pair happened same day). Needs a
 longer observation window and possibly a shorter/longer default.
 ```
 
-### Update 2026-08-28 - Momentary PV/house-load sampling: root-cause fix implemented
-
-Added `sensor.pv_production_smoothed` and `sensor.house_load_smoothed`
-(`platform: statistics`, 4-minute trailing mean, `batterycontrol_sensors.yaml`)
-and switched `automation.emhass_battery_forecast_control`'s `pv` and
-`house_load` decision variables to read from them instead of the raw
-instantaneous sensors. Full design, and the window-size validation against
-the two known 2026-08-27 false triggers (only a 4-minute window correctly
-resolves both; 3 minutes alone misses the 14:00 event, 5 minutes alone
-misses the 11:00 event): architecture.md - Layer 4A - PV/Load Sampling
-Smoothing.
-
-Not yet deployed/verified live - needs copying to the live config and a
-reload, then a follow-up check via HA MCP once the smoothed sensors have
-been running long enough to observe a real would-be-false-trigger instant
-and confirm the branch it actually takes. Logged as a pending test_plan.md
-item once live.
-
-### Update 2026-08-28 - Split smoothed vs instantaneous by decision type
-
-Refined per feedback: smoothing should only apply to the storage MODE
-decision (an infrequent, "heavy" change worth protecting from noise), not
-to the charge-limit ceiling chosen inside Maintain Zone, which should
-still react to a real short PV/load change at each 15-min tick rather
-than lag behind a 4-minute average. battery_forecast_control.yaml now
-defines both `pv`/`house_load` (smoothed, used by every mode-selecting
-branch) and `pv_now`/`house_load_now` (raw, used only for Maintain
-Zone's 5000W-vs-dynamic charge ceiling choice, where both outcomes stay
-in maximize_self_consumption so there's no mode-flapping risk). Full
-detail: architecture.md - Layer 4A - PV/Load Sampling Smoothing. Note the
-automation only evaluates on a 15-minute time_pattern trigger either way,
-so "instantaneous" means "this tick's snapshot," not "reacts within
-seconds."
-
-### Update 2026-08-29 - Deployed and confirmed live
-
-Copied to the live config and reloaded. First reload attempt did NOT pick
-up the two new `platform: statistics` sensors (`sensor.
-pv_production_smoothed`, `sensor.house_load_smoothed`) - confirmed via HA
-MCP that `automation.emhass_battery_forecast_control` itself reloaded
-cleanly (fresh traces showed `cooldown_elapsed`, `pv_now`, `house_load_now`
-all computing correctly) but the two smoothed sensors were absent from the
-entity registry with zero matching log lines anywhere (ruling out a config/
-schema error). A full Home Assistant restart (not just a YAML/config
-reload) was needed, since `platform: statistics` is a legacy YAML sensor
-platform outside HA's hot-reloadable domains - confirmed via `current_
-recorder_run` resetting and the core version bumping 2026.8.2 -> 2026.8.3.
-Even after that first restart the sensors still weren't there for several
-minutes (this instance's ~7GB recorder database makes the statistics
-platform's own startup slow - "Setup of sensor platform statistics is
-taking over 10 seconds" is a known, non-fatal, pre-existing warning on
-this instance, seen on every restart since at least 2026-08-26). A second
-restart-and-wait cycle brought both sensors up successfully.
-
-Verified via a live trace (2026-08-29T01:00:00 local,
-`automation.emhass_battery_forecast_control`): `pv=0, house_load=153`
-(smoothed, live, driving mode selection) and `pv_now=0, house_load_now=137`
-(raw, live, driving the Maintain Zone charge-ceiling choice) - landed in
-Maintain Zone as expected for nighttime with no PV. This confirms the
-smoothed sensors are populating correctly and the mode-vs-limit variable
-split is wired up as designed. Not yet confirmed: real daylight exercise
-of the mode-selecting branches (Clipped Solar, Below-SOC) that actually
-motivated this fix - follow-up check planned after sunrise (05:55 local)
-on 2026-08-29.
-
-### Update 2026-08-29 (morning) - Daylight review
-
-Reviewed all 5 retained traces of `automation.emhass_battery_forecast_control`
-from 2026-08-29 09:45-10:45 local (real PV: 700-1800W, real load:
-130-2040W) plus the full day's `input_select.emhass_requested_storage_mode`
-/ `effective_storage_mode` history since 05:00 local.
-
-Mode stayed at `maximize_self_consumption` for the entire morning with
-zero transitions - no oscillation, no repeat of the charge-then-export
-pattern this fix targeted. The Below-SOC and Clipped-Solar branches (the
-ones that actually caused the original bug) weren't exercised today, since
-SOC tracked at or above target all morning - so the smoothing's effect on
-*those* specific branches is still unconfirmed with real data; this was a
-quiet, uneventful morning by coincidence, not a stress test.
-
-What the split DID demonstrably do, twice (07:45 and 08:45 local): in
-Maintain Zone, the 4-min smoothed `pv`/`house_load` said PV was tracking
-above load on average (e.g. 07:45: pv=712 vs house_load=529), which would
-have opened the 5000W charge ceiling if that average were used for the
-ceiling choice too. But the raw `pv_now`/`house_load_now` at that exact
-tick showed load currently ahead of PV (761 vs 825 at 07:45) - so the
-system correctly stayed on the normal dynamic ceiling instead of opening
-to 5000W on stale averaged headroom. This is direct evidence the mode/
-limit split is doing real work, not just passing through unchanged values.
-
-Unrelated finding surfaced while reviewing (not caused by this fix):
-twice this morning (08:15 and 08:30 local, `above` true, `grid_fc` around
--500 to -700 i.e. export favourable, `batt_fc` exactly 0), the automation
-matched NO branch at all and left the previous requested mode/limits
-unchanged for that cycle. Root cause: the DISCHARGE MAX EXPORT branch
-requires `batt_fc > 0` and DISCHARGE MIN IMPORT/MAX SELF-CONSUMPTION
-requires `grid_fc >= 0`; a state where SOC is above target, export is
-forecast favourable, but EMHASS's near-term battery-power forecast is
-exactly flat falls through both. Logged as a new gap to look at
-separately - not urgent (the fallback is simply "keep the previous
-requested values," not an unsafe state), but worth an explicit branch or
-a `<=`/`>=` boundary fix so every reachable (above, grid_fc, batt_fc)
-combination is covered.
-
-Note: the same 48h error-log review used for test_plan.md Test 7.5 found a
-non-trivial baseline of Modbus connectivity noise (27x "Cancel send"/
-"Repeating call"/"No response", 7x transaction_id mismatch) that made the
-modbus_busy stale-lock fix (see Modbus Connectivity, above) unsafe to
-reintroduce naively - a bare `continue_on_error: true` on script.
-modbus_queue's release step could let a queued backlog (mode: queued,
-max: 10) drain rapidly with no pacing against a connection that's still
-struggling, which is plausibly what caused a past attempt at that same fix
-to flood the system with commands. That fix is intentionally left alone
-for now (self-healing via the existing 10s wait-timeout is considered
-acceptable, see test_plan.md Test 6.3) in favour of this lower-risk
-smoothing fix.
+The momentary PV/load sampling issue itself (the false 11:00/14:00
+triggers) was root-caused and fixed 2026-08-28, deployed and verified
+live 2026-08-29 - see known_issues_and_fixes.md. Two related
+branch-coverage gaps found during that verification were also fixed,
+2026-09-03 (one confirmed firing live 2026-09-10, the other still
+unconfirmed) - also in known_issues_and_fixes.md. A third, related
+branch-coverage gap was found live 2026-09-10 - not yet fixed, see
+known_issues_and_fixes.md - Known Issues - Not Yet Fixed.
 
 ---
 
@@ -489,25 +415,8 @@ limited retry
 backoff after failure
 ```
 
-### Update 2026-08-26 - Mode Command Guard implemented
-
-`automation.apply_effective_battery_control_to_solaredge_inverter` now skips
-the mode-select command and the 15-minute command timeout reset whenever the
-effective mode is `maximize_self_consumption` (the most-used fallback mode),
-`select.solaredge_i1_storage_command_mode` already confirms the inverter is
-in that mode, AND `select.solaredge_i1_storage_default_mode` confirms the
-inverter's own configured fallback is also Maximize Self Consumption (so
-letting the command timeout lapse is verified safe, not assumed). Only the
-charge/discharge limit writes still go out in that case, instead of the
-full 4-write sequence (timeout reset, mode select, charge limit, discharge
-limit) on every trigger.
-
-This directly reduces write frequency for the dominant steady-state case
-(dynamic limit changes while already in Maximize Self Consumption), without
-introducing a minimum write interval or delta threshold. `sensor.
-battery_mode_command_guard` exposes whether the guard is currently active for
-observability.
-
+A Mode Command Guard was implemented 2026-08-26 to reduce write frequency
+for the dominant steady-state case - see known_issues_and_fixes.md.
 Still outstanding from this investigation:
 
 ```text
@@ -517,34 +426,6 @@ Minimum write interval / delta threshold for the charge/discharge limit
 writes themselves, which the guard does not throttle
 limited retry / backoff after failure
 ```
-
-### Update 2026-08-27 - Live log check after guard deployment
-
-Checked HA logs/traces the same day the guard went live. The guard itself
-is confirmed working (see test_plan.md Test 7.6). Modbus errors are still
-present but appear pre-existing rather than guard-caused:
-
-```text
-"Cancel send, because not connected" / "No response received after 3
-retries" - ~15 occurrences, spread across several hours before and
-after the reload
-"transaction_id mismatch" - 3 occurrences, same period
-"Connection failed: Modbus Error: [Connection] Not connected" plus a
-cascade of modbus_queue / apply_effective_battery_control script errors
-- one cluster of ~7-8 entries, timestamps line up with the
-select.solaredge_i1_storage_command_mode "unavailable" blip during a HA
-restart the previous evening, not with the guard's reload
-```
-
-Counts are modest (single digits to low teens over many hours), consistent
-with the pre-existing intermittent connectivity picture already described
-above rather than a new problem. No direct evidence yet either way that
-the guard has measurably reduced or worsened error frequency - the
-"Skipped writes" / "Modbus write frequency" telemetry from the Enhanced
-Diagnostics section below would be needed to say that with confidence.
-Worth a longer before/after observation window once
-sensor.battery_mode_command_guard is actually live (see test_plan.md - it
-was missing on the instance checked).
 
 ---
 
@@ -673,3 +554,7 @@ effective_* entities
 → shadow_* entities
 
 No SolarEdge writes.
+
+---
+
+Implemented fixes and known issues: see `known_issues_and_fixes.md`.
