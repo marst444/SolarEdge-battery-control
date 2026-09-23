@@ -62,6 +62,13 @@ script:
           level: debug
 
       # CHOOSE BLOCK
+      # continue_on_error: if the dispatched SolarEdge service call raises
+      # (e.g. a Modbus write failure), the error is logged by HA and this
+      # step ends, but the sequence continues to the pacing delay and lock
+      # release below instead of aborting - the lock is no longer left
+      # stuck "on" for the next queued command's 10s wait_template to force
+      # through. See known_issues_and_fixes.md - Modbus Queue Lock Release
+      # Not Exception-Safe.
       - choose:
 
           - conditions:
@@ -73,7 +80,6 @@ script:
                   entity_id: number.solaredge_i1_storage_command_timeout
                 data:
                   value: "{{ queue_value | int }}"
-              - delay: "00:00:02"
 # Charge from solar power and grid
           - conditions:
               - condition: template
@@ -88,7 +94,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Charge from Solar Power and Grid
-              - delay: "00:00:02"
 # Maxmize self consumption
           - conditions:
               - condition: template
@@ -103,7 +108,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Maximize Self Consumption
-              - delay: "00:00:02"
 # Charge from solar power
           - conditions:
               - condition: template
@@ -114,7 +118,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Charge from Solar Power
-              - delay: "00:00:02"
 # Charge from clipped colar power
           - conditions:
               - condition: template
@@ -125,7 +128,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Charge from Clipped Solar Power
-              - delay: "00:00:02"
 # discharge to maximize export
           - conditions:
               - condition: template
@@ -136,7 +138,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Discharge to Maximize Export
-              - delay: "00:00:02"
 # Discharge to minimize import
           - conditions:
               - condition: template
@@ -147,7 +148,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Discharge to Minimize Import
-              - delay: "00:00:02"
 # solar power only
           - conditions:
               - condition: template
@@ -158,7 +158,6 @@ script:
                   entity_id: select.solaredge_i1_storage_command_mode
                 data:
                   option: Solar Power Only (Off)
-              - delay: "00:00:02"
 
 # charge limit
           - conditions:
@@ -170,7 +169,6 @@ script:
                   entity_id: number.solaredge_i1_storage_charge_limit
                 data:
                   value: "{{ queue_value | int }}"
-              - delay: "00:00:02"
 
 # discharge limit
           - conditions:
@@ -182,7 +180,6 @@ script:
                   entity_id: number.solaredge_i1_storage_discharge_limit
                 data:
                   value: "{{ queue_value | int }}"
-              - delay: "00:00:02"
 
 # dynamic discharge limit
           - conditions:
@@ -194,7 +191,6 @@ script:
                   entity_id: number.solaredge_i1_storage_discharge_limit
                 data:
                   value: "{{ queue_value | float }}"
-              - delay: "00:00:02"
 
 # dynamic charge limit
           - conditions:
@@ -206,16 +202,16 @@ script:
                   entity_id: number.solaredge_i1_storage_charge_limit
                 data:
                   value: "{{ queue_value | float }}"
-              - delay: "00:00:02"
 
 # export curtailment/site limit when neg. prices ON
-
-              # export curtailment/site limit when neg. prices ON
           - conditions:
               - condition: template
                 value_template: "{{ queue_service == 'negative_site_limit_on' }}"
             sequence:
-            # Ensure site limit value is 0 before activating negative site limit
+            # Ensure site limit value is 0 before activating negative site limit.
+            # This inner delay sequences two writes within the SAME command
+            # (site limit, then the switch) - it is not the trailing pacing
+            # delay and is kept as-is.
               - if:
                 - condition: template
                   value_template: >-
@@ -232,7 +228,6 @@ script:
               - service: switch.turn_on
                 target:
                   entity_id: switch.solaredge_i1_negative_site_limit
-              - delay: "00:00:02"
 
           - conditions:
               - condition: template
@@ -241,7 +236,6 @@ script:
               - service: switch.turn_off
                 target:
                   entity_id: switch.solaredge_i1_negative_site_limit
-              - delay: "00:00:02"
 
         default:
           - service: system_log.write
@@ -251,6 +245,18 @@ script:
                 No matching queue_service="{{ queue_service }}"
               level: error
 
+        continue_on_error: true
+
+      # Post-command pacing delay: runs whether the command above succeeded
+      # or errored (continue_on_error), so a Modbus write failure is paced
+      # the same ~2s as a normal successful write instead of either being
+      # released instantly (which could let a queued backlog of up to 10
+      # commands drain back-to-back against a still-struggling connection)
+      # or left stuck relying on the next caller's 10s wait_template. See
+      # known_issues_and_fixes.md - Modbus Queue Lock Release Not
+      # Exception-Safe.
+      - delay: "00:00:02"
+
       # DEBUG END
       - service: system_log.write
         data:
@@ -259,7 +265,7 @@ script:
             queue_service="{{ queue_service }}"
           level: debug
 
-      # Release Modbus lock
+      # Release Modbus lock - now unconditionally reached, success or error
       - service: input_boolean.turn_off
         target:
           entity_id: input_boolean.modbus_busy

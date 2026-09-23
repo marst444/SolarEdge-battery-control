@@ -1,6 +1,6 @@
 # SolarEdge Battery Control Roadmap
 
-This document tracks future improvements, cleanup activities, investigations and diagnostics enhancements for the SolarEdge Battery Control package. Implemented fixes and known issues - including deployment/verification status - are tracked separately in `known_issues_and_fixes.md`, most recent first. Everything in this document is still open.
+This document tracks future improvements, cleanup activities, investigations and diagnostics enhancements for the SolarEdge Battery Control package. Implemented fixes and known issues - including deployment/verification status - are tracked separately in `known_issues_and_fixes.md`, most recent first. Everything in this document is still open; resolved narrative that used to be interspersed below has been moved to the Resolved section at the end, kept only for context.
 
 ---
 
@@ -8,7 +8,7 @@ This document tracks future improvements, cleanup activities, investigations and
 
 ## HIGH
 
-(No open HIGH items - "Align Safety SOC Limits And EMHASS SOC Limits" was fixed 2026-09-03, see known_issues_and_fixes.md.)
+(No open HIGH items.)
 
 ---
 
@@ -16,20 +16,14 @@ This document tracks future improvements, cleanup activities, investigations and
 
 ### Centralise EMHASS Configuration
 
-Several EMHASS parameters are currently hardcoded inside scripts.
-
-Examples:
+Two EMHASS parameters are still hardcoded inside scripts:
 
 ```text
-battery_minimum_percent
-battery_maximum_state_of_charge
 maximum_power_from_grid
 maximum_power_to_grid
 ```
 
-Evaluate moving these values into dedicated helpers so that they can be adjusted without modifying scripts.
-
-Note: `battery_minimum_percent` and `battery_maximum_state_of_charge` were already moved onto existing helpers as part of the Align Safety/EMHASS SOC Limits fix (2026-09-03, see known_issues_and_fixes.md) - only `maximum_power_from_grid` and `maximum_power_to_grid` remain hardcoded and in scope here.
+Evaluate moving these values into dedicated helpers so that they can be adjusted without modifying scripts. (`battery_minimum_percent` and `battery_maximum_state_of_charge` were already moved onto existing helpers - see Resolved section below.)
 
 ---
 
@@ -199,58 +193,16 @@ battery control mode changes
 negative price curtailment
 ```
 
-### Update 2026-08-28 - modbus_busy stale-lock finding (Test 6.3 / 7.5)
-
-While verifying test_plan.md Test 6.3 (Recovery After Failed Write) against
-a real incident, found and confirmed via direct read of
-`solaredge_modbusqueue.yaml`: `script.modbus_queue`'s "Release Modbus lock"
-step (`input_boolean.turn_off modbus_busy`) is the last step in a plain
-linear `sequence:`, not protected against an exception raised inside the
-preceding `choose:` block. When a dispatched SolarEdge service call fails
-(e.g. the 2026-08-27 06:45:06 "Connection failed: Modbus Error: [Connection]
-Not connected" write failure), the script aborts before reaching that step
-and `input_boolean.modbus_busy` is left stuck "on".
-
-Confirmed via history this is not a permanent deadlock: `modbus_busy` sat
-"on" for ~30 minutes after the 06:45 failure (only because no further
-state change happened to re-trigger the apply automation in that window),
-then was forced clear by `script.modbus_queue`'s own next-invocation guard
-(`wait_template` with a 10s `timeout` + `continue_on_timeout: true`) at
-07:15, after which normal on/off cycling resumed immediately. No command
-was silently lost; the design self-heals within 10s of the next real
-command, at worst.
-
-Suggested fix: make the lock-release step exception-safe, e.g. wrap the
-`choose:` action with `continue_on_error: true`, or restructure so the
-`input_boolean.turn_off modbus_busy` step always runs regardless of what
-happens inside `choose:` (HA's `continue_on_error` on individual actions,
-or a `sequence:`/`if`-based cleanup that isn't skipped by an upstream
-raise). This would release the lock immediately on failure instead of
-relying on the next caller's 10-second timeout to force through it -
-low-risk change, same self-healing behaviour as a fallback if the fix
-itself is ever wrong.
-
-Separately, the same 48h error_log review used for Test 7.5 (Modbus
-Long-Term Stability) surfaced a baseline of Modbus connectivity noise not
-yet root-caused: 27x "Cancel send"/"Repeating call"/"No response", 8x
-"Cancel send" alone, 7x transaction_id mismatch, 1x coordinator fetch
-failure, alongside the one real write failure above. Worth a focused
-before/after comparison once the lock-release fix lands, and/or a longer
-observation window to see whether these correlate with write bursts,
-mode-command-guard skip patterns, or something environmental (RS485/TCP
-contention, inverter response latency).
-
-Note: the same 48h error-log review used for test_plan.md Test 7.5 found a
-non-trivial baseline of Modbus connectivity noise (27x "Cancel send"/
-"Repeating call"/"No response", 7x transaction_id mismatch) that made this
-stale-lock fix unsafe to reintroduce naively - a bare `continue_on_error:
-true` on script.modbus_queue's release step could let a queued backlog
-(mode: queued, max: 10) drain rapidly with no pacing against a connection
-that's still struggling, which is plausibly what caused a past attempt at
-that same fix to flood the system with commands. That fix is intentionally
-left alone for now (self-healing via the existing 10s wait-timeout is
-considered acceptable, see test_plan.md Test 6.3) in favour of lower-risk
-fixes elsewhere.
+The modbus_busy stale-lock gap found 2026-08-28 (Test 6.3 / 7.5) was fixed
+2026-09-20 - see Resolved section below and known_issues_and_fixes.md for
+current deployment status. The 48h error-log baseline of connectivity
+noise (27x "Cancel send"/"Repeating call"/"No response", 7x transaction_id
+mismatch) found during that same review is still open and not yet
+root-caused - worth a focused before/after comparison now that the
+lock-release fix has landed, and/or a longer observation window to see
+whether it correlates with write bursts, mode-command-guard skip
+patterns, or something environmental (RS485/TCP contention, inverter
+response latency).
 
 ### Update 2026-09-10 - Two new real Modbus write failures found
 
@@ -265,19 +217,30 @@ above (still present, similar magnitude). Not yet root-caused or
 correlated with anything specific; noted here for whoever picks up this
 investigation next.
 
-### SOC-sensor unavailable false-trigger - fixed 2026-09-03
+### Update 2026-09-19 - Extended SOC-sensor outage (~31 hours), root cause unknown
 
-A separate, higher-severity issue in the same connectivity family (a
-transient `sensor.solaredge_b1_state_of_energy` dropout spuriously
-commanding a real Layer 1 grid-charge) was found and fixed 2026-09-03,
-and confirmed durably effective over a full week as of 2026-09-10 - see
-known_issues_and_fixes.md for the full write-up. The underlying nightly
-dropout itself (root cause still in this Modbus Connectivity
-investigation, not the SOC-sensor fix) continues unchanged at 6/6 nights,
-38-45s each, with a newly-noticed pattern: each night's episode lands
-~11-13 minutes earlier than the previous night's (drifting ~22:00 ->
-~21:13 over the 6 nights checked 2026-09-04 through 2026-09-09) - a
-possible clue for whoever chases the ~22:00 clustering question above.
+A routine multi-day log review found `sensor.solaredge_b1_state_of_energy`
+stuck `unavailable` for roughly 31 hours (2026-09-16 14:29 to 2026-09-17
+21:37 local) - far beyond the usual 6.5-45s nightly blips already tracked
+below. It was isolated to this one entity: `sensor.solaredge_i1_ac_power`,
+`select.solaredge_i1_storage_control_mode`, and unrelated automations
+(e.g. `ev_charging_discharge_control`) kept running normally throughout,
+with only the usual brief reconnect blips. The outage only cleared when
+Home Assistant restarted that evening (an unrelated Supervisor
+auto-update, 2026.09.0 -> 2026.09.2) - no error in the available logs
+explains why the sensor was stuck for so long, or why nothing short of a
+full restart recovered it. Not yet correlated with the connectivity
+patterns above. The immediate consequence (Layer 4A silently running on a
+fallback `soc=0` for the full outage) was fixed the same day - see
+known_issues_and_fixes.md - but the cause of the outage itself is a new,
+open item here.
+
+Separately, the well-characterized short nightly dropout (6/6 nights,
+38-45s each as of the 2026-09-10 check) continues unchanged, with a
+noticed pattern: each night's episode lands ~11-13 minutes earlier than
+the previous night's (drifting ~22:00 -> ~21:13 over the 6 nights checked
+2026-09-04 through 2026-09-09) - a possible clue for the ~22:00 clustering
+question above, not yet chased further.
 
 ---
 
@@ -355,10 +318,9 @@ little disincentive against a chattering trajectory. This was NOT fixed
 in this pass - see "Still open" below.
 ```
 
-Fix implemented for the immediate consequence: a **Grid Charge Export
-Cooldown** - see known_issues_and_fixes.md for the full write-up. This
-is a circuit breaker on the *consequence* (immediate loss-making
-reversal), not a fix for the *causes* above. Still open:
+A circuit breaker on the immediate consequence (Grid Charge Export
+Cooldown) was implemented 2026-08-26 - see Resolved section below. Still
+open, the underlying causes:
 
 ```text
 EMHASS MPC plan chatter: input_number.soc_target and sensor.
@@ -389,15 +351,6 @@ minutes; a second charge/discharge pair happened same day). Needs a
 longer observation window and possibly a shorter/longer default.
 ```
 
-The momentary PV/load sampling issue itself (the false 11:00/14:00
-triggers) was root-caused and fixed 2026-08-28, deployed and verified
-live 2026-08-29 - see known_issues_and_fixes.md. Two related
-branch-coverage gaps found during that verification were also fixed,
-2026-09-03 (one confirmed firing live 2026-09-10, the other still
-unconfirmed) - also in known_issues_and_fixes.md. A third, related
-branch-coverage gap was found live 2026-09-10 - not yet fixed, see
-known_issues_and_fixes.md - Known Issues - Not Yet Fixed.
-
 ---
 
 ## Write Pressure
@@ -415,9 +368,9 @@ limited retry
 backoff after failure
 ```
 
-A Mode Command Guard was implemented 2026-08-26 to reduce write frequency
-for the dominant steady-state case - see known_issues_and_fixes.md.
-Still outstanding from this investigation:
+(A Mode Command Guard already reduces write frequency for the dominant
+steady-state case - see Resolved section below.) Still outstanding from
+this investigation:
 
 ```text
 Whether reduced mode-command write frequency measurably improves Modbus
@@ -493,6 +446,12 @@ write queue overload
 pymodbus transaction recovery issue
 ```
 
+Note 2026-09-19: a `binary_sensor.solaredge_modbus_data_fresh`-style
+"age since last update" sensor on `sensor.solaredge_b1_state_of_energy`
+specifically would have made the 31-hour outage above visible immediately
+instead of only being caught by a manual multi-day history review -
+worth prioritising this one sensor even before the rest of this list.
+
 ---
 
 ## Observability Goals
@@ -554,6 +513,69 @@ effective_* entities
 → shadow_* entities
 
 No SolarEdge writes.
+
+---
+
+# 5. Resolved (Context Only)
+
+Everything below is already fixed - kept here only as background for the
+open items above that reference it. Deployment/verification status for
+each lives in `known_issues_and_fixes.md`; this is not a duplicate log.
+
+**Align Safety SOC Limits And EMHASS SOC Limits** (fixed 2026-09-03) -
+`battery_minimum_percent` and `battery_maximum_state_of_charge` were
+hardcoded separately from the safety layer's SOC helpers; both now read
+the same `input_number.minimum_state_of_charge` /
+`maximum_state_of_charge` helpers EMHASS reads too.
+
+**SOC-Sensor Unavailable False-Trigger** (fixed 2026-09-03, confirmed
+durable over a full week as of 2026-09-10) - a transient
+`sensor.solaredge_b1_state_of_energy` dropout was spuriously commanding a
+real Layer 1 grid-charge (`soc` falling back to 0, satisfying the
+"critical recovery" branch). Fixed with an automation-level
+unavailable/unknown guard on `calculate_effective_battery_control` and
+`battery_high_soc_hold`. This same guard was extended to
+`emhass_battery_forecast_control` (Layer 4A) on 2026-09-19 after the
+extended outage noted above - see known_issues_and_fixes.md for current
+deployment status of that extension.
+
+**Midday Oscillation - PV/Load Sampling Smoothing** (root-caused and
+fixed 2026-08-28, deployed and verified live 2026-08-29) - the false
+11:00/14:00 triggers were momentary PV/load sampling artifacts; fixed
+with 4-minute trailing-mean sensors for mode-selecting decisions.
+
+**Midday Oscillation - Branch-Coverage Gaps** (three found and fixed,
+2026-09-03 through 2026-09-15) - two related gaps found during the
+PV/Load Sampling Smoothing verification (one confirmed firing live
+2026-09-10, the other still unconfirmed), plus a third found live
+2026-09-10 and fixed 2026-09-15 (confirmed firing live the same day,
+after an initial stale-reload false alarm).
+
+**Midday Oscillation - Grid Charge Export Cooldown** (implemented
+2026-08-26) - a hysteresis circuit breaker: `discharge_to_maximize_export`
+is withheld for a configurable cooldown after any grid-assisted charge,
+so a charge isn't immediately sold back out at a loss. Addresses the
+consequence of the midday oscillation, not its causes (see Active
+Investigations above).
+
+**Write Pressure - Mode Command Guard** (implemented 2026-08-26) - skips
+the mode-select command and 15-minute command-timeout reset when the
+effective mode is already `maximize_self_consumption` and the inverter
+confirms that's both its current and default mode, cutting write
+frequency for the dominant steady-state case.
+
+**Modbus Connectivity - modbus_busy Stale Lock** (found 2026-08-28, fixed
+2026-09-20) - a Modbus write failure inside `script.modbus_queue`'s
+`choose:` block aborted the script before its lock-release step, leaving
+`input_boolean.modbus_busy` stuck "on" (self-healed after ~30 min via the
+next invocation's 10s timeout, but delayed every command in between). A
+naive fix was deferred for weeks over flood risk (releasing instantly on
+every failure could drain a queued backlog with no pacing against a
+still-struggling connection). Fixed by adding `continue_on_error: true`
+to the `choose:` step and consolidating ~13 scattered per-branch trailing
+delays into one uniform post-choose delay that runs on both the success
+and the caught-failure path, keeping the same pacing either way. See
+known_issues_and_fixes.md for full detail and current deployment status.
 
 ---
 

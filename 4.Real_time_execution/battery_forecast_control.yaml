@@ -15,6 +15,13 @@ automation:
       - condition: state
         entity_id: select.solaredge_i1_storage_control_mode
         state: "Remote Control"
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.solaredge_b1_state_of_energy
+            state:
+              - "unavailable"
+              - "unknown"
     action:
       - variables:
           soc: "{{ (states('sensor.solaredge_b1_state_of_energy') | float(0)) }}"
@@ -395,10 +402,10 @@ automation:
 
 
           # ===== DISCHARGE MIN IMPORT / MAX SELF-CONSUMPTION =====
-          # Above and grid_fc >= 0 (import or 0) and batt_fc <= 0 (charge or 0)
+          # Above and grid_fc >= 0 (import or 0), any batt_fc sign.
           - conditions:
               - condition: template
-                value_template: "{{ above and (grid_fc >= 0) and (batt_fc <= 0) and (soc > soc_min) }}"
+                value_template: "{{ above and (grid_fc >= 0) and (soc > soc_min) }}"
             sequence:
             # Shadow/requested state
               - service: input_select.select_option
