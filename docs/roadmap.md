@@ -38,6 +38,40 @@ sensor.dh_pv_optim_status
 
 Investigate whether optimisation failures should automatically trigger fallback planning behaviour rather than only updating watchdog status.
 
+Update 2026-09-22: Layer 4A's own fallback behaviour (what
+`battery_forecast_control.yaml` does when these are missing) was fixed
+the same day after a real 8+ hour EMHASS outage caused a repeated
+charge/discharge oscillation - see Resolved section below and
+known_issues_and_fixes.md - EMHASS Outage Fallback Guard. Still open
+here: the addon-side question of whether EMHASS itself should serve a
+degraded/cached plan when a fresh optimisation fails, rather than simply
+not publishing.
+
+---
+
+### EMHASS Addon Build-On-Start Fragility
+
+Discovered 2026-09-22: the EMHASS addon (v0.18.3, installed via the
+manual/local install method) rebuilds its Python environment on every
+container start (`Building emhass @ file:///app`, resolving and
+downloading `aiohttp`/`hatchling` from PyPI) rather than running a
+pre-built image. This makes addon startup itself dependent on live
+DNS/internet access - after the 2026-09-22 power outage, DNS wasn't back
+up yet when the addon's container restarted, so the build failed
+identically on every attempt and the addon was stuck in Supervisor state
+`error` for the rest of the day, needing a manual restart once DNS had
+recovered.
+
+A same-day mitigation (`EMHASS Watchdog - Addon Auto-Restart`, see
+known_issues_and_fixes.md - EMHASS Outage Fallback Guard) now retries
+`hassio.addon_restart` automatically after 90+ minutes stalled, at most
+once/hour - this would have recovered tonight's incident unattended once
+DNS came back, but it's a retry loop around the same fragile build, not
+a fix for it. Worth investigating whether a pinned/pre-built version of
+the addon (Installation Method 2 in the addon's own docs, or an updated
+addon release that ships a built image) avoids the network dependency at
+startup entirely.
+
 ---
 
 ### Review Dynamic Charge/Discharge Limit Duplication
@@ -576,6 +610,20 @@ to the `choose:` step and consolidating ~13 scattered per-branch trailing
 delays into one uniform post-choose delay that runs on both the success
 and the caught-failure path, keeping the same pacing either way. See
 known_issues_and_fixes.md for full detail and current deployment status.
+
+**EMHASS Outage Fallback Guard** (found and fixed 2026-09-22) - an 8+
+hour EMHASS addon outage (stuck rebuilding after a power-outage DNS
+failure) left Layer 4A (`battery_forecast_control.yaml`) computing
+decisions from EMHASS-dependent entities that were silently reading as
+fake zeros, causing a real charge/discharge oscillation for 6+ hours
+against genuinely high prices (confirmed via history: requested mode and
+discharge limit alternating almost every 15-minute tick, SOC sawtoothing
+19-34%). Fixed with an `sensor.emhass_health`-based guard skipping the
+whole run while EMHASS is stalled/failed, plus an availability check on
+the price sensor specifically so a missing price feed can't be misread
+as "free". Also added an addon-level auto-restart watchdog. See
+known_issues_and_fixes.md and EMHASS Addon Build-On-Start Fragility
+above (still open) for the underlying addon fragility this doesn't fix.
 
 ---
 

@@ -23,7 +23,7 @@ input_number:
     max: 10000
     step: 100
     mode: box
-    
+
   safety_min_discharge_limit:
     name: Safety Minimum Discharge Limit
     min: 0
@@ -57,10 +57,15 @@ input_datetime:
   emhass_dayahead_last_success:
     name: EMHASS Dayahead last success
     has_date: true
-    has_time: true  
-  
+    has_time: true
+
   emhass_mpc_last_success:
     name: EMHASS MPC last success
+    has_date: true
+    has_time: true
+
+  emhass_addon_last_restart_attempt:
+    name: EMHASS Addon Last Restart Attempt
     has_date: true
     has_time: true
 
@@ -68,9 +73,9 @@ input_text:
 
   emhass_mpc_status:
     name: EMHASS MPC status
-    
+
   emhass_dayahead_status:
-    name: EMHASS dayahead status    
+    name: EMHASS dayahead status
 
   effective_battery_reason:
     name: Effective Battery Reason
@@ -96,16 +101,15 @@ input_boolean:
   battery_charge_blocked:
     name: Battery Charge Blocked
     icon: mdi:battery-off-outline
-    
+
   battery_high_soc_hold:
     name: Battery High SOC Hold
     icon: mdi:battery-off-outline
-    
+
 
 # Killswitch for whole battery control system.
   effective_battery_control_enabled:
     name: Effective Battery Control Enabled
     icon: mdi:battery-cog
-
 
     

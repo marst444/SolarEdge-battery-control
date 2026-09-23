@@ -22,6 +22,26 @@ automation:
             state:
               - "unavailable"
               - "unknown"
+      # EMHASS health guard: sensor.emhass_health rolls up "MPC hasn't
+      # succeeded in >45min" and "last optim_status wasn't Optimal" into one
+      # signal. When it reads MPC stalled/MPC problem, the EMHASS-published
+      # forecast sensors this automation reads below (batt_fc, grid_fc) are
+      # either missing or stale, and their `| float(0)` fallback silently
+      # reads as "battery forecast flat, grid forecast flat" - a value that
+      # satisfies several branches below as if EMHASS had actually forecast
+      # a neutral plan, instead of "EMHASS isn't answering". Skipping the
+      # whole run leaves the requested mode/limits frozen at their last
+      # good value instead of recomputing a new decision from fabricated
+      # zeros every 15 minutes. See known_issues_and_fixes.md - EMHASS
+      # Outage Fallback Guard. RUNNING is allowed through: the in-flight
+      # run hasn't overwritten the previous successful forecast yet.
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.emhass_health
+            state:
+              - "MPC stalled"
+              - "MPC problem"
     action:
       - variables:
           soc: "{{ (states('sensor.solaredge_b1_state_of_energy') | float(0)) }}"
@@ -287,9 +307,19 @@ automation:
 
                   # Below  and No PV, BattForecast is 0, grid is import and Prices have not gone up >20%
                   # ===== PRICE-BASED FALLBACK (LAST) =====
+                  # Requires the price sensor itself to be available: a missing/
+                  # unknown sensor.total_import_price falls back to price_import=0
+                  # via `| float(0)` above, which would otherwise read as "price is
+                  # free" and trigger a real grid charge regardless of actual
+                  # price. See known_issues_and_fixes.md - EMHASS Outage Fallback
+                  # Guard. When the price sensor is down, this branch is skipped
+                  # and control falls through to the solar-only catch-all below.
                   - conditions:
                       - condition: template
-                        value_template: "{{ (pv == 0) and (batt_fc==0) and (price_import <= last_average_chargingprice) }}"
+                        value_template: >-
+                          {{ (pv == 0) and (batt_fc==0)
+                             and (states('sensor.total_import_price') not in ['unavailable', 'unknown'])
+                             and (price_import <= last_average_chargingprice) }}
                     sequence:
             # Shadow/requested state
                       - service: input_select.select_option

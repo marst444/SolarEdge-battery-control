@@ -17,7 +17,7 @@ automation:
       - condition: time
         after: "00:15:00"
 
-    # Ingen lyckad DA idag 
+    # Ingen lyckad DA idag
       - condition: template
         value_template: >
           {% set last = states('input_datetime.emhass_dayahead_last_success') %}
@@ -42,8 +42,8 @@ automation:
             Day‑ahead optimization has NOT run successfully today.
             Status: {{ states('input_text.emhass_dayahead_status') }}
             Last success: {{ states('input_datetime.emhass_dayahead_last_success') }}
-            
-            
+
+
   - id: EMHASS_watchdog_mpc_stalled
     alias: "EMHASS Watchdog – MPC stalled"
     trigger:
@@ -52,8 +52,8 @@ automation:
     condition:
       - condition: template
         value_template: >
-          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 }}   
-    
+          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 2700 }}
+
     action:
       - service: persistent_notification.create
         data:
@@ -69,3 +69,58 @@ automation:
             MPC has not run successfully in over 45 minutes.
             Status: {{ states('sensor.mpc_pv_optim_status') }}
             Last changed: {{ states.sensor.emhass_mpc_last_success }}
+
+  - id: EMHASS_addon_watchdog_auto_restart
+    alias: "EMHASS Watchdog – Addon Auto-Restart"
+    description: >
+      Escalation beyond the plain "MPC stalled" notification above: if EMHASS
+      hasn't produced a successful MPC run in over 90 minutes, attempt
+      hassio.addon_restart on the EMHASS addon itself, then notify either way.
+      Addressed a real incident (2026-09-22) where a power outage left the
+      EMHASS addon stuck in a failed build (no network for its dependency
+      download) for the rest of the day - Supervisor's own addon watchdog
+      option was already on, but it only restarts a addon that crashes after
+      having started; it doesn't retry a addon that never got past its build
+      step. This automation is a slower, second-tier retry loop on top of
+      that. See known_issues_and_fixes.md - EMHASS Outage Fallback Guard.
+
+      Deliberately a much longer threshold (90 min) than the plain stalled
+      notification (45 min) - a restart is a more disruptive action than a
+      notification, so this gives the addon more room to recover or be
+      restarted manually first. The cooldown below prevents restart-looping
+      if the underlying cause (e.g. no network) hasn't actually cleared yet.
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+    condition:
+      - condition: template
+        value_template: >
+          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_mpc_last_success'))) > 5400 }}
+      - condition: template
+        value_template: >
+          {{ (now().timestamp() - as_timestamp(states('input_datetime.emhass_addon_last_restart_attempt'), 0)) > 3600 }}
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.emhass_addon_last_restart_attempt
+        data:
+          timestamp: "{{ now().timestamp() }}"
+      - service: hassio.addon_restart
+        data:
+          addon: 5b918bf2_emhass
+      - service: persistent_notification.create
+        data:
+          title: "⚠️ EMHASS Watchdog – Addon auto-restarted"
+          message: >
+            MPC has not run successfully in over 90 minutes. Attempted an
+            automatic restart of the EMHASS addon
+            ({{ states('input_datetime.emhass_addon_last_restart_attempt') }}).
+            If this keeps recurring, the addon likely needs manual attention
+            (check its Supervisor logs) - this will retry at most once per
+            hour.
+      - service: notify.mobile_app_fp3_ms
+        data:
+          title: "⚠️ EMHASS Addon auto-restarted"
+          message: >
+            MPC stalled >90min - EMHASS addon was just auto-restarted.
+            Will retry at most once/hour if it keeps failing.

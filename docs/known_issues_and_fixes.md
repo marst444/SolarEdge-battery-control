@@ -20,11 +20,121 @@ branch, not observed live, and not proposed for a blind fix. The Layer
 4A SOC-unavailable guard found 2026-09-19 was fixed the same day - see
 Fixed Issues below. The modbus_busy stale-lock gap found 2026-08-28 was
 fixed 2026-09-20 - see Modbus Queue Lock Release Not Exception-Safe
-below.)
+below. The EMHASS-outage fallback gap found 2026-09-22 was fixed the
+same day - see EMHASS Outage Fallback Guard below.)
 
 ---
 
 # Fixed Issues
+
+## EMHASS Outage Fallback Guard
+
+Found 2026-09-22: a power outage left the EMHASS addon stuck rebuilding
+itself on every start (see Root Cause below) for the rest of the day -
+`input_datetime.emhass_mpc_last_success` was frozen at 14:16 while
+`emhass_battery_forecast_control` (Layer 4A) kept running every 15
+minutes regardless, since its only prior guard was the SOC sensor
+(`battery_forecast_control.yaml`'s `soc`/`batt_fc`/`grid_fc`/
+`price_import` variables all read *other* EMHASS-dependent entities that
+were themselves unaffected by that guard).
+
+Live history for the outage window (2026-09-22 16:00-22:50) confirmed
+real, repeated harm, not just a theoretical gap:
+`input_select.emhass_requested_storage_mode` alternated
+`charge_from_solar_and_grid` <-> `maximize_self_consumption` on almost
+every single 15-minute tick for over 6 hours (`input_number.
+emhass_requested_discharge_limit` swinging 0 <-> 3300 in lockstep), and
+`sensor.solaredge_b1_state_of_energy` sawtoothed between roughly 19% and
+34% the entire time - a real charge/discharge cycle every ~15-20 minutes,
+not a one-off. `sensor.total_import_price` was *also* unavailable for
+the whole window (only recovering post-restart at 3.4-3.76 SEK/kWh,
+confirming prices genuinely were high, matching the user's report),
+which is what made this a real-money problem and not just wasted battery
+cycles.
+
+Root cause, two independent gaps in `battery_forecast_control.yaml`:
+
+1. `batt_fc`/`grid_fc` are read from `sensor.mpc_pv_batt_power`/
+   `sensor.mpc_pv_grid_power` - EMHASS-published entities that don't
+   exist at all while EMHASS is down (confirmed via entity search: not
+   merely `unavailable`, genuinely unregistered). Their `| float(0)`
+   fallback reads as "battery forecast flat, grid forecast flat" -
+   satisfying several branches as if EMHASS had actually forecast a
+   neutral plan.
+2. The BELOW-SOC "PRICE-BASED FALLBACK" branch gates a real grid-charge
+   command on `price_import <= last_average_chargingprice * 1.2`, where
+   `price_import` has the same `| float(0)` fallback on
+   `sensor.total_import_price`. A missing price sensor therefore read as
+   "price is free" (0 satisfies almost any positive threshold), the
+   opposite of the safe assumption - and with `batt_fc` pinned to 0 by
+   gap 1, this was exactly the branch reached at night, on every cycle
+   where SOC read as `below` its frozen target. That combination -
+   `pv==0`, `batt_fc==0` (fake), `price_import==0` (fake, always <=
+   threshold) - fired `charge_from_solar_and_grid` repeatedly; each
+   charge then pushed SOC out of `below` for a tick or two, landing on
+   `maximize_self_consumption` with the discharge limit reopened (frozen
+   at its last real value, 3300W), which drained it back down - the
+   observed oscillation.
+
+Fixed in `battery_forecast_control.yaml`, two changes:
+
+1. Added a third automation-level `condition:` (alongside "Remote
+   Control" and the SOC-unavailable guard) requiring `sensor.
+   emhass_health` to not be `MPC stalled` or `MPC problem`. This is the
+   primary fix: it skips the entire run whenever EMHASS's own published
+   forecast is stale/failed, leaving the requested mode and charge/
+   discharge limits frozen at their last good value instead of
+   recomputing a new decision from fabricated zeros every 15 minutes.
+   `RUNNING` is deliberately still allowed through, since the previous
+   successful forecast is still valid during an in-flight EMHASS run.
+2. Independently hardened the PRICE-BASED FALLBACK branch itself: added
+   `states('sensor.total_import_price') not in ['unavailable',
+   'unknown']` to its condition, so a missing price sensor now falls
+   through to the existing safe catch-all (`solar_power_only`, no grid
+   charge) instead of being misread as "free". This covers the narrower
+   case where the price feed alone fails (e.g. a Nordpool/EPEX outage)
+   while EMHASS itself stays healthy - fix 1 above wouldn't catch that
+   case, since `sensor.emhass_health` doesn't track the price sensor at
+   all.
+
+Root cause (why EMHASS was down for 8+ hours, separate from the guard
+gap above): the EMHASS addon rebuilds its Python environment on every
+start (`Building emhass @ file:///app`) rather than running a pre-built
+image, and that build needs live DNS/network access to pypi.org /
+files.pythonhosted.org. The outage's DNS wasn't back up yet by the time
+HA (and the addon's container) restarted, so every build attempt failed
+identically; once failed, the addon sat in Supervisor state `error` and
+did not retry itself. A plain restart once DNS had recovered fixed it
+immediately (v0.18.3, no code change involved).
+
+Supervisor's own addon watchdog (`watchdog: true`) and boot-on-start
+(`boot: auto`) were already both enabled on the EMHASS addon - that
+watchdog restarts an addon that crashes *after* having started, but
+doesn't retry one that keeps failing its own build step and never
+reaches "started". To close that gap, added a new automation, `EMHASS
+Watchdog - Addon Auto-Restart` (`watchdog_automations.yaml`): if MPC
+has been stalled over 90 minutes (double the existing 45-minute
+notify-only threshold, since a restart is more disruptive than a
+notification), calls `hassio.addon_restart` on the EMHASS addon
+(slug `5b918bf2_emhass`) and notifies either way, at most once per hour
+(new `input_datetime.emhass_addon_last_restart_attempt` helper in
+`safety_and_watchdog_helpers.yaml`) to avoid restart-looping if the
+underlying cause (e.g. no network) hasn't actually cleared. This would
+have retried the addon automatically as soon as DNS came back tonight,
+rather than requiring a manual restart the next time someone noticed.
+
+Status: implemented in this project's docs 2026-09-22. Not yet deployed
+or verified live - next step is copying all three changed files
+(`battery_forecast_control.yaml`, `watchdog_automations.yaml`,
+`safety_and_watchdog_helpers.yaml`) to the live config and reloading.
+The Layer 4A guard changes can be verified the same way as the
+Layer 4A SOC-unavailable guard below (live trace during a future EMHASS
+outage/stalled window, confirming the run is skipped). The addon
+auto-restart automation is harder to verify on demand short of forcing
+the addon into `error` state deliberately - realistically will only be
+confirmed the next time EMHASS actually goes down for 90+ minutes.
+
+---
 
 ## Modbus Queue Lock Release Not Exception-Safe
 
