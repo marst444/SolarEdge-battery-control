@@ -26,7 +26,9 @@ EMHASS-outage fallback gap found 2026-09-22 was fixed the same day,
 deployed and structurally confirmed 2026-09-23 - see EMHASS Outage
 Fallback Guard below; its behavioral verification (an actual skipped
 run, or the addon auto-restart firing) still awaits a real future
-EMHASS stall.)
+EMHASS stall. The EV Charging Sensor Swap incomplete-trigger follow-up
+found 2026-09-24 was fixed 2026-09-25 - see EV Charging Sensor Swap
+below; not yet confirmed against the live file or a real EV session.)
 
 ---
 
@@ -328,15 +330,22 @@ and the discharge-limit automation trace all changing in lockstep
 Update 2026-09-24 (incomplete-swap follow-up, found during the YAML
 header/hygiene audit): `calculate_effective_battery_control`'s
 **trigger** `entity_id` list in `safety_limits_and_override.yaml` still
-names the dead `binary_sensor.ev_charging_on` - only the action logic's
+named the dead `binary_sensor.ev_charging_on` - only the action logic's
 `ev_charging` variable was swapped to `binary_sensor.ev_charging_active`
 back on 2026-09-15, not the trigger list itself. Practical effect: the
-automation won't state-trigger promptly on a real EV-charging state
+automation wouldn't state-trigger promptly on a real EV-charging state
 change (it also has a `time_pattern` trigger as a backstop, so a full
-miss is unlikely, but a real-time reaction to `ev_charging_active`
-flipping could be delayed to the next scheduled tick instead of firing
-immediately). Not yet fixed - left as-is pending confirmation this is
-worth a live-behavior check first; tracked for follow-up.
+miss was unlikely, but a real-time reaction to `ev_charging_active`
+flipping could have been delayed to the next scheduled tick instead of
+firing immediately).
+
+Fixed 2026-09-25: swapped the trigger list's `binary_sensor.
+ev_charging_on` to `binary_sensor.ev_charging_active` in
+`safety_limits_and_override.yaml`, matching the action-logic variable
+fixed 2026-09-15. No other change to this automation.
+
+Status: implemented in this project's docs 2026-09-25. Not yet
+confirmed against the live file or a real EV session.
 
 ---
 

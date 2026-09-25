@@ -2,7 +2,7 @@
 # Layer 1: applies SOC safety limits, high-SOC hold, grid-export/negative-price blocks, and EV constraints to Layer 4A's requested values.
 # Sets: input_select.effective_storage_mode, input_number.effective_charge/discharge_limit, input_boolean.battery_high_soc_hold
 # Deps: input_select/number.emhass_requested_*, sensor.solaredge_b1_state_of_energy  →  apply_effective_battery_control.yaml
-# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger); EV Charging Sensor Swap - trigger entity_id still stale
+# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger, EV Charging Sensor Swap)
 
 automation:
 
@@ -16,7 +16,7 @@ automation:
           - input_select.emhass_requested_storage_mode
           - input_number.emhass_requested_charge_limit
           - input_number.emhass_requested_discharge_limit
-          - binary_sensor.ev_charging_on
+          - binary_sensor.ev_charging_active
           - input_boolean.grid_export_blocked
           - input_boolean.grid_export_limited
           - input_boolean.negative_price_active
