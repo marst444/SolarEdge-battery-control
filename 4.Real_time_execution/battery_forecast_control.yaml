@@ -1,7 +1,8 @@
-################################################################################
-# Layer 4A decision engine: charge/discharge mode from EMHASS MPC forecast +
-# SOC. Sign conventions and mode list: architecture.md - Layer 4A.
-################################################################################
+# ── battery_forecast_control.yaml ──
+# Layer 4A: converts EMHASS forecast + live SOC/PV/load into requested battery mode/limits every 15 min. See architecture.md (Layer 4A).
+# Sets: input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge/discharge_limit
+# Deps: sensor.mpc_pv_batt/grid_power, sensor.emhass_health, sensor.solaredge_b1_state_of_energy  →  safety_limits_and_override.yaml
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard, SOC-Unavailable Guard); unused `ev` var - see roadmap.md
 
 automation:
 
@@ -22,19 +23,11 @@ automation:
             state:
               - "unavailable"
               - "unknown"
-      # EMHASS health guard: sensor.emhass_health rolls up "MPC hasn't
-      # succeeded in >45min" and "last optim_status wasn't Optimal" into one
-      # signal. When it reads MPC stalled/MPC problem, the EMHASS-published
-      # forecast sensors this automation reads below (batt_fc, grid_fc) are
-      # either missing or stale, and their `| float(0)` fallback silently
-      # reads as "battery forecast flat, grid forecast flat" - a value that
-      # satisfies several branches below as if EMHASS had actually forecast
-      # a neutral plan, instead of "EMHASS isn't answering". Skipping the
-      # whole run leaves the requested mode/limits frozen at their last
-      # good value instead of recomputing a new decision from fabricated
-      # zeros every 15 minutes. See known_issues_and_fixes.md - EMHASS
-      # Outage Fallback Guard. RUNNING is allowed through: the in-flight
-      # run hasn't overwritten the previous successful forecast yet.
+      # EMHASS health guard: skips the whole run whenever sensor.emhass_health
+      # reads "MPC stalled"/"MPC problem", so a stale/missing EMHASS forecast
+      # isn't misread via | float(0) as a real neutral plan. RUNNING is still
+      # allowed through (previous successful forecast is still valid mid-run).
+      # See known_issues_and_fixes.md - EMHASS Outage Fallback Guard.
       - condition: not
         conditions:
           - condition: state
@@ -52,21 +45,19 @@ automation:
           below: "{{ soc < (target - db) }}"
           above: "{{ soc > (target + db) }}"
           maintain: "{{ soc >= (target - db) and soc <= (target + db) }}"
-          # PV/Load Smoothing: use the 4-minute trailing mean sensors
-          # (batterycontrol_sensors.yaml) for every comparison that selects
-          # between distinct storage MODES, to avoid a momentary spike/dip
-          # at this 15-min trigger instant flipping the requested mode. See
-          # architecture.md - Layer 4A - PV/Load Sampling Smoothing.
+          # PV/Load Smoothing: 4-minute trailing means (batterycontrol_
+          # sensors.yaml) used for every comparison that selects between
+          # distinct storage MODES, to avoid a momentary spike/dip at this
+          # 15-min trigger instant flipping the requested mode.
+          # See architecture.md - Layer 4A - PV/Load Sampling Smoothing.
           pv: "{{ (states('sensor.pv_production_smoothed') | float(0)) }}"
           house_load: "{{ (states('sensor.house_load_smoothed') | float(0)) }}"
 
-          # Instantaneous (unsmoothed) readings: used only in Maintain Zone,
-          # to choose between two charge-limit ceilings within the SAME mode
-          # (maximize_self_consumption either way) - no mode-flapping risk,
-          # so the current snapshot is used instead of a 4-minute-old
-          # average, letting that ceiling react to a real short PV/load
-          # change at each 15-min tick. See architecture.md - Layer 4A -
-          # PV/Load Sampling Smoothing.
+          # Instantaneous (unsmoothed): used only in Maintain Zone to pick a
+          # charge-limit ceiling within the same mode (no mode-flapping
+          # risk), so it reacts to the current tick instead of a 4-minute
+          # lagged mean. See architecture.md - Layer 4A - PV/Load Sampling
+          # Smoothing.
           pv_now: "{{ (states('sensor.solar_panel_production_w') | float(0)) }}"
           house_load_now: "{{ (states('sensor.power_myhouse_load_no_var_loads') | float(0)) }}"
 
@@ -305,15 +296,15 @@ automation:
                         data:
                           value: 0
 
-                  # Below  and No PV, BattForecast is 0, grid is import and Prices have not gone up >20%
+                  # Below and No PV, BattForecast is 0, grid is import and price hasn't risen >20%
                   # ===== PRICE-BASED FALLBACK (LAST) =====
-                  # Requires the price sensor itself to be available: a missing/
-                  # unknown sensor.total_import_price falls back to price_import=0
-                  # via `| float(0)` above, which would otherwise read as "price is
-                  # free" and trigger a real grid charge regardless of actual
-                  # price. See known_issues_and_fixes.md - EMHASS Outage Fallback
-                  # Guard. When the price sensor is down, this branch is skipped
-                  # and control falls through to the solar-only catch-all below.
+                  # Requires sensor.total_import_price to be available - a missing/
+                  # unknown price falls back to price_import=0 via | float(0), which
+                  # would otherwise misread as "price is free" and trigger a real
+                  # grid charge regardless of actual price. When the price sensor is
+                  # down, this branch is skipped and control falls through to the
+                  # solar-only catch-all below.
+                  # See known_issues_and_fixes.md - EMHASS Outage Fallback Guard.
                   - conditions:
                       - condition: template
                         value_template: >-

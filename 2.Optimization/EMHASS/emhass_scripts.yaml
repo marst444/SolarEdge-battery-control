@@ -1,27 +1,16 @@
-#####################################################
-#    Sensors in "Generate EMHASS energy plan mpc_pv"
-#
-#    Sensors:
-#    Energy capacity: kWh
-#    Charging/discharging power: W
-#    Max inverter power: kW
-#    Battery SOC: %
-#    Consumed power = sensor no load var loads (W)
-#    Current power = solar panel production (W)
-#    Electricity price: SEK/kWh
-#
-#    The plan uses a load forecast produced by EMHASS's ML predict step,
-#    published to sensor.p_load_forecast_ml_pv.
-#    The plan uses MPC (Model Predictive Control).
-#    An automation uses a time-based trigger to run this script and set
-#    up the plan.
-#
-#    This script is a modification of the script created by Brendan
-#    Annable for Sigenergy: https://sigenergy.annable.me/
-#####################################################
-# MPC energy plan: builds payload from live sensors, calls EMHASS naive-mpc
-# optim, publishes results. Attribution/details: README.md.
-#####################################################
+# ── emhass_scripts.yaml ──
+# Layer 2: builds EMHASS MPC/day-ahead optimisation payloads from live sensors, calls the addon, publishes forecast sensors back into HA.
+# Sets: sensor.mpc_pv_*/dh_pv_*, input_number.mpc_window_start/end, mpc_soc_final_target
+# Deps: SolarEdge/Solcast/merged price sensors, rest_command.emhass_*  →  emhass_automations.yaml, battery_forecast_control.yaml
+# Fixes: known_issues_and_fixes.md
+
+# Sensors used by the MPC and day-ahead scripts below: energy capacity (kWh),
+# charging/discharging power (W), max inverter power (kW), battery SOC (%),
+# house load excl. variable loads (W), current PV power (W), import/export
+# price (SEK/kWh). The load forecast used in the payload comes from EMHASS's
+# own ML predict step, published to sensor.p_load_forecast_ml_pv.
+# Both scripts are a modification of Brendan Annable's Sigenergy script -
+# see README.md (Big thanks) for attribution/details.
 
 script:
 
@@ -237,21 +226,9 @@ script:
             {{ dict(common, **payload) | to_json }}
         alias: Publish Energy Plan to HA
 
-#####################################################
-#    Sensors in "Generate EMHASS energy plan dayahead_pv"
-#
-#    Same sensor set as the MPC plan above (see the header on
-#    generate_emhass_energy_plan_mpc_pv) - Energy capacity, charging/
-#    discharging power, max inverter power, battery SOC, consumed power,
-#    current PV power, electricity price.
-#
-#    Builds EMHASS's day-ahead optimisation plan (dayahead-optim) rather
-#    than the rolling MPC plan. An automation triggers this script once
-#    per day.
-#####################################################
-# Day-ahead energy plan: same pattern as MPC (see above), using EMHASS
-# dayahead-optim. Attribution/details: README.md.
-#####################################################
+  # Day-ahead energy plan: same sensor set and payload pattern as the MPC
+  # script above, using EMHASS's dayahead-optim instead of naive-mpc-optim.
+  # Triggered once per day by emhass_automations.yaml.
   generate_emhass_energy_plan_dh_pv:
     alias: "generate EMHASS energy plan dayahead_PV"
     sequence:

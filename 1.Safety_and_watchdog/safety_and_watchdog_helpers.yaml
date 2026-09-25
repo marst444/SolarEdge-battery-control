@@ -1,3 +1,9 @@
+# ── safety_and_watchdog_helpers.yaml ──
+# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, and battery safety/override input_booleans.
+# Sets: (definitions only - runtime values written by emhass_automations.yaml, safety_limits_and_override.yaml)
+# Deps: none (static)  →  safety_limits_and_override.yaml, watchdog_sensors.yaml, apply_effective_battery_control.yaml
+# Fixes: known_issues_and_fixes.md; several safety-override booleans possibly unused - see roadmap.md
+
 input_number:
 
   minimum_state_of_charge:
@@ -111,5 +117,3 @@ input_boolean:
   effective_battery_control_enabled:
     name: Effective Battery Control Enabled
     icon: mdi:battery-cog
-
-    

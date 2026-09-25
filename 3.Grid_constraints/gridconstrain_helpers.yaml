@@ -1,4 +1,8 @@
-
+# ── gridconstrain_helpers.yaml ──
+# Layer 3: input_boolean definitions for grid-constraint status (export block/limit, negative price).
+# Sets: (definitions only)
+# Deps: none (static)  →  negative_price_curtailment.yaml; grid_export_limited currently unused - see roadmap.md
+# Fixes: known_issues_and_fixes.md
 
 input_boolean:
   grid_export_blocked:

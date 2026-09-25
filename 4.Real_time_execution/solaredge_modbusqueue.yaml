@@ -1,7 +1,8 @@
-###############################################################################
-# Layer 4C Modbus Queue: serializes all SolarEdge writes. Mode list and
-# semantics: README.md - Storage Control Modes Explained.
-###############################################################################
+# ── solaredge_modbusqueue.yaml ──
+# Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap.
+# Sets: input_boolean.modbus_busy; select/number.solaredge_i1_* (via queue_service dispatch)
+# Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
+# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe); leftover debug logging - see roadmap.md
 
 input_boolean:
   modbus_busy:

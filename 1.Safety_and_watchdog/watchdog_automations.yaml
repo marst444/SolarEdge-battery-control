@@ -1,8 +1,8 @@
-###############################################################################
-##
-##      EMHASS WATCHDOG
-##
-###############################################################################
+# ── watchdog_automations.yaml ──
+# Layer 1: notifies on missing day-ahead/stalled MPC runs; auto-restarts EMHASS addon after 90 min stall (max 1/hr).
+# Sets: input_datetime.emhass_addon_last_restart_attempt
+# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status  →  hassio.addon_restart, notify.mobile_app_fp3_ms
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard)
 
 automation:
 
@@ -73,22 +73,10 @@ automation:
   - id: EMHASS_addon_watchdog_auto_restart
     alias: "EMHASS Watchdog – Addon Auto-Restart"
     description: >
-      Escalation beyond the plain "MPC stalled" notification above: if EMHASS
-      hasn't produced a successful MPC run in over 90 minutes, attempt
-      hassio.addon_restart on the EMHASS addon itself, then notify either way.
-      Addressed a real incident (2026-09-22) where a power outage left the
-      EMHASS addon stuck in a failed build (no network for its dependency
-      download) for the rest of the day - Supervisor's own addon watchdog
-      option was already on, but it only restarts a addon that crashes after
-      having started; it doesn't retry a addon that never got past its build
-      step. This automation is a slower, second-tier retry loop on top of
-      that. See known_issues_and_fixes.md - EMHASS Outage Fallback Guard.
-
-      Deliberately a much longer threshold (90 min) than the plain stalled
-      notification (45 min) - a restart is a more disruptive action than a
-      notification, so this gives the addon more room to recover or be
-      restarted manually first. The cooldown below prevents restart-looping
-      if the underlying cause (e.g. no network) hasn't actually cleared yet.
+      Escalation beyond the plain MPC-stalled notification above: after 90
+      minutes of MPC stall, restarts the EMHASS addon (hassio.addon_restart),
+      rate-limited to once per hour, and notifies either way.
+      See known_issues_and_fixes.md - EMHASS Outage Fallback Guard.
     trigger:
       - platform: time_pattern
         minutes: "/15"

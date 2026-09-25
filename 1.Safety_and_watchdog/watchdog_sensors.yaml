@@ -1,3 +1,9 @@
+# ── watchdog_sensors.yaml ──
+# Layer 1: derives EMHASS health/staleness and SolarEdge Modbus data freshness from run-timestamps and entity ages.
+# Sets: sensor.emhass_health, binary_sensor.emhass_healthy, binary_sensor.solaredge_modbus_data_fresh
+# Deps: input_datetime.emhass_mpc_last_success, sensor.mpc_pv_optim_status  →  watchdog_automations.yaml, battery_forecast_control.yaml
+# Fixes: known_issues_and_fixes.md; emhass_healthy naming/typo - see roadmap.md
+
 template:
   - sensor:
       # WATCHDOG
@@ -30,6 +36,9 @@ template:
           {{ (now() - last).total_seconds() | round(0) }}
           
   - binary_sensor:
+      # NOTE: "on" here means a problem is present (device_class: problem),
+      # despite the friendly name "EMHASS Healthy" - i.e. this reads as
+      # "EMHASS UNhealthy". Left as-is; flagged for review, not changed here.
       - name: "EMHASS Healthy"
         unique_id: emahss_healthy
         state: >

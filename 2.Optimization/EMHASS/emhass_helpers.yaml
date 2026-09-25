@@ -1,3 +1,9 @@
+# ── emhass_helpers.yaml ──
+# Layer 2/4A: input_number/datetime/select definitions for MPC window, SOC target, EMHASS requested mode/limits.
+# Sets: (definitions only - written at runtime by emhass_scripts.yaml, battery_forecast_control.yaml)
+# Deps: none (static)  →  emhass_scripts.yaml, battery_forecast_control.yaml, apply_effective_battery_control.yaml
+# Fixes: known_issues_and_fixes.md
+
 input_number:
   mpc_window_start:
     name: MPC Window Start
@@ -74,6 +80,3 @@ input_select:
       - discharge_to_maximize_export
       - maximize_self_consumption
     icon: mdi:battery-sync
-  
-
-

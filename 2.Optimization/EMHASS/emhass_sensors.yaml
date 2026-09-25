@@ -1,3 +1,9 @@
+# ── emhass_sensors.yaml ──
+# Layer 2: shapes EMHASS inputs - house load (with/without EV), merged Nordpool+EPEX price forecasts, Solcast PV blocks.
+# Sets: sensor.power_myhouse_load_no_var_loads(_no_ev), sensor.merged_total_costs/revenue_*_forecast, sensor.solcast_pv_forecast_*_intervals
+# Deps: Nordpool/EPEX/Solcast source sensors, input_number.grid_fee/vat/export_compensation  →  emhass_scripts.yaml
+# Fixes: known_issues_and_fixes.md
+
 template:
   - sensor:
       # Power consumption sensor for EMHASS

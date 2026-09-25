@@ -1,3 +1,9 @@
+# ── emhass_restcommand.yaml ──
+# Layer 2: rest_command HTTP endpoints for the local EMHASS addon (optim runs, publish, ML fit/predict).
+# Sets: (HTTP calls only, no HA entities)
+# Deps: EMHASS addon (127.0.0.1:5000), InfluxDB (192.168.10.3:8086)  →  emhass_scripts.yaml
+# Fixes: known_issues_and_fixes.md; rest_command.publish_data possibly dead - see roadmap.md
+
 rest_command:
 
 # Siegen energy setup #
@@ -20,7 +26,11 @@ rest_command:
     timeout: 240
     payload: "{{ payload }}"
 
-
+  # Note: uses 192.168.10.3 (LAN IP) rather than 127.0.0.1 like the three
+  # commands above, and is not currently called from emhass_scripts.yaml or
+  # emhass_automations.yaml - listed in entities.md but not observed wired
+  # into any automation in this audit's scope. Worth confirming whether it
+  # is still needed.
   publish_data:
     url: http://192.168.10.3:5000/action/publish-data
     method: POST

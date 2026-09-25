@@ -1,3 +1,9 @@
+# ── batterycontrol_scripts.yaml ──
+# Layer 4B: wrapper scripts, each forwarding one requested mode/limit to script.modbus_queue (Layer 4C).
+# Sets: (none directly - all effect via script.modbus_queue)
+# Deps: input_number.dynamic/effective_*_limit, script.modbus_queue  ←  apply_effective_battery_control.yaml
+# Fixes: known_issues_and_fixes.md
+
 script:
 
   maximize_self_consumption_script:
@@ -167,5 +173,3 @@ script:
         data:
           queue_service: negative_site_limit_off
           queue_value: 0
-          
-

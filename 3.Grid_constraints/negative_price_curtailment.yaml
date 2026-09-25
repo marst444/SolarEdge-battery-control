@@ -1,3 +1,9 @@
+# ── negative_price_curtailment.yaml ──
+# Layer 3: curtails grid export when export price goes negative; releases curtailment when price normalizes.
+# Sets: input_boolean.negative_price_active, grid_export_blocked
+# Deps: sensor.total_export_price, switch.solaredge_i1_negative_site_limit  →  gridconstrain_helpers.yaml
+# Fixes: known_issues_and_fixes.md
+
 automation:
   - id: negative_price_curtailment
     alias: "Curtail Export When Price Negative"

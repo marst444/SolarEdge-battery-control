@@ -1,3 +1,9 @@
+# ── batterycontrol_helpers.yaml ──
+# Layer 4A: helper definitions for dynamic limits, grid-charge price accounting, SOC target/deadband, cooldown timer, effective_* entities.
+# Sets: (definitions only)
+# Deps: none (static)  →  battery_forecast_control.yaml, batterycontrol_automations.yaml, safety_limits_and_override.yaml
+# Fixes: known_issues_and_fixes.md; effective_* helpers defined here but written by Layer 1 - see roadmap.md
+
 input_number:
   effective_charge_limit:
     name: Effective Charge Limit

@@ -72,6 +72,17 @@ the addon (Installation Method 2 in the addon's own docs, or an updated
 addon release that ships a built image) avoids the network dependency at
 startup entirely.
 
+Update 2026-09-24: user confirmed this isn't actionable right now -
+runs on Home Assistant Green, which the user doesn't believe can handle
+a local/pre-built EMHASS install, and there's no NUC or other spare
+hardware available to run EMHASS on instead. Parking this item as-is
+(the auto-restart watchdog mitigation stands); don't re-propose a
+reinstall/hardware-swap path without checking back on this constraint
+first. If revisited, worth asking specifically about the addon's own
+Installation Method 2 (pinned/pre-built image) rather than a hardware
+change - that may not carry the same resource concern, but hasn't been
+evaluated against Green's constraints yet.
+
 ---
 
 ### Review Dynamic Charge/Discharge Limit Duplication
@@ -141,6 +152,9 @@ binary_sensor.emhass_problem
 binary_sensor.emhass_unhealthy
 ```
 
+(Reconfirmed during the 2026-09-24 YAML header/hygiene audit - same
+naming/semantics mismatch, unique_id typo noted separately below.)
+
 ---
 
 ### EMHASS Healthy Unique ID Typo
@@ -201,6 +215,97 @@ grid_export_limited is redundant
 grid_export_limited should be removed
 grid_export_limited should be expanded
 ```
+
+(Reconfirmed during the 2026-09-24 YAML header/hygiene audit:
+`negative_price_curtailment.yaml` and `gridconstrain_helpers.yaml` -
+the only two files that define/could plausibly use it - still show no
+read or write of `grid_export_limited` anywhere in either file.)
+
+---
+
+### Possibly Dead: `rest_command.publish_data`
+
+Found during the 2026-09-24 YAML header/hygiene audit:
+`rest_command.publish_data` (`emhass_restcommand.yaml`) targets a
+different host (`192.168.10.3`) than the other three `emhass_*`
+rest_commands in the same file (all `127.0.0.1`), and no automation or
+script in `emhass_scripts.yaml`/`emhass_automations.yaml` was found
+calling it (they call `rest_command.emhass_publish_data` instead, a
+distinct entity). It's listed in `entities.md`. Possibly legacy/dead
+config from an earlier setup - confirm whether it's still needed before
+removing it.
+
+---
+
+### Possibly Dead/Duplicate: `shell_command.trigger_nordpool_forecast`
+
+Found during the 2026-09-24 YAML header/hygiene audit:
+`shell_command.trigger_nordpool_forecast` (`emhass_shellcommand.yaml`)
+posts raw 24h Nordpool-only data directly to EMHASS's `dayahead-optim`
+endpoint via curl. This appears to duplicate/be superseded by
+`emhass_scripts.yaml`'s `load_cost_forecast`/`prod_price_forecast`
+Jinja blocks feeding `rest_command.emhass_dayahead_optim` (merged
+Nordpool+EPEX, 2-day/15-min horizon) - a more complete forecast path.
+No trigger or call site for the shell_command was found anywhere in
+`emhass_automations.yaml` or `emhass_scripts.yaml`. Possibly legacy;
+confirm before removing.
+
+---
+
+### Unused `ev` Variable In `battery_forecast_control.yaml`
+
+Found during the 2026-09-24 YAML header/hygiene audit:
+`emhass_battery_forecast_control` reads `binary_sensor.
+ev_charging_active` into a local `ev` variable, but no branch in the
+automation's current `choose:` logic references it - EV-aware discharge
+limiting is actually owned by `automation.ev_charging_discharge_control`
+in `batterycontrol_automations.yaml`. Confirm whether `ev` is
+intentionally reserved for future use in this automation or should be
+removed as dead config.
+
+---
+
+### `effective_*` Helpers Defined In A Different Layer's File Than They're Written
+
+Found during the 2026-09-24 YAML header/hygiene audit: `input_number.
+effective_charge_limit`, `input_number.effective_discharge_limit`, and
+`input_select.effective_storage_mode` are Layer 1 output entities -
+written by `safety_limits_and_override.yaml`'s
+`calculate_effective_battery_control` - but their *definitions* live in
+`batterycontrol_helpers.yaml` (a Layer 4A file) rather than
+`safety_and_watchdog_helpers.yaml` (the Layer 1 helpers file). Purely
+organisational, no functional impact. Consider moving the definitions
+to match ownership, or documenting the split as intentional (e.g. if
+Layer 4A files were meant to own the "effective" output helpers as
+their primary consumer).
+
+---
+
+### Possibly Unused Safety-Override Input Booleans
+
+Found during the 2026-09-24 YAML header/hygiene audit: `input_boolean.
+battery_safety_override_active`, `battery_force_discharge`,
+`battery_force_charge`, `battery_discharge_blocked`, and
+`battery_charge_blocked` are defined in `safety_and_watchdog_helpers.yaml`
+but were not found to be read or written by any of
+`safety_limits_and_override.yaml`, `safety_and_watchdog_helpers.yaml`,
+`watchdog_sensors.yaml`, `watchdog_automations.yaml`,
+`apply_effective_battery_control.yaml`, or `solaredge_modbusqueue.yaml`
+during the audit (`batterycontrol_automations.yaml` and the other
+battery-control-layer files weren't confirmed either way for these
+specific entities). Confirm whether these are wired up as manual-override
+controls somewhere, or are vestigial/planned-but-unimplemented.
+
+---
+
+### Leftover Debug Logging In `solaredge_modbusqueue.yaml`
+
+Found during the 2026-09-24 YAML header/hygiene audit: `script.
+modbus_queue` still contains several `system_log.write ... level: debug`
+calls (DEBUG START / LOCK ACQUIRED / BEFORE CHOOSE / END markers) left
+over from earlier debugging. Not narrative, just verbose instrumentation
+- worth trimming in a future pass if the debug log gets noisy, otherwise
+harmless.
 
 ---
 
@@ -275,6 +380,133 @@ noticed pattern: each night's episode lands ~11-13 minutes earlier than
 the previous night's (drifting ~22:00 -> ~21:13 over the 6 nights checked
 2026-09-04 through 2026-09-09) - a possible clue for the ~22:00 clustering
 question above, not yet chased further.
+
+### Update 2026-09-24 - Noise-rate re-check attempted; library appears to have changed underneath the investigation
+
+Attempted the "focused before/after comparison now that the lock-release
+fix has landed" suggested above. Two findings, both worth flagging for
+whoever continues this:
+
+1. **The Modbus client library itself appears to have changed** since the
+   original 2026-08-28 baseline. Every connectivity warning in current
+   logs comes from a `tmodbus.transport.async_tcp` logger (e.g. "Received
+   unexpected response with Transaction ID: N. Discarding bytes: ..." and
+   `custom_components.solaredge_modbus_multi.hub`'s "Coordinator has timed
+   out 3 times in a row"). A direct text search for the original baseline's
+   exact phrases - `"Cancel send"`, `"Repeating call"`, `"pymodbus"` - found
+   **zero** matches anywhere in the currently-retained log window. This
+   reads as the `solaredge_modbus_multi` custom integration having switched
+   its underlying Modbus client library (pymodbus-family -> a `tmodbus`-
+   named one) at some point between late August and now, likely via a
+   routine integration update - not something this project changed. The
+   new messages appear to be the semantic equivalents of the old ones
+   (transaction ID mismatch, retry-exhausted), so a *like-for-like* noise
+   comparison is still possible, just not a literal grep-for-the-same-string
+   one.
+
+   **Confirmed 2026-09-24 via the integration's GitHub repo**
+   (`WillCodeForCats/solaredge-modbus-multi`): this is real and dated.
+   Release **v4.0.0** (published 2026-09-14, 10 days before this check)
+   adopted Home Assistant's own `modbus-connection` library - "a
+   backend-neutral Modbus library with device-modelling" - replacing the
+   integration's previous direct `pymodbus` usage (issue #1024 "Adopt the
+   modbus-connection library", PR #1077). The `tmodbus.transport.async_tcp`
+   logger seen in our logs is that new library's transport layer. Also
+   bundled in v4.0.0: a repairable-issue path for Power Control detection
+   failures (previously silent), a user-configurable Modbus Request Timeout
+   (default 3s, confirmed matching our config's `request_timeout: 3`), and
+   "Coordinator timeout scales with configured request timeout" - i.e. the
+   "Coordinator has timed out 3 times in a row" message is itself new
+   surfacing behavior from this release, not evidence of a new underlying
+   failure mode. One correction to a same-day speculation: our config
+   (`ha_get_integration`) shows `close_after_polling: false` - this
+   installation keeps the Modbus connection open persistently, the
+   opposite of the library's now-documented recommended default (closed).
+   The frequent "Async TCP connection established/closed" cycles seen in
+   logs (9-13 per ~1.5h window) track 1:1 with `script.modbus_queue`
+   "Running script sequence" counts in the same windows, not with polling
+   - i.e. those are this project's own command-write connections opening
+   and closing per queued command, unrelated to the persistent polling
+   connection or to the library migration. No config change is indicated
+   here.
+2. **Rate comparison is inconclusive, and even less meaningful than first
+   thought.** HA's retained raw log window only reaches back a few hours
+   per query (deep pagination is expensive), and the only stretch of
+   2026-09-24 without a restart or the unrelated internet/router outage
+   that evening (see below) was 06:45-11:10 local (~4.7h): 2 transaction-
+   ID-mismatch events + 5 "Coordinator has timed out" events = 7 real
+   connectivity issues, extrapolating to roughly 70/48h - notably higher
+   than the original ~34/48h baseline (27+7). Given point 1 above (the
+   "Coordinator has timed out" message is new *surfacing* behavior in
+   v4.0.0, scaled to the configured request timeout, not necessarily a new
+   underlying failure), this comparison is now doubly unreliable: different
+   message vocabulary AND a changed detection/reporting mechanism, on top
+   of the small-sample extrapolation. It should not be read as a confirmed
+   regression - but it does not show
+   the improvement one might hope the lock-release fix (known_issues_and_
+   fixes.md - Modbus Queue Lock Release Not Exception-Safe) would produce
+   on the underlying connectivity noise itself (that fix only addressed the
+   stuck-lock *consequence* of a failure, never claimed to reduce the
+   failure rate - see known_issues_and_fixes.md, now confirmed deployed
+   and working as of 2026-09-24). A cleaner comparison needs a genuine
+   quiet 48h window sampled in a few passes going forward, now that a
+   post-library-change baseline exists to compare against.
+
+Both the evening's automations reload (~21:24) and a full HA restart
+(~22:16, from the 2026-09-23 deployment) reset HA's log buffers, and an
+unrelated `router_watchdog` entry logged "internet down since 22:16:53"
+recovering around 02:30 the next morning - a WAN/router event, not
+Modbus/LAN-specific, and outside this project's scope, but it (along with
+the two restarts) makes the first several hours of 2026-09-24's log
+window unrepresentative of steady-state noise; only the 06:45-11:10
+stretch above was used for the rate estimate.
+
+### Update 2026-09-24 (later same day) - Two integration options changed live: `close_after_polling` and `scan_interval`
+
+Following from point 1 above (SolarEdge inverters accept only one
+Modbus/TCP connection at a time, confirmed via the integration's own
+wiki), and the observation that `script.modbus_queue`'s own write
+connections were competing with the polling coordinator for that single
+slot whenever the coordinator held it open persistently:
+
+1. **`close_after_polling`** changed `false` -> `true` at 2026-09-24
+   11:52 local (user, via the integration's options UI) - the polling
+   coordinator now releases the connection after each poll instead of
+   holding it open, matching the integration's own recommended default
+   and leaving the slot free for `script.modbus_queue` writes almost all
+   the time instead of contending for it.
+2. **`scan_interval`** changed `2` -> `5` (seconds) at 2026-09-24 ~12:33
+   local (confirmed via `ha_get_integration`) - `close_after_polling:
+   true` means every poll now opens and closes a fresh TCP connection
+   (the integration's own documented default scan interval is 300s, for
+   context), so a 2s interval would have meant ~1800 connect/disconnect
+   cycles/hour on top of the single-connection constraint. 5s cuts that
+   to ~720/hour while staying well within the reaction-time margin
+   needed for the user's real reason for fast polling: per-phase
+   measurement and EV-charger load balancing (a separate `EV_charge`
+   package, out of scope here) - standard circuit breakers tolerate a
+   moderate overload for several seconds to tens of seconds before
+   tripping, so a 5s-old reading still leaves real margin.
+
+Both changes are live as of 2026-09-24 and were made specifically as an
+intervention in this investigation, not just incidentally observed -
+**this is the point to measure a real before/after from**, once enough
+quiet time has passed. Everything sampled earlier in this Update
+2026-09-24 section (the ~70/48h extrapolation) predates both changes and
+should not be blended with data collected after them.
+
+Also found while reviewing SOC-sensor history for the Layer 4A guard
+verification (see known_issues_and_fixes.md): two more extended
+`sensor.solaredge_b1_state_of_energy` outages beyond the well-known short
+nightly blip - 2026-09-20 21:26-21:38 local (~12 min) and 2026-09-22
+14:22-16:34 local (~2h13m, daytime, unrelated to the EMHASS addon outage
+that started later the same evening). Same open question as the
+2026-09-19 finding above (root cause unknown, no explanatory log entry
+found) - now three data points of "much longer than the usual 40s blip"
+instead of one, which may be a useful pattern once more accumulate. The
+Layer 4A guard correctly froze all outputs through the 2h13m one (see
+known_issues_and_fixes.md), so the operational risk from these is
+covered even though the cause isn't understood.
 
 ---
 
@@ -624,6 +856,30 @@ the price sensor specifically so a missing price feed can't be misread
 as "free". Also added an addon-level auto-restart watchdog. See
 known_issues_and_fixes.md and EMHASS Addon Build-On-Start Fragility
 above (still open) for the underlying addon fragility this doesn't fix.
+
+---
+
+# 6. Documentation Housekeeping
+
+### YAML File Header Standardisation (2026-09-24)
+
+All 19 package YAML files were audited, given a standard header (see
+`claude/yaml_file_header_template.md` in the project docs for the
+reusable template and field definitions), and had any inline fix
+narrative / design rationale trimmed to short pointer comments -
+`# See known_issues_and_fixes.md - <Entry Name>` for fixes,
+`# See architecture.md - <Section>` for design/architecture reasoning.
+Most files already followed this pattern from prior cleanup passes;
+genuinely new content extracted by the audit is a handful of Cleanup /
+Technical Debt items above (rest_command.publish_data,
+trigger_nordpool_forecast, the unused `ev` variable, the `effective_*`
+helper file placement, the possibly-unused safety-override booleans,
+and the leftover debug logging in `solaredge_modbusqueue.yaml`) plus one
+known_issues_and_fixes.md update (EV Charging Sensor Swap - stale
+trigger entity_id follow-up). No new known_issues_and_fixes.md,
+README.md, or architecture.md *entries* were needed beyond that one
+update - existing entries already covered essentially everything found
+inline.
 
 ---
 

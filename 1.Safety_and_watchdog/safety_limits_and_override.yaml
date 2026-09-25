@@ -1,9 +1,8 @@
-################################################################################
-#
-# Safety limits check and choose override for effective battery control
-#
-#
-################################################################################
+# ── safety_limits_and_override.yaml ──
+# Layer 1: applies SOC safety limits, high-SOC hold, grid-export/negative-price blocks, and EV constraints to Layer 4A's requested values.
+# Sets: input_select.effective_storage_mode, input_number.effective_charge/discharge_limit, input_boolean.battery_high_soc_hold
+# Deps: input_select/number.emhass_requested_*, sensor.solaredge_b1_state_of_energy  →  apply_effective_battery_control.yaml
+# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger); EV Charging Sensor Swap - trigger entity_id still stale
 
 automation:
 
@@ -27,6 +26,10 @@ automation:
           - input_number.minimum_state_of_charge
 
     condition:
+      # SOC sensor unavailable/unknown guard - freezes effective_* at last
+      # good values instead of computing from a fake soc=0.
+      # See known_issues_and_fixes.md - Modbus Connectivity - SOC-Sensor
+      # Unavailable False-Trigger.
       - condition: not
         conditions:
           - condition: state
@@ -233,13 +236,7 @@ automation:
             data:
               value: "Normal - effective follows requested"
 
-################################################################################
-#
-# Adds hysteresis to battery upper limit
-#
-#
-###############################################################################
-
+  # High SOC Hold hysteresis - see architecture.md (Layer 1 - High SOC Hold).
   - id: battery_high_soc_hold
     alias: Battery High SOC Hold
     mode: single
@@ -251,6 +248,9 @@ automation:
           - input_number.maximum_state_of_charge
 
     condition:
+      # SOC sensor unavailable/unknown guard.
+      # See known_issues_and_fixes.md - Modbus Connectivity - SOC-Sensor
+      # Unavailable False-Trigger.
       - condition: not
         conditions:
           - condition: state

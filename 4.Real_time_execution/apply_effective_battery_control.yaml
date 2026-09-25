@@ -1,13 +1,8 @@
-###############################################################################
-# Applies the effective battery mode/limits to SolarEdge via the Modbus
-# Queue after the safety layer check.
-#
-# Mode Command Guard: skips the mode-select command + 15min timeout reset
-# when staying in maximize_self_consumption and both
-# select.solaredge_i1_storage_command_mode and
-# select.solaredge_i1_storage_default_mode already confirm it. Full details:
-# architecture.md - Layer 4B - Mode Command Guard.
-###############################################################################
+# ── apply_effective_battery_control.yaml ──
+# Layer 4B/4D: sends effective mode/limits to SolarEdge via Modbus Queue scripts; Mode Command Guard skips redundant mode writes.
+# Sets: (via scripts) select.solaredge_i1_storage_command_mode, number.solaredge_i1_storage_*_limit
+# Deps: input_select.effective_storage_mode, input_number.effective_*_limit  ←  safety_limits_and_override.yaml  →  solaredge_modbusqueue.yaml
+# Fixes: known_issues_and_fixes.md (Write Pressure - Mode Command Guard)
 
 automation:
 

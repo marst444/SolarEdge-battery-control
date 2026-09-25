@@ -17,11 +17,16 @@ these project docs so far.
 Its related, unconfirmed corner - `grid_fc < 0` together with `batt_fc <
 0`, a contradictory-forecast edge case - is still uncovered by any
 branch, not observed live, and not proposed for a blind fix. The Layer
-4A SOC-unavailable guard found 2026-09-19 was fixed the same day - see
-Fixed Issues below. The modbus_busy stale-lock gap found 2026-08-28 was
-fixed 2026-09-20 - see Modbus Queue Lock Release Not Exception-Safe
-below. The EMHASS-outage fallback gap found 2026-09-22 was fixed the
-same day - see EMHASS Outage Fallback Guard below.)
+4A SOC-unavailable guard found 2026-09-19 was fixed the same day and
+**confirmed live 2026-09-24** against a real ~2h13m outage - see Fixed
+Issues below. The modbus_busy stale-lock gap found 2026-08-28 was fixed
+2026-09-20 and is now **behaviorally confirmed live** as of 2026-09-24
+- see Modbus Queue Lock Release Not Exception-Safe below. The
+EMHASS-outage fallback gap found 2026-09-22 was fixed the same day,
+deployed and structurally confirmed 2026-09-23 - see EMHASS Outage
+Fallback Guard below; its behavioral verification (an actual skipped
+run, or the addon auto-restart firing) still awaits a real future
+EMHASS stall.)
 
 ---
 
@@ -123,16 +128,44 @@ underlying cause (e.g. no network) hasn't actually cleared. This would
 have retried the addon automatically as soon as DNS came back tonight,
 rather than requiring a manual restart the next time someone noticed.
 
-Status: implemented in this project's docs 2026-09-22. Not yet deployed
-or verified live - next step is copying all three changed files
-(`battery_forecast_control.yaml`, `watchdog_automations.yaml`,
-`safety_and_watchdog_helpers.yaml`) to the live config and reloading.
-The Layer 4A guard changes can be verified the same way as the
-Layer 4A SOC-unavailable guard below (live trace during a future EMHASS
-outage/stalled window, confirming the run is skipped). The addon
-auto-restart automation is harder to verify on demand short of forcing
-the addon into `error` state deliberately - realistically will only be
-confirmed the next time EMHASS actually goes down for 90+ minutes.
+Status: deployed live 2026-09-23 (all three changed files -
+`battery_forecast_control.yaml`, `watchdog_automations.yaml`,
+`safety_and_watchdog_helpers.yaml` - copied to the live config and
+reloaded). Structurally **confirmed live** the same day via
+`ha_get_automation_traces` on `automation.
+emhass_forecast_driven_battery_control` (run_id
+`ff5412076e1ede4c9737d80949f37fef`, 2026-09-23T19:45:00 UTC): the
+`condition_results` show exactly the 3 expected top-level conditions -
+Remote Control, the pre-existing SOC-unavailable guard, and the new
+`sensor.emhass_health` guard - all evaluating, `script_execution:
+"finished"`. Also confirmed directly: `automation.
+emhass_watchdog_addon_auto_restart` exists and is `state: "on"`, and
+`input_datetime.emhass_addon_last_restart_attempt` exists (still its
+default never-triggered value). `sensor.emhass_health` currently reads
+`OK`.
+
+This confirms the guard is wired in correctly and evaluating on every
+cycle, but not yet exercised in anger - no EMHASS stall or addon
+`error` state has occurred since deployment to confirm a run is
+actually *skipped* under the new health condition, or that the addon
+auto-restart automation actually fires and succeeds. Both still await
+a real future occurrence, same as noted below for the SOC-unavailable
+guard.
+
+Update 2026-09-24 (near-miss, inconclusive): `sensor.emhass_health`
+briefly went `unavailable` (21:15:48, 21:24:50 local) then `MPC problem`
+(21:27:42-21:32:51) the evening of deployment - but this lines up with
+the deployment's own automations reload, not a real EMHASS failure:
+`automation.emhass_forecast_driven_battery_control`'s own entity
+flickered `unavailable` -> `on` within the same second (21:24:46-47
+local), and its usually-clockwork 15-minute logbook trigger history has
+no "triggered by time pattern" entry at all for the 21:30 tick that
+fell inside the bad-health window (present at every other tick before
+and after) - consistent with the reload's trigger re-registration
+missing that one boundary, not with the new guard evaluating and
+skipping. No clean before/after limit-write pair exists to confirm the
+guard actually blocked that tick. Still an open verification, not a
+false alarm - just not usable evidence either way.
 
 ---
 
@@ -179,17 +212,27 @@ internal delay inside the `negative_site_limit_on` branch (sequencing two
 writes within that single command) was left as-is - it serves a different
 purpose than the removed trailing delays.
 
-Status: implemented in this project's docs 2026-09-20. Not yet deployed
-or verified live. Deployment needs copying to the live config and a
-"Reload Automations/Scripts" (or full restart if that doesn't take,
-per the precedent below). Verification is harder than the automation
-fixes in this file: this is a `script:`, not an `automation:`, so there's
-no trace history to read, and the failure condition (a real Modbus write
-error) is intermittent and can't be triggered on demand - the practical
-check is watching `input_boolean.modbus_busy`'s on/off history after
-deployment and confirming it never again sits "on" for the ~30-minute
-stuck-lock pattern seen in the original 2026-08-27 incident, ideally
-around a future night with the usual dropout.
+Status: implemented in this project's docs 2026-09-20. Deployment
+wasn't directly confirmed by a file diff (`ha_config_get_script` 404s
+on this package-defined script, same known limitation as YAML
+automations), but is now **behaviorally confirmed live** as of
+2026-09-24: `input_boolean.modbus_busy` history was checked across
+~4.5 days since the fix (2026-09-20 02:00 - 2026-09-22 08:15, then
+2026-09-23 15:30 - 2026-09-24 11:00; ~750 on/off cycles sampled, real
+Modbus write/queue traffic throughout including the 2026-09-22 power-
+outage day) and found **zero** episodes over 60s - none of the
+~30-minute stuck-lock pattern from the original incident. This window
+also contains genuine, ongoing connectivity noise to correlate against
+(a "Received unexpected response with Transaction ID" mismatch at
+2026-09-24 10:30:35 and two "Coordinator has timed out 3 times in a
+row" warnings at 09:46:38/10:16:34) - `modbus_busy` toggled cleanly
+(released in 18-33s) around all three, exactly the behavior the fix is
+supposed to produce, where the old code would have left it stuck for
+~30 minutes. Traces for `script.modbus_queue` only retain the last 5
+runs, so no historical trace directly shows `continue_on_error`
+catching a real failure - this is circumstantial (absence of the old
+symptom under continued real error conditions), not a smoking-gun
+trace, but it's a much stronger signal than "not yet deployed."
 
 ---
 
@@ -242,12 +285,25 @@ to not be `unavailable` or `unknown`. The whole run is now skipped while
 the sensor reads bad, instead of computing a fake `soc=0` - matching the
 established pattern exactly, no other logic changed.
 
-Status: implemented in this project's docs 2026-09-19. Not yet deployed
-or verified live - next step is copying to the live config, reloading
-automations (see Branch-Coverage Gaps below for why a reload, not just
-a doc match, needs to be confirmed), and then confirming via a live
-trace that a run during any future SOC-unavailable window is actually
-skipped rather than executed with `soc=0`.
+Status: deployed and **confirmed live** 2026-09-24, via a real ~2h13m
+SOC-unavailable window the guard actually caught: `sensor.
+solaredge_b1_state_of_energy` was `unavailable` 2026-09-22 14:22:15-
+16:34:52 local (found while reviewing history for other unavailable
+episodes this fix era - separate from, and 2 days before, the EMHASS-
+addon outage documented above). `input_select.emhass_requested_
+storage_mode` and both `input_number.emhass_requested_*_limit` helpers
+were frozen solid at their 14:15:00 values (`charge_from_solar_and_
+grid`, discharge=0, charge=250.0) across all 9 fifteen-minute ticks
+inside the outage (14:30 through 16:30) - no trace history survives
+from that far back, but the entity history is unambiguous: the very
+first change of any kind happened at 16:45:01.785, the first tick after
+the sensor recovered at 16:34:52. Same evidence class as the original
+2026-09-16/17 31-hour outage this fix was written for, just shorter and
+with a cleaner before/after (a single frozen tuple of values for 2+
+hours, vs. one-off values before and after). No further verification
+needed for the core skip behavior; still open is whether a *different*
+fallback branch (one that isn't conveniently safe) would also be
+skipped correctly - not exercised by either observed outage so far.
 
 ---
 
@@ -269,6 +325,19 @@ Status: deployed and **verified live** 2026-09-15 - a real EV session
 and the discharge-limit automation trace all changing in lockstep
 (discharge limit set to 100 on, restored to dynamic value off).
 
+Update 2026-09-24 (incomplete-swap follow-up, found during the YAML
+header/hygiene audit): `calculate_effective_battery_control`'s
+**trigger** `entity_id` list in `safety_limits_and_override.yaml` still
+names the dead `binary_sensor.ev_charging_on` - only the action logic's
+`ev_charging` variable was swapped to `binary_sensor.ev_charging_active`
+back on 2026-09-15, not the trigger list itself. Practical effect: the
+automation won't state-trigger promptly on a real EV-charging state
+change (it also has a `time_pattern` trigger as a backstop, so a full
+miss is unlikely, but a real-time reaction to `ev_charging_active`
+flipping could be delayed to the next scheduled tick instead of firing
+immediately). Not yet fixed - left as-is pending confirmation this is
+worth a live-behavior check first; tracked for follow-up.
+
 ---
 
 ## Align Safety SOC Limits And EMHASS SOC Limits
@@ -282,9 +351,14 @@ so behaviour only diverges if the helper is actually changed.
 `maximum_power_from_grid`/`maximum_power_to_grid` remain hardcoded - no
 safety-layer equivalent to align with (see roadmap.md).
 
-Status: deployed, confirmed 2026-09-04 (live file matched verbatim).
-Runtime confirmation that a live MPC/day-ahead payload reflects the
-helper values is still outstanding.
+Status: deployed, confirmed 2026-09-04 (live file matched verbatim),
+and now **runtime-confirmed** 2026-09-24: the EMHASS addon's own log
+(`Passed runtime parameters` lines from live MPC runs, 2026-09-24
+10:30-11:00) shows `'battery_minimum_state_of_charge': 0.2` and
+`'battery_maximum_state_of_charge': 0.9` - an exact match to the live
+`input_number.minimum_state_of_charge` (20.0) / `maximum_state_of_charge`
+(90.0) helper values read at the same time. The template hookup is
+confirmed working end-to-end, not just present in the script file.
 
 ---
 

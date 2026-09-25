@@ -1,11 +1,8 @@
-################################################################################
-# Layer 4A support automations: EV-charging discharge limiting, dynamic
-# charge/discharge helper synchronization from the SOC-forecast-derived
-# sensors, SOC target tracking from the latest EMHASS forecast, and grid-
-# charge average price tracking used by the Grid Charge Export Cooldown
-# logic. See architecture.md - Layer 4A for the wider decision engine
-# these automations feed and are fed by.
-################################################################################
+# ── batterycontrol_automations.yaml ──
+# Layer 4A: EV discharge override, dynamic charge/discharge sync, SOC target tracking, grid-charge price averaging.
+# Sets: input_number.dynamic_charge/discharge_limit, soc_target, average_last_chargingprice, emhass_requested_discharge_limit
+# Deps: binary_sensor.ev_charging_active, sensor.dynamic_storage_*_limit, sensor.mpc_pv_batt_soc  →  battery_forecast_control.yaml
+# Fixes: known_issues_and_fixes.md
 
 automation:
 
@@ -21,7 +18,7 @@ automation:
                 entity_id: binary_sensor.ev_charging_active
                 state: "on"
             sequence:
-            
+
         # Shadow/requested state
               - service: input_number.set_value
                 target:
@@ -77,7 +74,7 @@ automation:
           entity_id: input_number.last_charge_limit
         data:
           value: "{{ states('sensor.dynamic_storage_charge_limit') | float(states('input_number.last_charge_limit') | float(0)) }}"
-  
+
   - id: update_last_discharge_limit
     alias: "Update Last Discharge Limit"
     trigger:
@@ -123,8 +120,8 @@ automation:
             {% endif %}
             {{ [[raw, soc_min] | max, soc_max] | min }}
 
-  
-  
+
+
   - id: update_grid_charge_average
     alias: "Update Grid Charging Average Price"
     trigger:

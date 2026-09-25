@@ -1,3 +1,9 @@
+# ── batterycontrol_sensors.yaml ──
+# Layer 4A: battery value/worth-it sensors, dynamic charge/discharge limit calc, smoothed SOC target, Mode Command Guard, PV/load smoothing.
+# Sets: sensor.battery_value, dynamic_storage_*_limit, soc_batt_forecast_smooth, battery_mode_command_guard, pv/house_load_smoothed
+# Deps: sensor.solaredge_b1_state_of_energy, sensor.mpc_pv_batt_soc  →  battery_forecast_control.yaml, batterycontrol_automations.yaml
+# Fixes: known_issues_and_fixes.md
+
 template:
   - sensor:
       # Current value of energy stored in battery (cost already paid)
@@ -120,17 +126,13 @@ template:
           {{ [[raw, soc_min] | max, soc_max] | min | round(2) }}
 
       # === Mode Command Guard status ===
-      # Pure-template diagnostic (no automation dependency) mirroring the
-      # guard condition in apply_effective_battery_control.yaml. "guarded"
-      # means the mode-select command + 15min timeout reset would currently
-      # be skipped (effective mode is maximize_self_consumption, the
-      # inverter's live command mode already confirms that mode, AND the
-      # inverter's configured default/backup mode is also confirmed to be
-      # Maximize Self Consumption, so letting the timeout lapse is safe) -
-      # only charge/discharge limits are being pushed. "active" means the
-      # full command sequence is/would be sent on the next trigger (real
-      # mode change, live mode not yet confirmed, or the configured default
-      # mode is something other than Maximize Self Consumption).
+      # Diagnostic mirroring the Layer 4B guard condition in
+      # apply_effective_battery_control.yaml. "guarded" = the mode-select
+      # command + timeout reset would currently be skipped (effective mode,
+      # live inverter mode, and inverter's configured default mode all
+      # confirm Maximize Self Consumption); "active" = the full command
+      # sequence is/would be sent. See architecture.md - Layer 4B - Mode
+      # Command Guard.
       - name: "Battery Mode Command Guard"
         unique_id: battery_mode_command_guard
         icon: mdi:shield-check
@@ -149,22 +151,14 @@ template:
 ###############################################################################
 # PV / House Load Smoothing (Layer 4A input smoothing)
 #
-# automation.emhass_battery_forecast_control (battery_forecast_control.yaml)
-# samples PV production and house load once every 15 minutes, at the exact
-# trigger instant. A momentary appliance spike or a few-second PV dip
-# sampled at that instant can flip the pv <= house_load comparison used
-# throughout Layer 4A's branching, authorizing charge_from_solar_and_grid
-# for the full 15-minute interval even though PV covered load for nearly
-# all of it - see roadmap.md - Active Investigations - Midday
-# Charge/Discharge Oscillation, and architecture.md - Layer 4A - PV/Load
-# Sampling Smoothing.
-#
-# These two statistics-platform sensors provide a trailing mean over the
-# last 4 minutes for exactly this purpose. battery_forecast_control.yaml
-# reads these instead of the raw instantaneous sensors for its pv/house_load
-# decision variables. The raw sensors (sensor.solar_panel_production_w,
-# sensor.power_myhouse_load_no_var_loads) are unaffected and still used
-# directly everywhere else (dashboards, other automations, etc).
+# 4-minute trailing means of PV production and house load, read by
+# battery_forecast_control.yaml's mode-selecting comparisons instead of the
+# raw instantaneous sensors, so a momentary spike/dip at the 15-min trigger
+# instant can't flip the requested mode. Window size and rationale:
+# architecture.md - Layer 4A - PV/Load Sampling Smoothing. The raw sensors
+# (sensor.solar_panel_production_w, sensor.power_myhouse_load_no_var_loads)
+# are unaffected and still used directly elsewhere (dashboards, other
+# automations, and Maintain Zone's charge-ceiling choice).
 ###############################################################################
 
 sensor:
