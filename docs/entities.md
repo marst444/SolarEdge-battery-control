@@ -958,6 +958,86 @@ input_boolean.modbus_busy
 
 ---
 
+## Queue Telemetry
+
+Added 2026-10-02 - see roadmap.md (Add Queue Telemetry, now resolved) and
+solaredge_modbusqueue.yaml.
+
+```text
+input_number.modbus_queue_command_count_total
+-> Lifetime count of commands processed by script.modbus_queue.
+```
+
+---
+
+```text
+input_number.modbus_queue_command_count_today
+-> Count of commands processed since local midnight; zeroed daily by
+   automation.reset_modbus_queue_daily_counters.
+```
+
+---
+
+```text
+input_number.modbus_queue_timeout_count_total
+-> Lifetime count of runs where the 10s wait_template for the busy-lock
+   ran out rather than resolving (continue_on_timeout pushed the run
+   through anyway).
+```
+
+---
+
+```text
+input_number.modbus_queue_timeout_count_today
+-> Same as above, since local midnight; zeroed daily by
+   automation.reset_modbus_queue_daily_counters.
+```
+
+---
+
+```text
+input_number.modbus_queue_last_wait_seconds
+-> How long the most recent run waited for the busy-lock before
+   acquiring it (or timing out at 10s).
+```
+
+---
+
+```text
+input_number.modbus_queue_last_execution_seconds
+-> How long the most recent run took from lock-acquired to lock-released
+   (the choose: dispatch plus the 2s pacing delay).
+```
+
+---
+
+```text
+input_text.modbus_queue_last_queued_command
+-> "<queue_service>=<queue_value> @ <timestamp>" for the most recently
+   received command, stamped before it waits on the lock.
+```
+
+---
+
+```text
+input_text.modbus_queue_last_executed_command
+-> "<queue_service>=<queue_value> @ <timestamp>" for the most recently
+   completed command, stamped just before the lock releases.
+```
+
+---
+
+## Queue Automations
+
+```text
+automation.reset_modbus_queue_daily_counters
+-> Zeroes modbus_queue_command_count_today and
+   modbus_queue_timeout_count_today at local midnight. The _total
+   counters are lifetime and untouched by this automation.
+```
+
+---
+
 ## Queue Scripts
 
 ```text

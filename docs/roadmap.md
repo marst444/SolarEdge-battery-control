@@ -103,23 +103,6 @@ Review whether all intermediate helpers are still required or if the control cha
 
 ---
 
-### Add Queue Telemetry
-
-Current queue operation is largely opaque.
-
-Add telemetry for:
-
-```text
-queue command count
-queue timeout count
-queue wait time
-queue execution time
-last queued command
-last executed command
-```
-
----
-
 # 2. Cleanup / Technical Debt
 
 ### EMHASS Healthy Naming
@@ -508,6 +491,92 @@ Layer 4A guard correctly froze all outputs through the 2h13m one (see
 known_issues_and_fixes.md), so the operational risk from these is
 covered even though the cause isn't understood.
 
+### Update 2026-10-02 - First genuine 48h sample since the settings change; modest improvement, not a clean win, one new real episode found
+
+A proper 48h window (2026-09-30 21:29 through 2026-10-02 20:45 local, no
+restarts/reloads inside it) is now available entirely **after** both the
+`close_after_polling` and `scan_interval` changes above - the real
+before/after this investigation has been waiting for since 2026-09-24.
+
+1. **Transaction-ID-mismatch rate: ~45.7/48h, down from the ~70/48h
+   post-library/pre-settings-change extrapolation, but still above the
+   original ~34/48h pre-library baseline.** `tmodbus.transport.async_tcp`
+   "Received unexpected response with Transaction ID..." warnings:
+   count=45 over a first_occurred-to-latest span of 47.27h, i.e.
+   ~45.7/48h extrapolated. Read as: the settings change looks like it
+   helped versus the small-sample, inconclusive 70/48h figure taken right
+   after the library migration and before the settings change - but the
+   comparison back to the *original* 34/48h baseline (27 "Cancel
+   send"/"Repeating call"/"No response" + 7 transaction_id mismatch) is
+   still not apples-to-apples, per the 2026-09-24 caveats above (different
+   library, different message vocabulary, different detection mechanism).
+   Net read: probably somewhat better than the immediate post-migration
+   state, not clearly better than the original pre-migration baseline -
+   this metric alone can't settle whether the underlying connectivity
+   noise itself improved, only that it didn't get worse from the settings
+   change.
+2. **Connection-cycle rate roughly matches the 5s-interval expectation,
+   confirming the settings took effect.** A structured error_log search
+   for "Async TCP connection established" found 265 occurrences inside a
+   ~32-minute raw-log window (2026-10-02 22:02:42-22:34:44), i.e.
+   ~8.3/min -> ~496/hour. The 2026-09-24 estimate for the new
+   `close_after_polling: true` + `scan_interval: 5s` combination was
+   ~720/hour; actual is about 69% of that naive figure (closer to a ~7.3s
+   effective cycle than a flat 5s), likely just real-world overhead
+   (connect + read + close taking a bit longer than the bare interval)
+   rather than anything wrong - but it does confirm the coordinator really
+   is opening and closing a connection every poll now, not holding one
+   open, so both settings are active and behaving as designed.
+3. **Three real connectivity episodes in the 48h window, not two.** The
+   previous 24h inverter-behavior review (2026-10-01/02) had found two
+   "known, well-handled Modbus blips" (2026-10-01 06:51:58 and 20:43:54).
+   This 48h pull found those same two PLUS a third, new one right at the
+   edge of the window: a hub-level "Connection failed: could not connect
+   to 192.168.10.4:1502" at 2026-10-02 20:45:03 (count=2), alongside the
+   coordinator-level "could not connect" message (count=4 total across
+   all three episodes). Three episodes across 48h is *not* a worse rate
+   than before (2 were already known inside a ~24h sub-window of this same
+   48h span) - it's consistent with the existing ~1/24h occasional-blip
+   pattern continuing, not escalating. A tight history check around the
+   third episode's near-neighbour (18:40-18:55, the closest window with
+   good sensor coverage) showed two brief `modbus_busy` on/off cycles
+   (~4s, ~18s), no stuck lock, and normal SOC/`effective_storage_mode`
+   behaviour throughout - same self-recovering character as the other two
+   known episodes, no sign of escalation or a stuck state.
+4. **Zero "Coordinator has timed out" messages in the 48h system log.**
+   This new-in-v4.0.0 message type (flagged 2026-09-24 as scaled to
+   `request_timeout`) did not appear at all in this window - a point in
+   favour of the settings change, since this was the message type that
+   drove most of the inconclusive 70/48h figure on 2026-09-24.
+5. **One new, unrelated one-off**: "Inverter accumulator went backwards;
+   this is a SolarEdge bug: AC_Energy_WH_Exported 5491356.0 < 5491357.0"
+   (count=1), explicitly flagged by the integration itself as a SolarEdge
+   firmware bug. Not part of the connectivity-noise picture and not
+   consumed by this project's SOC-based control logic; noted for
+   completeness only.
+6. Three slow-entity-update warnings (~3s each, on
+   `switch.solaredge_i1_negative_site_limit`, `sensor.solaredge_m1_imported_a`,
+   `sensor.solaredge_b1_average_temperature`) - minor, consistent with
+   normal polling jitter, not flagged as a concern.
+
+**Working verdict**: the 2026-09-24 `close_after_polling`/`scan_interval`
+change looks like a modest net positive - connection cycling behaves as
+designed, the new timeout-message type has gone quiet, and the
+transaction-ID-mismatch rate is down from the immediate post-migration
+reading - but it is not a clean "noise solved" result, since that same
+metric is still above the original pre-library baseline and the two
+baselines aren't strictly comparable. The connectivity-episode rate
+itself (the thing that actually matters operationally - brief,
+self-recovering "could not connect" events) has not gotten worse; it is
+behaving the same as before, including through the new third episode.
+Given the library/message-vocabulary problem is permanent (there's no
+going back to a like-for-like comparison with the original 34/48h
+number), further chasing a cleaner before/after on this specific metric
+has diminishing returns. Recommend treating this as adequately resolved
+for now - stable, non-escalating, self-recovering - and re-opening only
+if episode frequency or severity visibly increases, rather than
+continuing to sample 48h windows against an unrecoverable baseline.
+
 ---
 
 ## Dynamic Discharge Oscillation
@@ -856,6 +925,31 @@ the price sensor specifically so a missing price feed can't be misread
 as "free". Also added an addon-level auto-restart watchdog. See
 known_issues_and_fixes.md and EMHASS Addon Build-On-Start Fragility
 above (still open) for the underlying addon fragility this doesn't fix.
+
+**Add Queue Telemetry** (implemented 2026-10-02) - `script.modbus_queue`
+(`solaredge_modbusqueue.yaml`) was previously opaque: no visibility into
+how often it ran, how long commands waited for the busy-lock, or what it
+last did. Added: `input_number.modbus_queue_command_count_total`/`_today`
+and `modbus_queue_timeout_count_total`/`_today` (today's counters reset
+at local midnight via `automation.reset_modbus_queue_daily_counters`,
+totals are lifetime); `input_number.modbus_queue_last_wait_seconds`
+(time from a command being received to the busy-lock actually clearing,
+measured via a `variables:` timestamp against `now()` before and after
+the existing `wait_template`) and `modbus_queue_last_execution_seconds`
+(lock-acquired to lock-released, i.e. the `choose:` dispatch plus the
+2s pacing delay); and `input_text.modbus_queue_last_queued_command`/
+`last_executed_command` (`"<queue_service>=<queue_value> @ <timestamp>"`,
+stamped on receipt and again just before the lock releases). The timeout
+counters increment only when the 10s `wait_template` actually runs out
+(`wait.completed == false`) rather than resolving normally - i.e. when
+`continue_on_timeout` is what let the run through, not the lock clearing
+on its own. See `entities.md` - Layer 4C - Queue Telemetry / Queue
+Automations for the full entity list, and `solaredge_modbusqueue.yaml`
+for the implementation. Not yet correlated against the Modbus
+Connectivity investigation above - that's a natural next step once a
+real connectivity episode happens with this telemetry live (e.g. does
+`modbus_queue_last_wait_seconds` or the timeout counters spike during a
+"could not connect" episode).
 
 ---
 

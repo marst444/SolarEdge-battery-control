@@ -1,6 +1,6 @@
 # ── solaredge_modbusqueue.yaml ──
-# Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap.
-# Sets: input_boolean.modbus_busy; select/number.solaredge_i1_* (via queue_service dispatch)
+# Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue telemetry.
+# Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch)
 # Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
 # Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe); leftover debug logging - see roadmap.md
 
@@ -8,6 +8,76 @@ input_boolean:
   modbus_busy:
     name: Modbus Busy
     initial: off
+
+input_number:
+
+  modbus_queue_command_count_total:
+    name: Modbus Queue Command Count (Total)
+    initial: 0
+    min: 0
+    max: 999999999
+    step: 1
+    mode: box
+    icon: mdi:counter
+
+  modbus_queue_command_count_today:
+    name: Modbus Queue Command Count (Today)
+    initial: 0
+    min: 0
+    max: 999999
+    step: 1
+    mode: box
+    icon: mdi:counter
+
+  modbus_queue_timeout_count_total:
+    name: Modbus Queue Timeout Count (Total)
+    initial: 0
+    min: 0
+    max: 999999999
+    step: 1
+    mode: box
+    icon: mdi:timer-alert
+
+  modbus_queue_timeout_count_today:
+    name: Modbus Queue Timeout Count (Today)
+    initial: 0
+    min: 0
+    max: 999999
+    step: 1
+    mode: box
+    icon: mdi:timer-alert
+
+  modbus_queue_last_wait_seconds:
+    name: Modbus Queue Last Wait Time
+    initial: 0
+    min: 0
+    max: 60
+    step: 0.01
+    unit_of_measurement: s
+    mode: box
+    icon: mdi:timer-sand
+
+  modbus_queue_last_execution_seconds:
+    name: Modbus Queue Last Execution Time
+    initial: 0
+    min: 0
+    max: 60
+    step: 0.01
+    unit_of_measurement: s
+    mode: box
+    icon: mdi:timer-outline
+
+input_text:
+
+  modbus_queue_last_queued_command:
+    name: Modbus Queue Last Queued Command
+    max: 255
+    icon: mdi:tray-arrow-down
+
+  modbus_queue_last_executed_command:
+    name: Modbus Queue Last Executed Command
+    max: 255
+    icon: mdi:tray-arrow-up
 
 script:
   modbus_queue:
@@ -20,6 +90,30 @@ script:
         description: "Value to send"
 
     sequence:
+
+      # Telemetry: stamp the moment this run was dispatched, and record it
+      # as the last queued command before anything waits on the lock.
+      # See roadmap.md - Add Queue Telemetry.
+      - variables:
+          command_received_at: "{{ now().timestamp() }}"
+
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.modbus_queue_last_queued_command
+        data:
+          value: "{{ queue_service }}={{ queue_value | default('') }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_command_count_total
+        data:
+          value: "{{ (states('input_number.modbus_queue_command_count_total') | int(0)) + 1 }}"
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_command_count_today
+        data:
+          value: "{{ (states('input_number.modbus_queue_command_count_today') | int(0)) + 1 }}"
 
       # Log incoming command
       - service: system_log.write
@@ -41,6 +135,36 @@ script:
       - wait_template: "{{ not is_state('input_boolean.modbus_busy', 'on') }}"
         timeout: "00:00:10"
         continue_on_timeout: true
+
+      # Telemetry: lock acquired (or the 10s wait ran out and we're pushing
+      # through anyway, via continue_on_timeout) - record how long this run
+      # waited, and bump the timeout counters if the wait never resolved on
+      # its own (wait.completed == false means continue_on_timeout is what
+      # let us through, not the lock actually clearing).
+      - variables:
+          lock_acquired_at: "{{ now().timestamp() }}"
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_last_wait_seconds
+        data:
+          value: "{{ (lock_acquired_at - command_received_at) | round(2) }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ wait.completed == false }}"
+        then:
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_queue_timeout_count_total
+            data:
+              value: "{{ (states('input_number.modbus_queue_timeout_count_total') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_queue_timeout_count_today
+            data:
+              value: "{{ (states('input_number.modbus_queue_timeout_count_today') | int(0)) + 1 }}"
 
       - service: input_boolean.turn_on
         target:
@@ -266,6 +390,22 @@ script:
             queue_service="{{ queue_service }}"
           level: debug
 
+      # Telemetry: execution time covers lock-acquired → here (the choose:
+      # dispatch above plus the 2s pacing delay), and "last executed" is
+      # stamped just before the lock releases, so it means fully processed
+      # rather than merely dispatched.
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_last_execution_seconds
+        data:
+          value: "{{ (now().timestamp() - lock_acquired_at) | round(2) }}"
+
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.modbus_queue_last_executed_command
+        data:
+          value: "{{ queue_service }}={{ queue_value | default('') }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
       # Release Modbus lock - now unconditionally reached, success or error
       - service: input_boolean.turn_off
         target:
@@ -278,3 +418,24 @@ script:
 
     mode: queued
     max: 10
+
+automation:
+
+  - id: reset_modbus_queue_daily_counters
+    alias: "Reset Modbus Queue Daily Telemetry Counters"
+    description: "Zeroes the Today command/timeout counters at midnight. The Total counters are lifetime and are never touched here."
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_command_count_today
+        data:
+          value: 0
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_timeout_count_today
+        data:
+          value: 0
