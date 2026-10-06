@@ -577,6 +577,19 @@ for now - stable, non-escalating, self-recovering - and re-opening only
 if episode frequency or severity visibly increases, rather than
 continuing to sample 48h windows against an unrecoverable baseline.
 
+### Update 2026-10-06 - Further confirming data point, no re-open needed
+
+While investigating an unrelated question, a structured error_log pull
+covering 2026-10-06 20:27-21:07 local showed the same pattern as the
+2026-10-02 sample: ~309 connect/close cycles in ~40 minutes (~463/hour,
+in the same range as the ~496/hour figure already confirmed as expected
+for `close_after_polling: true` + `scan_interval: 5s`), plus exactly one
+real connectivity episode ("could not connect to 192.168.10.4:1502" at
+20:33:58, self-recovered 21s later at 20:34:19, no stuck lock, no
+cascading failure). Consistent with the existing "adequately resolved,
+stable, self-recovering" verdict above - not a new finding, just another
+data point confirming it has held. No change to the working verdict.
+
 ---
 
 ## Dynamic Discharge Oscillation
@@ -685,6 +698,46 @@ day of observation (first discharge event trailed its charge event by 75
 minutes; a second charge/discharge pair happened same day). Needs a
 longer observation window and possibly a shorter/longer default.
 ```
+
+### Update 2026-10-06 - Possible cooldown gap flagged, not confirmed
+
+While confirming other test_plan.md items live, a 10-day history pull on
+`input_select.emhass_requested_storage_mode` / `input_datetime.
+last_grid_charge_command_time` surfaced one sequence worth flagging:
+
+```text
+2026-10-04 11:00:01  charge_from_solar_and_grid requested
+                      (last_grid_charge_command_time stamped 11:00:01)
+2026-10-04 11:15:01  maximize_self_consumption
+2026-10-04 11:30:01  discharge_to_maximize_export requested
+```
+
+`input_number.grid_charge_export_cooldown_minutes` was confirmed still
+at its default 60 at the time of this check, and the stamp was not
+updated again between 11:00:01 and 11:30:01 - so on the stamp/timestamp
+evidence alone, the DISCHARGE MAX EXPORT branch's cooldown condition
+should have been active (cooldown NOT elapsed, only 30 of 60 minutes
+passed) and should have held the request back to
+`maximize_self_consumption`, per the design in the "Diagnosed root
+cause" section above. Instead `discharge_to_maximize_export` was
+requested directly.
+
+**Not confirmed as a real defect** - `automation.
+emhass_battery_forecast_control`'s stored traces only retain the last 5
+runs, so the actual trace for this specific 11:30 run (which would show
+the live `cooldown_elapsed` variable and which `choose:` branch
+actually matched) is long gone and could not be inspected. A look at
+`sensor.mpc_pv_grid_power`/`sensor.mpc_pv_batt_power` around the same
+window shows forecast values consistent with a genuine DISCHARGE MAX
+EXPORT match (grid_fc very negative, batt_fc positive) appearing within
+the same quarter-hour, but not provably at the exact 11:30:01 decision
+tick - EMHASS's forecast sensors and the decision engine's 15-minute
+trigger don't necessarily update in lockstep, so this could equally be
+a timing/sampling artifact rather than the cooldown logic itself
+failing. Needs a live trace caught in the act (ideally right after a
+charge_from_solar_and_grid stamp, within the following 60 minutes) to
+confirm either way - logged here so a future session watching for this
+knows what to look for and doesn't have to rediscover it from scratch.
 
 ---
 
@@ -798,6 +851,26 @@ Remaining open items, split out:
    defensive re-assert, or when turned on manually in the meantime. Not a
    functional risk on its own (per the empirical finding above), but
    worth confirming once, deliberately, rather than leaving it to chance.
+
+### Update 2026-10-06 (evening) - Item 2 confirmed live
+
+Price stayed non-negative all day (0.03-1.83 SEK/kWh), so this confirms
+the normal/restore-path half of item 2, not the negative/curtail half:
+the one-time migration write (stale "0" -> 1,000,000 at 15:09:13, the
+moment the new YAML first saw price >= 0 and a non-1,000,000 number),
+then zero further writes over the next ~5h25m of continuous 30s-cycle
+and price-state triggering while the number stayed correctly at
+1,000,000 - directly confirmed at the trace level (a real trace showing
+the `number != 1000000` condition evaluating false and the branch being
+skipped). A ~21s real Modbus outage at 20:33:58 even gave an unplanned
+test of the guard's recovery behaviour: the number was correctly
+rewritten to 1,000,000 once it came back (having read "unavailable" in
+between, which the `| float(-1)` fallback treats as not-yet-1,000,000).
+Full detail in test_plan.md Test 3.2's evening update.
+
+Item 2 is now closed for the restore/guard half. Items 1 and 3 remain
+open - no negative-price window has occurred yet since deployment, and
+the switch is still sitting "off" (confirmed again this evening).
 
 ---
 

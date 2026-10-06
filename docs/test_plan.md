@@ -970,6 +970,56 @@ responds. Still needed for a full PASS under the new mechanism:
 Status left at PARTIAL PASS 🟡 pending re-verification against the new
 mechanism - see roadmap.md - Negative Price Curtailment, item 2.
 
+### Update 2026-10-06 (evening) - Item 2 confirmed live
+
+Live evaluation via HA MCP (state, history, automation trace) after the
+redesign went live. Price stayed non-negative (0.03-1.83 SEK/kWh) all
+day, so this is the normal/restore-path half of item 2, not item 1 (no
+negative-price window has occurred under the new mechanism yet):
+
+```text
+15:09:13 - number.solaredge_i1_site_limit changed 0 -> 1000000. This is
+  the one-time migration write: the number had been stuck at the stale
+  "0" left by the old design (see Test 3.2 Observed above) ever since
+  06:17:58 this morning; the first automation tick after the new YAML
+  went live found price >= 0 and number != 1000000, matched the normal
+  branch, and corrected it - exactly the self-healing behaviour the
+  redesign was built for.
+
+15:09:13 -> 20:33:58 (~5h25m, hundreds of 30s-periodic + price-state
+  trigger firings, price fluctuating 0.03-1.83 SEK/kWh but always >= 0)
+  - number.solaredge_i1_site_limit recorded ZERO further state changes.
+  Confirms the compare-before-write guard: with the number already at
+  1,000,000, the normal branch's second condition
+  (number != 1000000) is false, so the branch is skipped every time.
+  Directly confirmed at the trace level too - run_id
+  028e729419fc0e03a368eaee6389548a (19:05:15 UTC, triggered by a
+  sensor.total_export_price state change): branch 1's condition 0
+  (price >= 0) = true, condition 1 (number != 1000000) = false ->
+  branch skipped, no service call made.
+
+20:33:58 - a real ~21s Modbus/coordinator outage ("Connection error
+  reading inverter ID 1... could not connect", recovered 20:34:19) took
+  switch.solaredge_i1_negative_site_limit, number.solaredge_i1_site_
+  limit and select.solaredge_i1_storage_default_mode all "unavailable"
+  together. On recovery, number.solaredge_i1_site_limit was rewritten to
+  1000000 at 20:34:19.08 - consistent with "unavailable" parsing as -1
+  via the `| float(-1)` fallback, which is != 1000000, so the guard
+  correctly treated the recovered-but-unconfirmed state as needing a
+  rewrite rather than silently trusting a stale value. switch and
+  default_mode both came back reporting their real unchanged values
+  ("off" / "Maximize Self Consumption") with no automation write
+  involved (the normal branch never touches the switch).
+```
+
+This closes the second half of item 2 ("live deactivation... with no
+unnecessary repeated writes") with direct live + trace evidence,
+including an unplanned real-world test of the guard's behaviour across a
+transient Modbus outage. Items 1 (negative-price activation under the
+new mechanism) and 3 (enforcement-while-ON with real PV surplus) remain
+open, pending an actual negative-price event during daylight. Status
+stays PARTIAL PASS 🟡.
+
 ---
 
 # Layer 4A - Decision Engine
@@ -1828,23 +1878,42 @@ they would fail to apply if selected.
 ### Result
 
 ```text
-PARTIAL PASS - 3 of 5 modes confirmed correctly applied over a 7-day
-live window (Maximize Self Consumption, Discharge to Maximize Export,
-Charge from Solar Power and Grid). The remaining 2 modes (Solar Power
-Only, Charge From Clipped Solar) were not exercised by real conditions
-in this window and remain unverified - not because of any known issue,
-but purely a testing-coverage gap.
+PARTIAL PASS - 4 of 5 modes now confirmed correctly applied (see Update
+below for Solar Power Only). The remaining mode (Charge From Clipped
+Solar) has still not been exercised by real conditions and remains
+unverified - not because of any known issue, but purely a
+testing-coverage gap.
 ```
 
 ### Notes
 
 ```text
 To fully close this test, either wait for natural conditions that would
-trigger Solar Power Only / Charge From Clipped Solar (see
-battery_forecast_control.yaml for their trigger conditions), or manually
-force effective_storage_mode through each of the two untested options
-and confirm the corresponding SolarEdge command mode updates.
+trigger Charge From Clipped Solar (see battery_forecast_control.yaml for
+its trigger conditions), or manually force effective_storage_mode
+through it and confirm the corresponding SolarEdge command mode updates.
 ```
+
+### Update 2026-10-06 - Solar Power Only confirmed live
+
+Live evaluation via HA MCP 10-day history on
+select.solaredge_i1_storage_command_mode and
+input_select.effective_storage_mode. Solar Power Only occurred twice
+since the original 2026-08-28 check, both times with the command mode
+correctly following within ~1-2 minutes:
+
+```text
+2026-09-26 21:30:02 effective_storage_mode -> solar_power_only
+2026-09-26 21:31:46 command_mode            -> "Solar Power Only (Off)"
+
+2026-09-30 01:30:01 effective_storage_mode -> solar_power_only
+2026-09-30 01:31:26 command_mode            -> "Solar Power Only (Off)"
+```
+
+Charge From Clipped Solar still did not occur in this same 10-day
+window (neither as an effective_storage_mode request nor as a SolarEdge
+command mode) - it remains the one coverage gap. Upgraded from "3 of 5
+modes confirmed" to "4 of 5".
 
 ---
 
@@ -2307,6 +2376,18 @@ been exercised live. Status left at PARTIAL PASS 🟡 pending a live cycle
 under the new mechanism and the still-outstanding PV-surplus-during-
 negative-price observation - see Test 3.2 and roadmap.md - Negative
 Price Curtailment, item 2.
+
+### Update 2026-10-06 (evening) - set_site_limit path now exercised live
+
+The new `set_site_limit` command HAS now been exercised live end to end
+(Layer 3 -> 4B/4C `script.set_site_limit_normal_script` ->
+`script.modbus_queue` -> Layer 4D `number.set_value`), via the one-time
+migration write and the subsequent guarded no-op behaviour described in
+Test 3.2's evening update. This confirms the full command path for the
+*normal* (1,000,000) value. The *curtailed* (0) value side of the same
+path, and the enforcement-while-ON effect on real export, both still
+require an actual negative-price window - unchanged from before. Status
+stays PARTIAL PASS 🟡; see Test 3.2 for the full evidence.
 
 ---
 
