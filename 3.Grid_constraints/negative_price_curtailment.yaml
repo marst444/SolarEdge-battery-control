@@ -1,26 +1,8 @@
 # ── negative_price_curtailment.yaml ──
-# Layer 3: curtails grid export when export price goes negative; releases curtailment when price normalizes.
-# Sets: input_boolean.negative_price_active, grid_export_blocked
-# Deps: sensor.total_export_price, number.solaredge_i1_site_limit  →  gridconstrain_helpers.yaml
-#
-# Mechanism (redesigned 2026-10-06 - see known_issues_and_fixes.md, Negative
-# Price Curtailment - Site Limit Restore Gap, and roadmap.md): the
-# negative-site-limit switch (switch.solaredge_i1_negative_site_limit) is no
-# longer toggled on/off per price change. It is expected to stay permanently
-# ON; number.solaredge_i1_site_limit is now the sole thing that changes
-# between curtailment (0 W) and normal/indifferent export (1,000,000 W, the
-# number's own max - reproduces unconstrained export). This removes the
-# switch-state restore-gap entirely: the number is written on every
-# transition, lifetime, so there's nothing to "forget" to restore. The
-# conditions below key off the number's current value (not the switch) to
-# get the same compare-before-write guard the Modbus queue uses elsewhere,
-# avoiding redundant writes on the 30s periodic trigger.
-#
-# The switch itself is asserted ON defensively inside the negative branch
-# (self-healing, in case it's ever found off - e.g. after the one-time
-# migration from the old design, or manual intervention) but is not part of
-# the normal per-price-change write path any more.
-# Fixes: known_issues_and_fixes.md
+# Layer 3: curtails grid export when export price goes negative by varying number.solaredge_i1_site_limit (0=curtailed, 1000000=normal); releases curtailment when price normalizes. See architecture.md (Layer 3).
+# Sets: input_boolean.negative_price_active, grid_export_blocked, number.solaredge_i1_site_limit
+# Deps: sensor.total_export_price  →  gridconstrain_helpers.yaml, batterycontrol_scripts.yaml
+# Fixes: known_issues_and_fixes.md (Negative Price Curtailment - Site Limit Restore Gap)
 
 automation:
   - id: negative_price_curtailment
@@ -46,6 +28,7 @@ automation:
                   entity_id:
                     - input_boolean.negative_price_active
                     - input_boolean.grid_export_blocked
+              # defensive: re-assert the switch on if ever found off
               - if:
                   - condition: state
                     entity_id: switch.solaredge_i1_negative_site_limit

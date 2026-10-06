@@ -328,12 +328,9 @@ script:
                 data:
                   value: "{{ queue_value | float }}"
 
-# site limit value (generic - used both for curtailment, value 0, and for
-# restoring normal/indifferent export, value 1000000 - see
-# negative_price_curtailment.yaml and known_issues_and_fixes.md -
-# Negative Price Curtailment - Site Limit Restore Gap). The switch below
-# is no longer toggled per price change - it is expected to stay
-# permanently on; this number is now the sole thing gating export.
+# site limit value - 0 curtails export, 1000000 (number's own max) restores
+# normal export. See known_issues_and_fixes.md (Negative Price Curtailment
+# - Site Limit Restore Gap).
           - conditions:
               - condition: template
                 value_template: "{{ queue_service == 'set_site_limit' }}"
@@ -344,10 +341,9 @@ script:
                 data:
                   value: "{{ queue_value | int }}"
 
-# negative site limit switch - kept for the one-time initial setup and as
-# a defensive re-assertion (negative_price_curtailment.yaml turns this on
-# if it's ever found off during a curtailment event) and for manual/debug
-# use. Not part of the normal per-price-change write path any more.
+# negative site limit switch - defensive/manual use only, not part of the
+# normal write path. See known_issues_and_fixes.md (Negative Price
+# Curtailment - Site Limit Restore Gap).
           - conditions:
               - condition: template
                 value_template: "{{ queue_service == 'negative_site_limit_on' }}"
