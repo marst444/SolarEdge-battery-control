@@ -173,3 +173,19 @@ script:
         data:
           queue_service: negative_site_limit_off
           queue_value: 0
+
+  set_site_limit_curtailed_script:
+    alias: Set Site Limit Curtailed (0W)
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_site_limit
+          queue_value: 0
+
+  set_site_limit_normal_script:
+    alias: Set Site Limit Normal (Unlimited)
+    sequence:
+      - service: script.modbus_queue
+        data:
+          queue_service: set_site_limit
+          queue_value: 1000000

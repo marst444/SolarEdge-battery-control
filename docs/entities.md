@@ -562,7 +562,22 @@ sensor.total_export_price
 
 ```text
 switch.solaredge_i1_negative_site_limit
--> SolarEdge export/site limit control used during negative prices.
+-> SolarEdge site-limit enforcement gate. As of the 2026-10-06 redesign this
+   is expected to stay permanently ON; number.solaredge_i1_site_limit is the
+   sole thing varied to curtail/restore export. Only written defensively
+   (self-healing, if ever found off) and for manual/debug use - see
+   known_issues_and_fixes.md, Negative Price Curtailment - Site Limit
+   Restore Gap.
+```
+
+```text
+number.solaredge_i1_site_limit
+-> SolarEdge site export limit value (W), min 0 / max 1,000,000. Set to 0 to
+   curtail export, 1,000,000 (its own max) to restore unconstrained/normal
+   export. Written on every negative_price_curtailment.yaml transition via
+   the set_site_limit queue command, guarded by a compare-before-write check
+   against its own current value to avoid redundant Modbus writes on the 30s
+   periodic trigger.
 ```
 
 ---
@@ -580,14 +595,36 @@ automation.negative_price_curtailment
 
 ```text
 script.turn_negative_site_limit_on_script
--> Activates SolarEdge export blocking.
+-> Turns on switch.solaredge_i1_negative_site_limit. No longer part of the
+   normal per-price-change write path (the switch stays permanently on) -
+   kept for initial setup, defensive self-healing from
+   negative_price_curtailment.yaml, and manual/debug use.
 ```
 
 ---
 
 ```text
 script.turn_negative_site_limit_off_script
--> Removes SolarEdge export blocking.
+-> Turns off switch.solaredge_i1_negative_site_limit. Not called by any
+   automation as of the 2026-10-06 redesign - retained for manual/debug use
+   only.
+```
+
+---
+
+```text
+script.set_site_limit_curtailed_script
+-> Sets number.solaredge_i1_site_limit to 0 (curtail export). Called by
+   negative_price_curtailment.yaml when export price goes negative.
+```
+
+---
+
+```text
+script.set_site_limit_normal_script
+-> Sets number.solaredge_i1_site_limit to 1,000,000 (its own max - normal/
+   unconstrained export). Called by negative_price_curtailment.yaml when
+   export price returns to non-negative.
 ```
 
 ---
@@ -1072,14 +1109,24 @@ set_storage_discharge_limit
 
 ```text
 negative_site_limit_on
--> Enable export curtailment.
+-> Turn switch.solaredge_i1_negative_site_limit on. Defensive/manual use
+   only as of the 2026-10-06 redesign - see SolarEdge Export Control above.
 ```
 
 ---
 
 ```text
 negative_site_limit_off
--> Disable export curtailment.
+-> Turn switch.solaredge_i1_negative_site_limit off. Manual/debug use only.
+```
+
+---
+
+```text
+set_site_limit
+-> Set number.solaredge_i1_site_limit to queue_value (0 = curtail,
+   1,000,000 = normal/indifferent). The sole per-price-change write path for
+   export curtailment as of the 2026-10-06 redesign.
 ```
 
 ---
@@ -1186,12 +1233,16 @@ number.solaredge_i1_storage_command_timeout
 
 ```text
 switch.solaredge_i1_negative_site_limit
--> SolarEdge export curtailment control.
+-> SolarEdge site-limit enforcement gate. Expected permanently on as of the
+   2026-10-06 redesign - see SolarEdge Export Control above for the current
+   role.
 ```
 
 ---
 
 ```text
 number.solaredge_i1_site_limit
--> SolarEdge site export limit.
+-> SolarEdge site export limit (W). The sole value varied to curtail
+   (0 W) or restore (1,000,000 W) export as of the 2026-10-06 redesign -
+   see SolarEdge Export Control above.
 ```

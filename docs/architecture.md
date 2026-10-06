@@ -242,12 +242,29 @@ This layer can override optimisation if exporting or importing is not allowed or
 
 When spot/export price is negative, exporting energy to the grid may be economically harmful.
 
-In that case, the system can enable SolarEdge site limiting.
+In that case, the system curtails export by lowering the SolarEdge site limit.
 
 ```
 switch.solaredge_i1_negative_site_limit
 number.solaredge_i1_site_limit
 ```
+
+**Mechanism (redesigned 2026-10-06):** earlier, curtailment toggled
+`switch.solaredge_i1_negative_site_limit` on/off per price change, writing
+`number.solaredge_i1_site_limit = 0` only on activation and never restoring
+it on deactivation (an asymmetry empirically verified harmless on this
+installation, since the switch - not the number - was the real enforcement
+gate; see known_issues_and_fixes.md, Negative Price Curtailment - Site
+Limit Restore Gap). The switch is now expected to stay permanently ON, and
+`number.solaredge_i1_site_limit` is the sole value varied: 0 W when
+`sensor.total_export_price < 0` (curtailed), 1,000,000 W - the number's own
+max - when price is non-negative (normal/indifferent export, reproducing
+today's unconstrained behaviour exactly). `negative_price_curtailment.yaml`
+writes the number on every transition, guarded by a compare against its own
+current value to avoid redundant 30-second-cycle Modbus writes, and
+defensively re-asserts the switch ON (self-healing) only inside the
+curtailment branch, in case it's ever found off.
+
 ### Site limit
 
 Site limit applies at the grid connection level. It limits net export from the whole installation, not only battery export.
@@ -569,6 +586,13 @@ simply causes the guard to re-arm rather than silently drift.
 standalone diagnostic ("guarded" vs "active") for observability, independent
 of the automation actually firing.
 
+The negative-price-curtailment `set_site_limit` write path (Layer 3) uses
+the same compare-before-write principle: `negative_price_curtailment.yaml`
+only calls `script.set_site_limit_curtailed_script` /
+`set_site_limit_normal_script` when `number.solaredge_i1_site_limit` does
+not already hold the target value, so the 30-second periodic trigger does
+not resend an unchanged site limit every cycle.
+
 ---
 
 # Layer 4C – Modbus Queue
@@ -667,3 +691,5 @@ The Layer 4B Mode Command Guard (see above) is a concrete application of this
 principle: it stops the automation from resending an unchanged
 `maximize_self_consumption` mode command every 15 minutes purely because a
 dynamic power limit changed, while still updating the limits themselves.
+The Layer 3 negative-price-curtailment site-limit write (see above) is the
+same principle applied to `number.solaredge_i1_site_limit`.

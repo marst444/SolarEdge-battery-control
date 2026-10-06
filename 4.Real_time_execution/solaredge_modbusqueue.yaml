@@ -2,7 +2,7 @@
 # Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue telemetry.
 # Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch)
 # Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
-# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe); leftover debug logging - see roadmap.md
+# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap); leftover debug logging - see roadmap.md
 
 input_boolean:
   modbus_busy:
@@ -328,28 +328,30 @@ script:
                 data:
                   value: "{{ queue_value | float }}"
 
-# export curtailment/site limit when neg. prices ON
+# site limit value (generic - used both for curtailment, value 0, and for
+# restoring normal/indifferent export, value 1000000 - see
+# negative_price_curtailment.yaml and known_issues_and_fixes.md -
+# Negative Price Curtailment - Site Limit Restore Gap). The switch below
+# is no longer toggled per price change - it is expected to stay
+# permanently on; this number is now the sole thing gating export.
+          - conditions:
+              - condition: template
+                value_template: "{{ queue_service == 'set_site_limit' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.solaredge_i1_site_limit
+                data:
+                  value: "{{ queue_value | int }}"
+
+# negative site limit switch - kept for the one-time initial setup and as
+# a defensive re-assertion (negative_price_curtailment.yaml turns this on
+# if it's ever found off during a curtailment event) and for manual/debug
+# use. Not part of the normal per-price-change write path any more.
           - conditions:
               - condition: template
                 value_template: "{{ queue_service == 'negative_site_limit_on' }}"
             sequence:
-            # Ensure site limit value is 0 before activating negative site limit.
-            # This inner delay sequences two writes within the SAME command
-            # (site limit, then the switch) - it is not the trailing pacing
-            # delay and is kept as-is.
-              - if:
-                - condition: template
-                  value_template: >-
-                    {{ states('number.solaredge_i1_site_limit') | float(999) != 0 }}
-                then:
-                  - service: number.set_value
-                    target:
-                      entity_id: number.solaredge_i1_site_limit
-                    data:
-                      value: 0
-                  - delay: "00:00:02"
-
-            # Activate negative site limit switch
               - service: switch.turn_on
                 target:
                   entity_id: switch.solaredge_i1_negative_site_limit

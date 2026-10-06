@@ -719,15 +719,85 @@ limited retry / backoff after failure
 
 ## Negative Price Curtailment
 
-Needs explicit verification of:
+### Update 2026-10-06 - Verified against a real overnight event; one real gap found, confirmed currently harmless
+
+A real negative-price event (7 activate/deactivate cycles, 2026-10-06
+00:00-08:00 local) gave the first live evidence for this item. See
+test_plan.md Test 3.1/3.2/S.3 and known_issues_and_fixes.md - Negative
+Price Curtailment - Site Limit Restore Gap for the full write-up.
+Summary:
 
 ```text
-negative export price
-site limit enabled
-site limit value applied
-export reduced
-normal operation restored
+negative export price        -> CONFIRMED: price sign flips matched
+                                 by negative_price_active/grid_export_
+                                 blocked/switch toggles within one
+                                 price-sensor update, 7/7 times.
+site limit enabled            -> CONFIRMED: number.solaredge_i1_site_
+                                 limit correctly written to 0 on first
+                                 activation each time it wasn't already.
+site limit value applied      -> STILL NOT DIRECTLY OBSERVED: every
+                                 episode so far was overnight with zero
+                                 PV, so there was no export attempt for
+                                 the limit to actually curtail. Needs a
+                                 negative-price episode that coincides
+                                 with PV surplus.
+export reduced                -> same gap as above - not yet observed.
+normal operation restored     -> PARTIALLY CONFIRMED, with a real find:
+                                 the switch correctly toggles off, but
+                                 negative_site_limit_off
+                                 (solaredge_modbusqueue.yaml) never
+                                 writes number.solaredge_i1_site_limit
+                                 back to anything else - it stays at the
+                                 stale "0" indefinitely (confirmed: still
+                                 0 nearly 6 hours after the switch went
+                                 off and price went positive). Empirically
+                                 confirmed harmless today: real grid
+                                 export (positive meter readings up to
+                                 ~1.1kW, matching PV-surplus-minus-
+                                 battery-charging arithmetic) happened
+                                 normally during this stale-0 window,
+                                 proving the switch - not the number - is
+                                 what actually gates enforcement on this
+                                 installation.
 ```
+
+### Update 2026-10-06 (later same day) - Restore-gap item closed via redesign, not the proposed patch
+
+The low-priority cleanup proposed just above (have
+`negative_site_limit_off` restore the number to a chosen "normal" value)
+was explicitly declined by the user in favor of their own, cleaner
+architecture: stop toggling `switch.solaredge_i1_negative_site_limit` per
+price change - leave it permanently ON - and vary
+`number.solaredge_i1_site_limit` itself between 0 (curtailed) and
+1,000,000 W, the number's own max (normal/indifferent export). This
+eliminates the restore-asymmetry structurally rather than patching it: the
+number is now written on every transition, lifetime, so there is nothing
+to forget to restore.
+
+Implemented and deployed to project docs the same day - see
+known_issues_and_fixes.md, Negative Price Curtailment - Site Limit Restore
+Gap, for the full implementation write-up (changes to
+`solaredge_modbusqueue.yaml`, `batterycontrol_scripts.yaml`,
+`negative_price_curtailment.yaml`), and architecture.md / entities.md for
+the updated mechanism description.
+
+Remaining open items, split out:
+
+1. The one still-unobserved scenario: a negative-price window that
+   coincides with real PV surplus, to directly see export actually get
+   suppressed (and then resume) rather than inferring it from command
+   correctness alone. Still applies unchanged under the new mechanism.
+2. The new mechanism itself is not yet observed live through a real
+   negative-price cycle - deployed to project docs only as of 2026-10-06.
+   Needs a live activate/deactivate cycle to confirm the number toggles
+   0 ↔ 1,000,000 correctly and the compare-before-write guard actually
+   suppresses redundant writes on the 30-second periodic trigger.
+3. Operational: the switch was left "off" by the last deactivation of the
+   old design (08:00:16, 2026-10-06) and will only self-heal to "on" the
+   next time a negative-price episode fires the new automation's
+   defensive re-assert, or when turned on manually in the meantime. Not a
+   functional risk on its own (per the empirical finding above), but
+   worth confirming once, deliberately, rather than leaving it to chance.
 
 ---
 

@@ -12,9 +12,14 @@ these project docs so far.
 
 ---
 
-(None currently open. The branch-coverage gap found 2026-09-10 was fixed
-2026-09-15 and confirmed firing live - see Branch-Coverage Gaps below.
-Its related, unconfirmed corner - `grid_fc < 0` together with `batt_fc <
+(None currently open requiring code changes. The Negative Price
+Curtailment - Site Limit Restore Gap found 2026-10-06 is a confirmed
+real asymmetry (the old design's deactivation path never restored
+`number.solaredge_i1_site_limit`) that was empirically verified the same
+day to have no live impact, and was then closed the same day by a
+structural redesign rather than a patch - see below. The branch-coverage gap found 2026-09-10 was fixed 2026-09-15
+and confirmed firing live - see Branch-Coverage Gaps below. Its related,
+unconfirmed corner - `grid_fc < 0` together with `batt_fc <
 0`, a contradictory-forecast edge case - is still uncovered by any
 branch, not observed live, and not proposed for a blind fix. The Layer
 4A SOC-unavailable guard found 2026-09-19 was fixed the same day and
@@ -33,6 +38,95 @@ below; not yet confirmed against the live file or a real EV session.)
 ---
 
 # Fixed Issues
+
+## Negative Price Curtailment - Site Limit Restore Gap
+
+Found 2026-10-06, while checking how the negative-price curtailment
+limit behaves during a real overnight event (7 negative/positive
+price-sign flips, 2026-10-06 00:00-08:00 local). Reading
+`solaredge_modbusqueue.yaml` directly: the `negative_site_limit_on`
+handler writes `number.solaredge_i1_site_limit = 0` (only if it isn't
+already 0) before turning the switch on, but the mirror-image
+`negative_site_limit_off` handler only turns `switch.
+solaredge_i1_negative_site_limit` off - it never writes the number back
+to any other value. Confirmed live: the number was still reading "0" at
+13:45 local, nearly 6 hours after the switch itself last went off
+(08:00:16) and the price returned positive (08:00:02).
+
+This exact gap is what `test_plan.md` Test 3.2 (Site Limit Enforcement)
+had been waiting on since 2026-07-30 ("NOT VERIFIED") - previously an
+untested assumption, now a confirmed asymmetry in the code.
+
+**Empirically confirmed harmless the same day**, via real power-flow
+arithmetic rather than guesswork: during the 2026-10-06 08:40-11:55
+window, PV production exceeded house load by up to ~1.8kW while the
+switch was "off" and the site limit number was still stuck at "0" the
+whole time (statistics pulled for `sensor.solar_panel_production_w`,
+`sensor.power_myhouse_load_no_var_loads`, `sensor.solaredge_b1_dc_power`
+and `sensor.solaredge_m1_ac_power`). Whenever PV surplus exceeded what
+the battery was absorbing by charging, the uncovered remainder reliably
+showed up as positive (exporting) meter readings, matching the
+PV-minus-load-minus-battery-charge arithmetic within ~15-70W each time:
+
+```text
+11:30  PV 1419W  load 253W  batt charging 515W  -> meter +645W
+11:35  PV 1804W  load 266W  batt charging 578W  -> meter +941W
+11:40  PV 1967W  load 270W  batt charging 585W  -> meter +1091W
+```
+
+This directly demonstrates that on this installation,
+`number.solaredge_i1_site_limit`'s value is not enforced independently
+of the switch - `switch.solaredge_i1_negative_site_limit` is the real
+enable/disable gate for the site-limit feature, and a stale "0"
+underneath an "off" switch has no effect on actual export. The
+enforcement-while-ON path (does `site_limit=0` actually suppress export
+that would otherwise happen) remains unobserved, since every
+negative-price episode so far has occurred overnight with zero PV - see
+roadmap.md - Negative Price Curtailment for that still-open item.
+
+**Closed 2026-10-06 via redesign, not the originally-proposed patch.**
+Rather than teaching `negative_site_limit_off` to restore the number to a
+chosen "normal" value (the cleanup first proposed here, which the user
+declined - see roadmap.md), the user proposed a cleaner architecture that
+eliminates the asymmetry structurally: stop toggling
+`switch.solaredge_i1_negative_site_limit` per price change and leave it
+permanently ON, and instead vary `number.solaredge_i1_site_limit` itself
+between 0 (curtailed) and 1,000,000 W - the number's own max (normal/
+indifferent export, chosen to reproduce the exact unconstrained-export
+behaviour already confirmed live above). Since the number is now written
+on every transition, lifetime, there is nothing left to "forget" to
+restore.
+
+Implemented 2026-10-06:
+- `solaredge_modbusqueue.yaml`: replaced the combined
+  `negative_site_limit_on` handler (which wrote the number AND the switch)
+  with a new standalone `set_site_limit` handler (`number.set_value` only).
+  The switch on/off handlers remain, now defensive/manual-only.
+- `batterycontrol_scripts.yaml`: added `set_site_limit_curtailed_script`
+  (value 0) and `set_site_limit_normal_script` (value 1000000), each
+  calling `script.modbus_queue` with `queue_service: set_site_limit`.
+- `negative_price_curtailment.yaml`: both `choose:` branch conditions now
+  key off `number.solaredge_i1_site_limit`'s current value (`!= 0` /
+  `!= 1000000`) instead of the switch's state - this is the
+  compare-before-write guard that avoids redundant Modbus writes on the
+  30-second periodic trigger. The negative branch additionally asserts the
+  switch ON defensively (`if` the switch is "off", turn it on) before
+  writing the curtailed value, so the mechanism self-heals if the switch
+  is ever found off - including the one-time transition away from the old
+  design, where the switch was last left "off" at 08:00:16 on 2026-10-06.
+
+Operational note: because the switch was off when this redesign deployed,
+it will not flip back ON until either (a) the next negative-price episode
+triggers the defensive re-assert, or (b) someone turns it on manually in
+the interim. Until then the switch being "off" is harmless on its own
+(per the empirical finding above) - the number alone now carries the
+curtailment logic once the switch is confirmed on.
+
+Status: closed via redesign 2026-10-06. Deployed to project docs; not yet
+observed live through a real negative-price cycle under the new
+mechanism - see test_plan.md Test 3.2/S.3.
+
+---
 
 ## EMHASS Outage Fallback Guard
 

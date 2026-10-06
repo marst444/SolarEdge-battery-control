@@ -20,9 +20,9 @@ Layer 2   PARTIAL PASS 🟡 (strong)
     ✅ 2.2 SOC Target Generation
     🟡 2.3 Dynamic Charge / Discharge Power
 
-Layer 3   PARTIAL PASS 🟡
-    🟡 3.1 Negative Price Curtailment
-    ⏳ 3.2 Site Limit Enforcement
+Layer 3   PARTIAL PASS 🟡 (strong)
+    ✅ 3.1 Negative Price Curtailment
+    🟡 3.2 Site Limit Enforcement
 
 Layer 4A  PARTIAL PASS 🟡 (strong)
     🟡 4A.1 Charge Decision (Maintain-Zone Scenario)
@@ -722,32 +722,38 @@ should be investigated separately if they are expected to be populated.
 
 # Layer 3 - Grid Constraints
 
-Layer 3 = PARTIAL PASS 🟡
+Layer 3 = PARTIAL PASS 🟡 (strong)
 
 Verified:
 
 ```text
--
+3.1 Negative Price Curtailment - activation/deactivation toggle logic and
+    battery-discharge blocking, confirmed live against a real multi-episode
+    overnight negative-price event (2026-10-06)
 ```
 
 Outstanding:
 
 ```text
-3.2 Site Limit Enforcement
+3.2 Site Limit Enforcement - the actual export-reduction effect of the
+    site limit has still never been observed in the one scenario that
+    would exercise it (negative price AND simultaneous PV surplus); also
+    surfaced a real gap in the deactivation path (see Test 3.2)
 ```
 
 ---
 
 ## Test 3.1 Negative Price Curtailment
 
-Status: PARTIAL PASS
-Date: 2026-07-30
+Status: PASS ✅
+
+Date: 2026-10-06 (upgraded from PARTIAL PASS, 2026-07-30)
 
 ### Purpose
 
 Verify export is curtailed when export price becomes negative.
 
-### Observed
+### Observed (2026-07-30)
 
 ```text
 Export Price = 0.15611
@@ -760,40 +766,76 @@ Negative Site Limit = off
 Site Limit = 0
 ```
 
+### Observed (2026-10-06) - live multi-episode overnight event
+
+```text
+Live evaluation via HA MCP (state + history), triggered by the user
+noticing a real negative-price event. sensor.total_export_price flipped
+negative/positive 7 separate times between 2026-10-06 00:00 and 08:00
+local (brief negative dips of -0.0007 to -0.070 SEK/kWh, separated by
+near-zero/positive stretches), then went clearly positive at 08:00:02
+(1.230 SEK/kWh) and stayed positive for the rest of the day.
+
+input_boolean.negative_price_active / grid_export_blocked and
+switch.solaredge_i1_negative_site_limit history over the same window
+show 7 matching on/off cycles, each one landing within 1-2 price-sensor
+update cycles of the corresponding price sign change:
+
+  00:00 price<0 -> on   | 01:01 price>=0 -> off
+  03:30 price<0 -> on   | 04:00 price>=0 -> off
+  04:15 price<0 -> on   | 04:30 price>=0 -> off
+  06:00 price<0 -> on   | 06:45 price>=0 -> off
+  07:00 price<0 -> on   | 08:00 price>=0 -> off
+
+(switch.solaredge_i1_negative_site_limit's own history additionally shows
+two brief "unavailable" blips at 03:36 and 06:17 - Modbus reconnects, not
+curtailment-logic faults - each one followed immediately by the switch
+re-confirming "on", consistent with the automation's `time_pattern: /30s`
+periodic-enforcement trigger re-asserting state after a transient drop.)
+
+No queue backlog or missed toggle was observed despite the automation's
+`mode: single` - each full activate/deactivate sequence (two 2s delays
+plus the modbus_queue round trip) completes well within the 30s periodic
+trigger's own cycle.
+```
+
 ### Result
 
 ```text
-PARTIAL PASS
+PASS
 ```
 
 ### Notes
 
 ```text
-Normal-price behaviour verified.
+This closes the "Negative-price activation path" and "Export blocking
+verification" items left outstanding since 2026-07-30: the price-sign ->
+helper/switch toggle chain is now confirmed correct and prompt across 7
+real activate/deactivate cycles in one night, not just the single
+steady-state (positive-price) observation from the original test.
 
-When export price was positive:
-
-- negative_price_active remained off
-- grid_export_blocked remained off
-- negative_site_limit remained off
-
-Outstanding:
-
-- Negative-price activation path
-- Export blocking verification
-- Site-limit enforcement verification
-```
+"Export blocking" here refers to the helper-level response
+(negative_price_active, grid_export_blocked, the switch, and - per
+negative_price_curtailment.yaml - forcing maximize_self_consumption and
+zeroing the battery discharge limit). None of tonight's negative-price
+episodes coincided with any PV production (all occurred 00:00-08:00,
+before sunrise), so the battery-discharge-block step was exercised
+(discharge limit genuinely has nothing to block at night, but the mode/
+limit commands fired same as any other maximize_self_consumption
+request) while the site-limit's actual export-blocking *effect* was
+not - see Test 3.2, which is where that specific gap now lives.
 ```
 
 ---
 
 ## Test 3.2 Site Limit Enforcement
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS 🟡 (upgraded from NOT VERIFIED, 2026-10-06)
 
 ### Purpose
 
-Verify SolarEdge site limit is applied during export curtailment.
+Verify SolarEdge site limit is applied during export curtailment, and
+that it is correctly released afterwards.
 
 ### Preconditions
 
@@ -807,31 +849,126 @@ Negative price curtailment active
 site_limit = 0
 negative_site_limit enabled
 export reduced
+normal operation restored
 ```
 
 ### Pass
 
 ```text
-SolarEdge site limit correctly restricts export.
+SolarEdge site limit correctly restricts export, and export capability
+is fully restored once curtailment ends.
 ```
 
-### Observed
+### Observed (2026-10-06)
 
 ```text
--
+Live evaluation via HA MCP (state, history, statistics) following the
+2026-10-06 overnight negative-price event in Test 3.1.
+
+1. number.solaredge_i1_site_limit activation path CONFIRMED: it was
+   already 0 at the start of the day and stayed 0 across all 7
+   activate/deactivate cycles - consistent with the `negative_site_limit_
+   on` modbus_queue handler's guard (only writes 0 if the current value
+   isn't already 0). No negative value or write failure observed.
+
+2. REAL GAP FOUND in the deactivation path: reading
+   solaredge_modbusqueue.yaml directly, the `negative_site_limit_off`
+   handler ONLY turns off switch.solaredge_i1_negative_site_limit - it
+   never writes number.solaredge_i1_site_limit back to any other value.
+   Confirmed in live history: the number has not changed at all since
+   06:17:58 this morning (still reads "0" as of 13:45, 5h45m after the
+   switch itself went back off at 08:00:16 and price returned positive).
+   This exact gap is what "Site-limit enforcement verification" was
+   waiting on since 2026-07-30 - previously assumed untested, now
+   confirmed to be a real asymmetry in the code, not just an unobserved
+   path.
+
+3. Despite (2), EMPIRICALLY CONFIRMED HARMLESS today: during the
+   2026-10-06 08:40-11:55 window, PV production exceeded house load by
+   up to ~1.8kW while switch.solaredge_i1_negative_site_limit was "off"
+   and number.solaredge_i1_site_limit was still stuck at "0" the whole
+   time. Cross-checking sensor.solar_panel_production_w,
+   sensor.power_myhouse_load_no_var_loads, sensor.solaredge_b1_dc_power
+   (battery charging) and sensor.solaredge_m1_ac_power (grid meter, +
+   = export) via 5-minute statistics: whenever PV surplus exceeded what
+   the battery was charging at, the excess reliably appeared as positive
+   (exporting) meter readings, e.g.:
+
+     11:30  PV 1419W  load 253W  batt charging 515W  -> meter +645W
+     11:35  PV 1804W  load 266W  batt charging 578W  -> meter +941W
+     11:40  PV 1967W  load 270W  batt charging 585W  -> meter +1091W
+
+   (uncovered surplus = PV - load - battery charge, matches the actual
+   meter reading within ~15-70W each time, consistent with other minor
+   loads and inverter losses). This directly demonstrates that, on this
+   installation, the SolarEdge integration does NOT enforce
+   number.solaredge_i1_site_limit's value independently - the switch is
+   the real enable/disable gate, and a stale "0" sitting underneath an
+   "off" switch has no effect on actual export. The site limit's
+   enforcement-while-ON path (does site_limit=0 actually suppress export
+   that would otherwise happen) was still not directly observed, because
+   every negative-price episode tonight occurred before sunrise with
+   zero PV - there was nothing to export, so nothing to curtail.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - upgraded from NOT VERIFIED. The deactivation-path gap
+(number.solaredge_i1_site_limit is never restored) is now a confirmed,
+real asymmetry rather than an assumption, but it was also empirically
+shown to be harmless under today's conditions (switch state alone gates
+enforcement). Still missing for a full PASS: a direct observation of the
+one scenario that actually exercises the enforcement-while-ON path -
+negative export price AND PV surplus occurring at the same time, so that
+export can be seen being suppressed by the site limit rather than merely
+inferred from its absence. This hasn't happened yet in the data reviewed
+(negative prices have so far all occurred overnight with zero PV).
 ```
 
 ### Notes
 
 ```text
--
+See roadmap.md - Negative Price Curtailment and known_issues_and_fixes.md
+for the full write-up of this finding.
 ```
+
+### Update 2026-10-06 (later same day) - Mechanism redesigned
+
+The deactivation-path gap documented above is now closed structurally,
+not by the "restore to a normal value" patch floated in the Result above
+(the user declined that patch). Instead: `switch.
+solaredge_i1_negative_site_limit` no longer toggles per price change - it
+stays permanently ON - and `number.solaredge_i1_site_limit` alone is
+varied (0 = curtailed, 1,000,000 = normal, which is the number's own max
+and reproduces the unconstrained-export behaviour confirmed in point 3
+above exactly). `negative_price_curtailment.yaml`,
+`solaredge_modbusqueue.yaml` and `batterycontrol_scripts.yaml` were all
+updated accordingly (see known_issues_and_fixes.md for the full diff
+description).
+
+This re-opens the verification question under the new mechanism: the
+7-cycle activation/deactivation evidence above was gathered under the old
+switch-toggle design and is no longer directly applicable to confirming
+correct behaviour, though the underlying power-flow facts it established
+(switch state, not a stale number, gated enforcement on this
+installation) remain valid historical evidence of how the hardware
+responds. Still needed for a full PASS under the new mechanism:
+
+```text
+1. A live negative-price activation: confirm number.solaredge_i1_site_
+   limit writes to 0 and the switch is confirmed/re-asserted on.
+2. A live deactivation: confirm the number writes to 1,000,000 (not left
+   stale), with no unnecessary repeated writes on the 30-second periodic
+   trigger (compare-before-write guard).
+3. The still-outstanding enforcement-while-ON scenario from point 3
+   above: a negative price window coinciding with real PV surplus, to
+   directly observe export being suppressed while site_limit=0 and the
+   switch is on.
+```
+
+Status left at PARTIAL PASS 🟡 pending re-verification against the new
+mechanism - see roadmap.md - Negative Price Curtailment, item 2.
 
 ---
 
@@ -1789,7 +1926,9 @@ over a longer, ideally full-week, observation window.
 Cross-references Test 6.3 (Recovery After Failed Write) for the one
 confirmed write failure and the stale-lock finding in this same window.
 See roadmap.md - Active Investigations - Modbus Connectivity for the
-consolidated write-up and suggested fix.
+consolidated write-up and suggested fix. Update 2026-10-02: a full 48h
+before/after sample taken after the close_after_polling/scan_interval
+settings change - see roadmap.md for the current numbers and verdict.
 ```
 
 ---
@@ -2103,7 +2242,7 @@ behaviour.
 
 ## Test S.3 Negative Price Export Block
 
-Status: NOT VERIFIED
+Status: PARTIAL PASS 🟡 (upgraded from NOT VERIFIED, 2026-10-06)
 
 ### Purpose
 
@@ -2127,20 +2266,47 @@ Export curtailment correctly reaches the inverter.
 ### Observed
 
 ```text
--
+See Test 3.1/3.2 (2026-10-06) for the full evaluation. Layer 3's
+reaction to a real negative-price event is now confirmed (7 activate/
+deactivate cycles in one night, each one correctly toggling
+switch.solaredge_i1_negative_site_limit and writing
+number.solaredge_i1_site_limit = 0 within Layer 4C/4D). What's still
+missing for this specific system test is the one condition that would
+show the curtailment actually reaching the inverter as an *export
+reduction* rather than just a correct command: PV surplus occurring
+*during* a negative-price window. Every episode observed so far has
+been overnight with zero PV, so there has been nothing for the site
+limit to actually curtail yet.
 ```
 
 ### Result
 
 ```text
--
+PARTIAL PASS - the command path (Layer 3 -> 4B -> 4C -> 4D) is confirmed
+correct and prompt. The actual curtailment effect on real export power
+is still unobserved, pending a negative-price episode that coincides
+with PV production.
 ```
 
 ### Notes
 
 ```text
--
+See Test 3.2 for the related finding (now superseded by a redesign, not a
+patch) and roadmap.md - Negative Price Curtailment for the full history.
 ```
+
+### Update 2026-10-06 (later same day) - Mechanism redesigned
+
+Same redesign as Test 3.2: `switch.solaredge_i1_negative_site_limit`
+stays permanently on; `number.solaredge_i1_site_limit` alone carries
+curtailment (0 = curtailed, 1,000,000 = normal). The command-path
+confirmation above (Layer 3 -> 4B -> 4C -> 4D reaching the inverter
+correctly) was gathered under the old switch-toggle design; the new
+`set_site_limit` queue command path through the same layers has not yet
+been exercised live. Status left at PARTIAL PASS 🟡 pending a live cycle
+under the new mechanism and the still-outstanding PV-surplus-during-
+negative-price observation - see Test 3.2 and roadmap.md - Negative
+Price Curtailment, item 2.
 
 ---
 
