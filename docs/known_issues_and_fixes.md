@@ -33,11 +33,89 @@ Fallback Guard below; its behavioral verification (an actual skipped
 run, or the addon auto-restart firing) still awaits a real future
 EMHASS stall. The EV Charging Sensor Swap incomplete-trigger follow-up
 found 2026-09-24 was fixed 2026-09-25 - see EV Charging Sensor Swap
-below; not yet confirmed against the live file or a real EV session.)
+below; not yet confirmed against the live file or a real EV session. The
+Enhanced Diagnostics write-outcome telemetry added 2026-10-06 is a
+knowingly imperfect, readback-based signal, not an exception-based one -
+see Write-Outcome Telemetry Is Readback-Based below for exactly what it
+can and cannot catch.)
 
 ---
 
 # Fixed Issues
+
+## Write-Outcome Telemetry Is Readback-Based
+
+Added 2026-10-06 as part of the Enhanced Diagnostics build-out (user
+request: build the still-open items from roadmap.md - Enhanced
+Diagnostics, full set in one pass, deriving port/write health from
+existing signals rather than a new probe). `script.modbus_queue`
+(`solaredge_modbusqueue.yaml`) now classifies every command as
+`success`/`failure`/`unmatched_service` and feeds
+`input_text.modbus_last_successful_write`/`_failed_write`/
+`_failed_reason` and `input_number.modbus_write_success_count_total`/
+`_today`, `_failure_count_total`/`_today`, `_consecutive_failures` (all
+new Layer 1 helpers in `safety_and_watchdog_helpers.yaml`), plus
+`modbus_queue_last_command_delta` for the six numeric write branches and
+`modbus_queue_pending_count` for in-flight queue depth.
+
+Important limitation, stated plainly rather than left implicit: this is
+NOT based on catching an exception from the dispatched SolarEdge service
+call. Home Assistant's `continue_on_error: true` (already on the
+`choose:` block for the lock-release-safety reason documented below)
+stops the script from aborting on a failed write, but does not expose a
+success/fail signal to later template steps - there is no documented way
+to read "did the last action error" back into a template after
+`continue_on_error` catches it. Instead, `write_outcome` is derived by
+snapshotting the target entity's value immediately before the `choose:`
+dispatch and reading the same entity back ~2s after (right after the
+existing pacing delay), comparing it to the value/option the command
+should have produced. This is the same "derive from existing signals, no
+new probe" approach used for the new port-health binary sensors in
+`watchdog_sensors.yaml` (see entities.md - Layer 1).
+
+Two concrete gaps this leaves, both known trade-offs rather than bugs:
+
+1. If the `number`/`select` entities in `solaredge_modbus_multi` update
+   optimistically on write (set their own state immediately, regardless
+   of whether the underlying Modbus write actually landed on the wire),
+   a real silent wire-level failure will read back as `success` here -
+   this readback can only catch a failure that either (a) leaves the
+   entity's state not matching what was commanded, or (b) is a flat
+   dispatch error (`unmatched_service`, when `queue_service` matches no
+   branch at all - this one is unambiguous, no readback involved).
+   Whether these specific entities are optimistic or poll-confirmed has
+   not been verified against the integration's source. Until it is,
+   treat `modbus_write_failure_count_*` as a lower bound on real write
+   failures, not a ground-truth count.
+2. The readback happens only ~2s after dispatch (the script's existing
+   pacing delay). If an entity's true state takes longer than that to
+   reflect a real write (e.g. it needs the next poll cycle), this could
+   register a transient `failure` that would have self-corrected - a
+   false positive in the opposite direction from (1). Not observed so
+   far; flagged as a design caveat, not an observed defect.
+
+The command-delta sensor (`modbus_queue_last_command_delta`) only updates
+on a `success` outcome for the numeric branches (storage command timeout,
+charge/discharge limit, dynamic charge/discharge limit, site limit) -
+mode-select and the negative-site-limit switch have no meaningful numeric
+delta and don't touch it.
+
+Deliberately NOT implemented: per-write skip tracking for charge/discharge
+*limit* writes (as opposed to the mode-select command, which already has
+a skip counter via `apply_effective_battery_control.yaml`'s Mode Command
+Guard). No logic currently skips/deduplicates a limit write before it
+reaches `script.modbus_queue` - building a counter for that would be
+telemetry for behavior that doesn't exist yet. See roadmap.md - Write
+Pressure (minimum write interval / delta threshold for limit writes is
+still an undecided, separate item) and Enhanced Diagnostics.
+
+Status: implemented in this project's docs 2026-10-06. Not yet confirmed
+against the live file or any real write (success or failure) - no trace
+or history evidence yet collected for `modbus_write_success_count_total`,
+`modbus_write_failure_count_total`, or the derived port-health/write-
+health/queue-backlog binary sensors in `watchdog_sensors.yaml`.
+
+---
 
 ## Negative Price Curtailment - Site Limit Restore Gap
 
@@ -573,9 +651,14 @@ effective mode is already `maximize_self_consumption` and both the
 inverter's live command mode and its configured default mode confirm
 that's safe to skip - only the charge/discharge limit writes still go
 out in that case. `sensor.battery_mode_command_guard` exposes whether
-it's currently active.
+it's currently active. A `mode_command_skipped_count_total`/`_today`
+counter (Enhanced Diagnostics, added 2026-10-06 in
+`safety_and_watchdog_helpers.yaml`) now also counts every tick the guard
+actually skips, incremented from the `else:` branch of the same `if:
+not mode_guard_active` in `apply_effective_battery_control.yaml`.
 
 Status: deployed and confirmed working (test_plan.md Test 7.6)
 2026-08-27. Modbus error counts look pre-existing rather than
 guard-caused, but before/after impact on the overall error rate hasn't
-been quantified.
+been quantified. The new skip counter (2026-10-06) is implemented in
+project docs only, not yet confirmed against live history.

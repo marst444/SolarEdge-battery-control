@@ -1,7 +1,7 @@
 # ── watchdog_sensors.yaml ──
-# Layer 1: derives EMHASS health/staleness and SolarEdge Modbus data freshness from run-timestamps and entity ages.
-# Sets: sensor.emhass_health, binary_sensor.emhass_healthy, binary_sensor.solaredge_modbus_data_fresh
-# Deps: input_datetime.emhass_mpc_last_success, sensor.mpc_pv_optim_status  →  watchdog_automations.yaml, battery_forecast_control.yaml
+# Layer 1: derives EMHASS health/staleness, SolarEdge Modbus data freshness, derived port health, and write/queue diagnostics.
+# Sets: sensor.emhass_health, binary_sensor.emhass_healthy, binary_sensor.solaredge_modbus_data_fresh, binary_sensor.solaredge_modbus_port_raw/_stable, binary_sensor.solaredge_modbus_write_health, binary_sensor.solaredge_modbus_queue_backlog
+# Deps: input_datetime.emhass_mpc_last_success, sensor.mpc_pv_optim_status, input_number.modbus_write_consecutive_failures/_queue_pending_count (safety_and_watchdog_helpers.yaml)  →  watchdog_automations.yaml, battery_forecast_control.yaml
 # Fixes: known_issues_and_fixes.md; emhass_healthy naming/typo - see roadmap.md
 
 template:
@@ -20,7 +20,7 @@ template:
           {% else %}
             OK
           {% endif %}
-          
+
       - name: SolarEdge I1 AC Power Age Seconds
         unique_id: solaredge_i1_ac_power_age_seconds
         unit_of_measurement: "s"
@@ -34,7 +34,7 @@ template:
         state: >
           {% set last = states.sensor.solaredge_m1_ac_power.last_updated %}
           {{ (now() - last).total_seconds() | round(0) }}
-          
+
   - binary_sensor:
       # NOTE: "on" here means a problem is present (device_class: problem),
       # despite the friendly name "EMHASS Healthy" - i.e. this reads as
@@ -51,3 +51,42 @@ template:
         state: >
           {{ states('sensor.solaredge_i1_ac_power_age_seconds') | float(999) < 30
              and states('sensor.solaredge_m1_ac_power_age_seconds') | float(999) < 30 }}
+
+      # Enhanced Diagnostics - derived port health (no TCP probe; combines entity
+      # availability with the existing data-freshness signal above). "Raw" ticks
+      # with every connect/close cycle (normal, ~every 8s per known_issues_and_fixes.md);
+      # "stable" debounces that normal cycling via delay_off so it only reports a
+      # problem once the underlying signal has stayed down longer than one cycle.
+      - name: SolarEdge Modbus Port Raw
+        unique_id: solaredge_modbus_port_raw
+        device_class: connectivity
+        state: >
+          {{ states('sensor.solaredge_i1_ac_power') not in ['unavailable', 'unknown']
+             and states('sensor.solaredge_m1_ac_power') not in ['unavailable', 'unknown']
+             and states('binary_sensor.solaredge_modbus_data_fresh') == 'on' }}
+
+      - name: SolarEdge Modbus Port Stable
+        unique_id: solaredge_modbus_port_stable
+        device_class: connectivity
+        state: >
+          {{ states('sensor.solaredge_i1_ac_power') not in ['unavailable', 'unknown']
+             and states('sensor.solaredge_m1_ac_power') not in ['unavailable', 'unknown']
+             and states('binary_sensor.solaredge_modbus_data_fresh') == 'on' }}
+        delay_on: "00:00:00"
+        delay_off: "00:00:45"
+
+      # Enhanced Diagnostics - write/queue health, derived from counters written
+      # by solaredge_modbusqueue.yaml (Layer 4C) into the Layer 1 helpers in
+      # safety_and_watchdog_helpers.yaml. device_class: problem, so "on" = problem
+      # (see known_issues_and_fixes.md for threshold rationale).
+      - name: SolarEdge Modbus Write Unhealthy
+        unique_id: solaredge_modbus_write_health
+        device_class: problem
+        state: >
+          {{ states('input_number.modbus_write_consecutive_failures') | int(0) >= 3 }}
+
+      - name: SolarEdge Modbus Queue Backlog
+        unique_id: solaredge_modbus_queue_backlog
+        device_class: problem
+        state: >
+          {{ states('input_number.modbus_queue_pending_count') | int(0) >= 5 }}

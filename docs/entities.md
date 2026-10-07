@@ -51,6 +51,104 @@ input_number.safety_recovery_charge_limit
 
 ---
 
+## Modbus Write/Queue Diagnostic Helpers (Enhanced Diagnostics)
+
+Added 2026-10-06 - see roadmap.md (Enhanced Diagnostics) and
+known_issues_and_fixes.md (Write-Outcome Telemetry Is Readback-Based).
+Defined here in Layer 1 per the user's placement instruction; written at
+runtime by solaredge_modbusqueue.yaml (Layer 4C) and
+apply_effective_battery_control.yaml (Layer 4B) as noted per entity.
+
+```text
+input_text.modbus_last_successful_write
+-> "<queue_service>=<queue_value> @ <timestamp>" for the most recent
+   Modbus write classified as successful. Written by
+   solaredge_modbusqueue.yaml.
+```
+
+---
+
+```text
+input_text.modbus_last_failed_write
+-> Same format as above, for the most recent write classified as a
+   failure (including an unmatched queue_service). Written by
+   solaredge_modbusqueue.yaml.
+```
+
+---
+
+```text
+input_text.modbus_last_failed_reason
+-> Human-readable reason for the most recent failed write - either "No
+   matching queue_service" or "Entity <x> expected <y> but reads <z>".
+   Written by solaredge_modbusqueue.yaml. See known_issues_and_fixes.md
+   for what this readback-based classification can and cannot detect.
+```
+
+---
+
+```text
+input_number.modbus_write_success_count_total / _today
+-> Lifetime / since-midnight count of writes classified as successful.
+   Written by solaredge_modbusqueue.yaml; _today zeroed daily by
+   automation.reset_watchdog_daily_counters.
+```
+
+---
+
+```text
+input_number.modbus_write_failure_count_total / _today
+-> Lifetime / since-midnight count of writes classified as failed
+   (including unmatched queue_service). Written by
+   solaredge_modbusqueue.yaml; _today zeroed daily by
+   automation.reset_watchdog_daily_counters.
+```
+
+---
+
+```text
+input_number.modbus_write_consecutive_failures
+-> Running count of consecutive failed writes; reset to 0 on the next
+   successful write. Drives binary_sensor.solaredge_modbus_write_health
+   below. Written by solaredge_modbusqueue.yaml.
+```
+
+---
+
+```text
+input_number.modbus_queue_pending_count
+-> Live count of script.modbus_queue runs currently queued or in
+   flight (incremented on receipt, decremented just before the lock
+   releases). Drives binary_sensor.solaredge_modbus_queue_backlog below.
+   Written by solaredge_modbusqueue.yaml.
+```
+
+---
+
+```text
+input_number.modbus_queue_last_command_delta
+-> (new value - previous value) for the most recent successful numeric
+   write (storage command timeout, charge/discharge limit, dynamic
+   charge/discharge limit, or site limit). Not updated for mode-select
+   or switch commands, which have no numeric delta. Written by
+   solaredge_modbusqueue.yaml.
+```
+
+---
+
+```text
+input_number.mode_command_skipped_count_total / _today
+-> Lifetime / since-midnight count of ticks where the Layer 4B Mode
+   Command Guard skipped the mode-select command (see
+   apply_effective_battery_control automation below). Written by
+   apply_effective_battery_control.yaml; _today zeroed daily by
+   automation.reset_watchdog_daily_counters. Deliberately no equivalent
+   counter exists yet for charge/discharge limit writes - no
+   skip/dedup logic exists for those (see roadmap.md - Write Pressure).
+```
+
+---
+
 ```
 input_boolean.battery_high_soc_hold
 -> Upper SOC protection state with hysteresis
@@ -213,6 +311,52 @@ binary_sensor.solaredge_modbus_data_fresh
 
 ---
 
+## Modbus Port/Write Health Diagnostics (Enhanced Diagnostics)
+
+Added 2026-10-06 - derived entirely from existing signals (entity
+availability, the data-freshness sensor above, and the write/queue
+helpers above), not a new TCP probe or integration. See roadmap.md
+(Enhanced Diagnostics) and known_issues_and_fixes.md (Write-Outcome
+Telemetry Is Readback-Based).
+
+```text
+binary_sensor.solaredge_modbus_port_raw
+-> "on" (connectivity) when the inverter/meter AC-power entities aren't
+   unavailable/unknown AND binary_sensor.solaredge_modbus_data_fresh is
+   on. Ticks with every normal connect/close poll cycle (~every 8s per
+   known_issues_and_fixes.md) - not debounced.
+```
+
+---
+
+```text
+binary_sensor.solaredge_modbus_port_stable
+-> Same underlying signal as solaredge_modbus_port_raw, but debounced
+   with delay_off: 45s (delay_on: 0s) so normal poll-cycle connect/close
+   noise doesn't register as a problem - only a genuinely sustained drop
+   does.
+```
+
+---
+
+```text
+binary_sensor.solaredge_modbus_write_health
+-> device_class: problem - friendly name "SolarEdge Modbus Write
+   Unhealthy" (on = problem) to avoid the same on/off-naming ambiguity
+   flagged on binary_sensor.emhass_healthy (see roadmap.md). On when
+   input_number.modbus_write_consecutive_failures >= 3.
+```
+
+---
+
+```text
+binary_sensor.solaredge_modbus_queue_backlog
+-> device_class: problem. On when input_number.modbus_queue_pending_count
+   >= 5.
+```
+
+---
+
 ## Automations
 
 ```text
@@ -232,6 +376,17 @@ automation.EMHASS_watchdog_dayahead_missing
 ```text
 automation.EMHASS_watchdog_mpc_stalled
 -> Detects stalled EMHASS MPC optimisation.
+```
+
+---
+
+```text
+automation.reset_watchdog_daily_counters
+-> Zeroes the "_today" Modbus write and mode-command-skip counters
+   (modbus_write_success_count_today, modbus_write_failure_count_today,
+   mode_command_skipped_count_today) at local midnight. Added 2026-10-06
+   alongside the Enhanced Diagnostics helpers above; mirrors
+   automation.reset_modbus_queue_daily_counters in Layer 4C.
 ```
 ---
 
@@ -889,7 +1044,9 @@ automation.apply_effective_battery_control_to_solaredge_inverter
    mode-select command and the 15-minute command timeout reset are skipped,
    and only the charge/discharge limits are sent. Any other mode, an
    unconfirmed live mode, or a default mode other than Maximize Self
-   Consumption, still sends the full command sequence.
+   Consumption, still sends the full command sequence. Each skip also
+   increments input_number.mode_command_skipped_count_total/_today (see
+   Layer 1 - Modbus Write/Queue Diagnostic Helpers above).
 ```
 
 ---
@@ -1061,6 +1218,17 @@ input_text.modbus_queue_last_executed_command
 -> "<queue_service>=<queue_value> @ <timestamp>" for the most recently
    completed command, stamped just before the lock releases.
 ```
+
+---
+
+Enhanced Diagnostics (2026-10-06) added write-outcome classification
+(success/failure/unmatched_service), per-write success/failure counters,
+consecutive-failure tracking, live pending-count, and command-delta to
+this same script - see Layer 1 - Modbus Write/Queue Diagnostic Helpers
+above for the entity list (defined there per the user's placement
+instruction; written here in solaredge_modbusqueue.yaml) and
+known_issues_and_fixes.md - Write-Outcome Telemetry Is Readback-Based
+for exactly what the classification can and cannot catch.
 
 ---
 

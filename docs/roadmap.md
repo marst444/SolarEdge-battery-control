@@ -878,43 +878,73 @@ the switch is still sitting "off" (confirmed again this evening).
 
 ## Required Telemetry
 
-Add visibility for:
+Status as of 2026-10-06 (full build-out - see Resolved section below and
+known_issues_and_fixes.md - Write-Outcome Telemetry Is Readback-Based):
 
 ```text
-Modbus write frequency
-Last successful write
-Last failed write
-Last command type
-Last command reason
-Queue length
-Pending command count
-Command delta
-Skipped writes
+Modbus write frequency      -> DONE (modbus_write_success/failure_count_*)
+Last successful write       -> DONE (input_text.modbus_last_successful_write)
+Last failed write            -> DONE (input_text.modbus_last_failed_write)
+Last command type            -> already covered pre-existing
+                                 (modbus_queue_last_queued/executed_command)
+Last command reason          -> PARTIAL: input_text.effective_battery_reason
+                                 covers the decision-engine's reason;
+                                 modbus_last_failed_reason covers why a
+                                 write specifically failed. No single
+                                 "why was THIS command issued" field below
+                                 the decision-engine level.
+Queue length / pending count -> DONE (input_number.modbus_queue_pending_count)
+Command delta                 -> DONE (modbus_queue_last_command_delta,
+                                 numeric write branches only)
+Skipped writes                -> PARTIAL: mode-select skips now counted
+                                 (mode_command_skipped_count_total/_today).
+                                 Charge/discharge *limit* writes still have
+                                 no skip/dedup logic at all - a counter for
+                                 that would be telemetry for behavior that
+                                 doesn't exist yet. See Write Pressure below.
 ```
 
-`sensor.battery_mode_command_guard` (added 2026-08-26) partially covers
-"Skipped writes" for the mode-select command specifically - it does not yet
-cover skipped/deduplicated charge or discharge limit writes.
+`sensor.battery_mode_command_guard` (added 2026-08-26) still only exposes
+the mode-select guard's current state; the new counters above now also
+track *how often* it has fired, lifetime and daily.
 
 ---
 
 ## Recommended Diagnostic Sensors
 
+Status as of 2026-10-06: all built. See entities.md - Layer 1 - Modbus
+Port/Write Health Diagnostics and Modbus Write/Queue Diagnostic Helpers.
+
 ```text
-binary_sensor.solaredge_modbus_port_raw
-binary_sensor.solaredge_modbus_port_stable
+binary_sensor.solaredge_modbus_port_raw      - DONE 2026-10-06
+binary_sensor.solaredge_modbus_port_stable   - DONE 2026-10-06
 
-sensor.modbus_last_successful_write
-sensor.modbus_last_failed_write
-sensor.modbus_last_command_reason
+input_text.modbus_last_successful_write      - DONE 2026-10-06
+input_text.modbus_last_failed_write          - DONE 2026-10-06
+input_text.modbus_last_failed_reason         - DONE 2026-10-06
+  (close cousin of "last command reason" above, named for what it is)
 
-sensor.solaredge_i1_ac_power_age_seconds
-sensor.solaredge_m1_ac_power_age_seconds
-
-binary_sensor.solaredge_modbus_data_fresh
+sensor.solaredge_i1_ac_power_age_seconds     - already existed (2026-09-25,
+sensor.solaredge_m1_ac_power_age_seconds       predates this list's last
+binary_sensor.solaredge_modbus_data_fresh      edit - correcting a stale
+                                                claim here that these were
+                                                unbuilt)
 ```
 
-These should help distinguish between:
+Also added, beyond this original list: `binary_sensor.
+solaredge_modbus_write_health` (consecutive-write-failure based) and
+`binary_sensor.solaredge_modbus_queue_backlog` (pending-count based).
+
+None of the port/write-health sensors are a real TCP probe or new
+integration - all are derived from existing entity availability, the
+pre-existing data-freshness sensor, and the new write/queue counters
+above (user's explicit choice: "derive from existing signals" over
+building a real port probe). See known_issues_and_fixes.md -
+Write-Outcome Telemetry Is Readback-Based for the specific, documented
+limitation this implies (a silently-optimistic entity write could read
+back as "success" even if the underlying Modbus write failed on the
+wire) - these sensors help distinguish the cases below, but with that
+caveat in mind, not as ground truth:
 
 ```text
 TCP port unavailable
@@ -927,8 +957,11 @@ pymodbus transaction recovery issue
 Note 2026-09-19: a `binary_sensor.solaredge_modbus_data_fresh`-style
 "age since last update" sensor on `sensor.solaredge_b1_state_of_energy`
 specifically would have made the 31-hour outage above visible immediately
-instead of only being caught by a manual multi-day history review -
-worth prioritising this one sensor even before the rest of this list.
+instead of only being caught by a manual multi-day history review - this
+sensor exists for the inverter/meter AC-power entities (2026-09-25) but
+not yet for the battery state-of-energy sensor specifically; still worth
+doing if another extended SOC-sensor outage like the 2026-09-16/17 or
+2026-09-22 ones recurs.
 
 ---
 
@@ -1093,6 +1126,49 @@ Connectivity investigation above - that's a natural next step once a
 real connectivity episode happens with this telemetry live (e.g. does
 `modbus_queue_last_wait_seconds` or the timeout counters spike during a
 "could not connect" episode).
+
+**Enhanced Diagnostics - Full Build-Out** (implemented 2026-10-06) - the
+remaining open items from section 4 above (Required Telemetry,
+Recommended Diagnostic Sensors) were built in one pass, per the user's
+explicit request to put the new entities in Layer 1 ("safety and
+watchdog") and to derive port/write health from existing signals rather
+than a new TCP probe or integration. Added to
+`safety_and_watchdog_helpers.yaml` (Layer 1): `input_text.
+modbus_last_successful_write`/`_failed_write`/`_failed_reason`;
+`input_number.modbus_write_success_count_total`/`_today`,
+`_failure_count_total`/`_today`, `_consecutive_failures`,
+`modbus_queue_pending_count`, `modbus_queue_last_command_delta`,
+`mode_command_skipped_count_total`/`_today`. Added to
+`watchdog_sensors.yaml` (Layer 1): `binary_sensor.
+solaredge_modbus_port_raw`/`_port_stable` (entity-availability +
+data-freshness derived, debounced on the "_stable" variant),
+`solaredge_modbus_write_health` (consecutive-failure based),
+`solaredge_modbus_queue_backlog` (pending-count based). Added to
+`watchdog_automations.yaml`: `automation.reset_watchdog_daily_counters`
+(midnight reset for the new "_today" counters). `solaredge_modbusqueue.yaml`
+(Layer 4C) now classifies every write as success/failure/unmatched_service
+via before/after entity readback and writes into the Layer 1 helpers
+above; `apply_effective_battery_control.yaml` (Layer 4B) now increments
+the mode-skip counters from the Mode Command Guard's existing `else:`
+branch. Two things deliberately NOT built: a real TCP port probe (per
+the user's explicit choice of the derive-from-existing-signals option),
+and any skip/dedup counter for charge/discharge *limit* writes (no such
+skip logic exists yet - see Write Pressure above). Also corrected a
+stale claim in section 4 above: the data-freshness sensors
+(`sensor.solaredge_i1_ac_power_age_seconds` etc.) already existed since
+2026-09-25, predating this build-out - they were mistakenly described as
+unbuilt in an earlier pass over this document.
+
+See known_issues_and_fixes.md - Write-Outcome Telemetry Is
+Readback-Based for the full design and its documented limitations (the
+write-outcome classification is not exception-based and can't fully
+distinguish a real wire-level failure from an optimistic local entity
+update), and entities.md - Layer 1 for the complete entity list.
+
+Status: implemented in project docs 2026-10-06. Not yet confirmed
+against the live file or any real write/outage - no trace or history
+evidence collected yet for any of the new counters or derived binary
+sensors.
 
 ---
 

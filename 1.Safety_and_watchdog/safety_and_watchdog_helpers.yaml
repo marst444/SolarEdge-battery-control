@@ -1,7 +1,7 @@
 # ── safety_and_watchdog_helpers.yaml ──
-# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, and battery safety/override input_booleans.
-# Sets: (definitions only - runtime values written by emhass_automations.yaml, safety_limits_and_override.yaml)
-# Deps: none (static)  →  safety_limits_and_override.yaml, watchdog_sensors.yaml, apply_effective_battery_control.yaml
+# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, battery safety/override input_booleans, and Modbus write/queue diagnostic helpers.
+# Sets: (definitions only - runtime values written by emhass_automations.yaml, safety_limits_and_override.yaml, solaredge_modbusqueue.yaml, apply_effective_battery_control.yaml)
+# Deps: none (static)  →  safety_limits_and_override.yaml, watchdog_sensors.yaml, apply_effective_battery_control.yaml, solaredge_modbusqueue.yaml, watchdog_automations.yaml
 # Fixes: known_issues_and_fixes.md; several safety-override booleans possibly unused - see roadmap.md
 
 input_number:
@@ -48,6 +48,81 @@ input_number:
     mode: box
     initial: 3000
 
+  # Enhanced Diagnostics (Modbus write outcomes) - written by solaredge_modbusqueue.yaml
+  modbus_write_success_count_total:
+    name: Modbus Write Success Count Total
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  modbus_write_success_count_today:
+    name: Modbus Write Success Count Today
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  modbus_write_failure_count_total:
+    name: Modbus Write Failure Count Total
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  modbus_write_failure_count_today:
+    name: Modbus Write Failure Count Today
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  modbus_write_consecutive_failures:
+    name: Modbus Write Consecutive Failures
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  # Enhanced Diagnostics (queue depth) - written by solaredge_modbusqueue.yaml
+  modbus_queue_pending_count:
+    name: Modbus Queue Pending Count
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+    initial: 0
+
+  modbus_queue_last_command_delta:
+    name: Modbus Queue Last Command Delta
+    min: -1000000
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  # Enhanced Diagnostics (mode-select guard) - written by apply_effective_battery_control.yaml
+  mode_command_skipped_count_total:
+    name: Mode Command Skipped Count Total
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  mode_command_skipped_count_today:
+    name: Mode Command Skipped Count Today
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
 input_datetime:
 
   emhass_last_dayahead_run:
@@ -85,6 +160,19 @@ input_text:
 
   effective_battery_reason:
     name: Effective Battery Reason
+    max: 255
+
+  # Enhanced Diagnostics (Modbus write outcomes) - written by solaredge_modbusqueue.yaml
+  modbus_last_successful_write:
+    name: Modbus Last Successful Write
+    max: 255
+
+  modbus_last_failed_write:
+    name: Modbus Last Failed Write
+    max: 255
+
+  modbus_last_failed_reason:
+    name: Modbus Last Failed Reason
     max: 255
 
 input_boolean:

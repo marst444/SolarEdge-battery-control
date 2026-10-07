@@ -1,6 +1,6 @@
 # ── watchdog_automations.yaml ──
-# Layer 1: notifies on missing day-ahead/stalled MPC runs; auto-restarts EMHASS addon after 90 min stall (max 1/hr).
-# Sets: input_datetime.emhass_addon_last_restart_attempt
+# Layer 1: notifies on missing day-ahead/stalled MPC runs; auto-restarts EMHASS addon after 90 min stall (max 1/hr); resets daily diagnostic counters at midnight.
+# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today
 # Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status  →  hassio.addon_restart, notify.mobile_app_fp3_ms
 # Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard)
 
@@ -112,3 +112,22 @@ automation:
           message: >
             MPC stalled >90min - EMHASS addon was just auto-restarted.
             Will retry at most once/hour if it keeps failing.
+
+  - id: reset_watchdog_daily_counters
+    alias: "Watchdog – Reset Daily Diagnostic Counters"
+    description: >
+      Enhanced Diagnostics: resets the "_today" Modbus write and mode-command
+      skip counters at midnight, mirroring reset_modbus_queue_daily_counters
+      in solaredge_modbusqueue.yaml. The "_total" counters are never reset.
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id:
+            - input_number.modbus_write_success_count_today
+            - input_number.modbus_write_failure_count_today
+            - input_number.mode_command_skipped_count_today
+        data:
+          value: 0

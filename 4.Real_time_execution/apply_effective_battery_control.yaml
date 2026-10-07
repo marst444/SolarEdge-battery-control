@@ -1,6 +1,6 @@
 # ── apply_effective_battery_control.yaml ──
 # Layer 4B/4D: sends effective mode/limits to SolarEdge via Modbus Queue scripts; Mode Command Guard skips redundant mode writes.
-# Sets: (via scripts) select.solaredge_i1_storage_command_mode, number.solaredge_i1_storage_*_limit
+# Sets: (via scripts) select.solaredge_i1_storage_command_mode, number.solaredge_i1_storage_*_limit; input_number.mode_command_skipped_count_total/_today
 # Deps: input_select.effective_storage_mode, input_number.effective_*_limit  ←  safety_limits_and_override.yaml  →  solaredge_modbusqueue.yaml
 # Fixes: known_issues_and_fixes.md (Write Pressure - Mode Command Guard)
 
@@ -83,6 +83,16 @@ automation:
                   - service: script.maximize_self_consumption_script
 
           - delay: "00:00:02"
+        else:
+          # Enhanced Diagnostics: count the mode-select write the guard just
+          # skipped. See known_issues_and_fixes.md (Write Pressure - Mode
+          # Command Guard) and roadmap.md (Enhanced Diagnostics).
+          - service: input_number.increment
+            target:
+              entity_id: input_number.mode_command_skipped_count_total
+          - service: input_number.increment
+            target:
+              entity_id: input_number.mode_command_skipped_count_today
 
       - service: script.set_effective_storage_charge_limit
 

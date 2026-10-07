@@ -1,8 +1,8 @@
 # ── solaredge_modbusqueue.yaml ──
-# Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue telemetry.
-# Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch)
+# Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue + write-outcome telemetry.
+# Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch); writes into Layer 1 helpers in safety_and_watchdog_helpers.yaml (modbus_write_*, modbus_queue_pending_count, modbus_queue_last_command_delta)
 # Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
-# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap); leftover debug logging - see roadmap.md
+# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap, Write-Outcome Telemetry Is Readback-Based); leftover debug logging - see roadmap.md
 
 input_boolean:
   modbus_busy:
@@ -115,6 +115,16 @@ script:
         data:
           value: "{{ (states('input_number.modbus_queue_command_count_today') | int(0)) + 1 }}"
 
+      # Enhanced Diagnostics: this run is now "pending" (queued or running)
+      # until the lock is released near the end of this sequence. Since the
+      # script runs in mode: queued, several runs can be stacked here at
+      # once - this counter reflects that live depth.
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_pending_count
+        data:
+          value: "{{ (states('input_number.modbus_queue_pending_count') | int(0)) + 1 }}"
+
       # Log incoming command
       - service: system_log.write
         data:
@@ -185,6 +195,54 @@ script:
             DEBUG BEFORE CHOOSE →
             queue_service="{{ queue_service }}"
           level: debug
+
+      # Enhanced Diagnostics: work out which entity this command is about to
+      # write to and what value it should end up holding, BEFORE the choose:
+      # dispatch runs, so we can (a) snapshot the pre-write value for the
+      # command-delta sensor and (b) read the same entity back afterwards to
+      # infer success/failure. This mirrors the queue_service matching logic
+      # in the choose: block below one-for-one, in the same order, so it
+      # classifies every branch (and the default: case) the same way the
+      # dispatch itself does. See known_issues_and_fixes.md - Write-Outcome
+      # Telemetry Is Readback-Based for the important caveat on what this
+      # can and cannot detect.
+      - variables:
+          write_target_entity: >-
+            {{ 'number.solaredge_i1_storage_command_timeout' if ('set_storage_command_timeout' in queue_service) else
+               'select.solaredge_i1_storage_command_mode' if (
+                 'charge_from_solar_power_and_grid' in queue_service or
+                 'maximize_self_consumption' in queue_service or
+                 'charge_from_clipped_solar_power' in queue_service or
+                 'discharge_to_maximize_export' in queue_service or
+                 'discharge_to_minimize_import' in queue_service or
+                 'solar_power_only' in queue_service or
+                 'charge_from_solar_power' in queue_service
+               ) else
+               'number.solaredge_i1_storage_charge_limit' if (
+                 'set_storage_charge_limit' in queue_service or queue_service == 'set_dynamic_storage_charge_limit'
+               ) else
+               'number.solaredge_i1_storage_discharge_limit' if (
+                 'set_storage_discharge_limit' in queue_service or 'set_dynamic_storage_discharge_limit' in queue_service
+               ) else
+               'number.solaredge_i1_site_limit' if (queue_service == 'set_site_limit') else
+               'switch.solaredge_i1_negative_site_limit' if (queue_service in ['negative_site_limit_on', 'negative_site_limit_off']) else
+               'none' }}
+          write_expected_value: >-
+            {{ (
+                 'Charge from Solar Power and Grid' if ('charge_from_solar_power_and_grid' in queue_service) else
+                 'Maximize Self Consumption' if ('maximize_self_consumption' in queue_service) else
+                 'Charge from Clipped Solar Power' if ('charge_from_clipped_solar_power' in queue_service) else
+                 'Discharge to Maximize Export' if ('discharge_to_maximize_export' in queue_service) else
+                 'Discharge to Minimize Import' if ('discharge_to_minimize_import' in queue_service) else
+                 'Solar Power Only (Off)' if ('solar_power_only' in queue_service) else
+                 'Charge from Solar Power' if ('charge_from_solar_power' in queue_service) else
+                 'unknown'
+               ) if write_target_entity == 'select.solaredge_i1_storage_command_mode' else
+               (
+                 'on' if queue_service == 'negative_site_limit_on' else 'off'
+               ) if write_target_entity == 'switch.solaredge_i1_negative_site_limit' else
+               (queue_value | default('') | string) }}
+          write_before_value: "{{ states(write_target_entity) }}"
 
       # CHOOSE BLOCK
       # continue_on_error: if the dispatched SolarEdge service call raises
@@ -380,6 +438,96 @@ script:
       # Exception-Safe.
       - delay: "00:00:02"
 
+      # Enhanced Diagnostics: classify this run as success/failure by
+      # reading write_target_entity back now and comparing it to
+      # write_expected_value - see the caveat noted where those variables
+      # were set above (known_issues_and_fixes.md - Write-Outcome Telemetry
+      # Is Readback-Based). write_outcome is 'unmatched_service' when the
+      # queue_service never matched a branch above (same condition the
+      # choose: block's own default: hit), otherwise 'success'/'failure'.
+      - variables:
+          write_success: >-
+            {{ (states(write_target_entity) == write_expected_value)
+                 if (write_target_entity.split('.')[0] in ['select', 'switch'])
+               else
+                 (((states(write_target_entity) | float(-999999999)) - (write_expected_value | float(-999999998))) | abs < 1) }}
+          write_outcome: >-
+            {{ 'unmatched_service' if write_target_entity == 'none' else ('success' if write_success else 'failure') }}
+
+      - if:
+          - condition: template
+            value_template: "{{ write_outcome == 'success' }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.modbus_last_successful_write
+            data:
+              value: "{{ queue_service }}={{ queue_value | default('') }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_success_count_total
+            data:
+              value: "{{ (states('input_number.modbus_write_success_count_total') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_success_count_today
+            data:
+              value: "{{ (states('input_number.modbus_write_success_count_today') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_consecutive_failures
+            data:
+              value: 0
+
+          # Command delta only means something for the numeric branches
+          # (write_target_entity domain "number") - mode selects and the
+          # negative-site-limit switch have no meaningful numeric delta.
+          - if:
+              - condition: template
+                value_template: "{{ write_target_entity.split('.')[0] == 'number' }}"
+            then:
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.modbus_queue_last_command_delta
+                data:
+                  value: >-
+                    {{ ((write_expected_value | float(0)) - (write_before_value | float(0))) | round(2) }}
+        else:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.modbus_last_failed_write
+            data:
+              value: "{{ queue_service }}={{ queue_value | default('') }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.modbus_last_failed_reason
+            data:
+              value: >-
+                {{ 'No matching queue_service' if write_outcome == 'unmatched_service' else
+                   ('Entity ' + write_target_entity + ' expected ' + (write_expected_value | string) + ' but reads ' + states(write_target_entity)) }}
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_failure_count_total
+            data:
+              value: "{{ (states('input_number.modbus_write_failure_count_total') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_failure_count_today
+            data:
+              value: "{{ (states('input_number.modbus_write_failure_count_today') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_consecutive_failures
+            data:
+              value: "{{ (states('input_number.modbus_write_consecutive_failures') | int(0)) + 1 }}"
+
       # DEBUG END
       - service: system_log.write
         data:
@@ -403,6 +551,16 @@ script:
           entity_id: input_text.modbus_queue_last_executed_command
         data:
           value: "{{ queue_service }}={{ queue_value | default('') }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+      # Enhanced Diagnostics: this run is no longer pending, success or
+      # failure - decrement before releasing the lock. Floored at 0 so a
+      # stray double-decrement (e.g. after an HA restart mid-run) can't
+      # drive it negative.
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.modbus_queue_pending_count
+        data:
+          value: "{{ max((states('input_number.modbus_queue_pending_count') | int(0)) - 1, 0) }}"
 
       # Release Modbus lock - now unconditionally reached, success or error
       - service: input_boolean.turn_off
