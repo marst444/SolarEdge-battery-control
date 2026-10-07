@@ -932,8 +932,12 @@ binary_sensor.solaredge_modbus_data_fresh      edit - correcting a stale
 ```
 
 Also added, beyond this original list: `binary_sensor.
-solaredge_modbus_write_health` (consecutive-write-failure based) and
-`binary_sensor.solaredge_modbus_queue_backlog` (pending-count based).
+solaredge_modbus_write_unhealthy` (consecutive-write-failure based; its
+unique_id is solaredge_modbus_write_health, but the real entity_id Home
+Assistant assigned is derived from its friendly name, not the
+unique_id - see known_issues_and_fixes.md, Entity ID Documentation
+Mismatches) and `binary_sensor.solaredge_modbus_queue_backlog`
+(pending-count based).
 
 None of the port/write-health sensors are a real TCP probe or new
 integration - all are derived from existing entity availability, the
@@ -1107,7 +1111,7 @@ above (still open) for the underlying addon fragility this doesn't fix.
 how often it ran, how long commands waited for the busy-lock, or what it
 last did. Added: `input_number.modbus_queue_command_count_total`/`_today`
 and `modbus_queue_timeout_count_total`/`_today` (today's counters reset
-at local midnight via `automation.reset_modbus_queue_daily_counters`,
+at local midnight via `automation.reset_modbus_queue_daily_telemetry_counters`,
 totals are lifetime); `input_number.modbus_queue_last_wait_seconds`
 (time from a command being received to the busy-lock actually clearing,
 measured via a `variables:` timestamp against `now()` before and after
@@ -1142,9 +1146,9 @@ modbus_last_successful_write`/`_failed_write`/`_failed_reason`;
 `watchdog_sensors.yaml` (Layer 1): `binary_sensor.
 solaredge_modbus_port_raw`/`_port_stable` (entity-availability +
 data-freshness derived, debounced on the "_stable" variant),
-`solaredge_modbus_write_health` (consecutive-failure based),
+`solaredge_modbus_write_unhealthy` (consecutive-failure based),
 `solaredge_modbus_queue_backlog` (pending-count based). Added to
-`watchdog_automations.yaml`: `automation.reset_watchdog_daily_counters`
+`watchdog_automations.yaml`: `automation.watchdog_reset_daily_diagnostic_counters`
 (midnight reset for the new "_today" counters). `solaredge_modbusqueue.yaml`
 (Layer 4C) now classifies every write as success/failure/unmatched_service
 via before/after entity readback and writes into the Layer 1 helpers
@@ -1169,6 +1173,39 @@ Status: implemented in project docs 2026-10-06. Not yet confirmed
 against the live file or any real write/outage - no trace or history
 evidence collected yet for any of the new counters or derived binary
 sensors.
+
+### Update 2026-10-07 - Deployed live; verification found a real false-positive problem, fixed same day
+
+The user deployed this live 2026-10-06. Live verification 2026-10-07
+confirmed every new entity actually exists and is being written to -
+but also found the write-outcome classification misfiring on roughly
+half of numeric writes (2s readback firing before the entity, which is
+genuinely poll-confirmed rather than optimistic, had settled - one
+confirmed case took ~10s to settle). `modbus_write_consecutive_failures`
+reached 2 of the 3-failure alarm threshold within minutes from false
+positives alone. Fixed the same day by moving the wait-and-classify step
+out of `script.modbus_queue` (which runs `mode: queued`, so any inline
+wait there would also have delayed the next queued command) into a new,
+independently-queued `script.modbus_write_verify`, started
+fire-and-forget and using `wait_template` (resolves as soon as the real
+value lands, up to ~10s, instead of one fixed-delay check). Full
+write-up: known_issues_and_fixes.md - Write-Outcome Telemetry Is
+Readback-Based, Update 2026-10-07.
+
+Also found and fixed the same day, unrelated to the above: three
+entity_ids documented in this project's docs (two introduced 2026-10-06,
+one dating back to 2026-10-02) didn't match what Home Assistant actually
+assigned, because entity_id is derived from a template entity's `name:`
+or an automation's `alias:`, not from `unique_id`/`id:`. No functional
+impact - see known_issues_and_fixes.md, Entity ID Documentation
+Mismatches.
+
+Status: the 2026-10-07 fix is implemented in project docs only - not yet
+deployed live or re-verified. The false-positive-rate numbers above are
+from the superseded 2026-10-06 design; needs a fresh live check once
+redeployed to confirm the fix actually resolves it and that
+`script.modbus_write_verify` receives its variables correctly via
+`script.turn_on` (an untested-elsewhere mechanism in this project).
 
 ---
 

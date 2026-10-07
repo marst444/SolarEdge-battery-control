@@ -1,6 +1,6 @@
 # ── solaredge_modbusqueue.yaml ──
 # Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue + write-outcome telemetry.
-# Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch); writes into Layer 1 helpers in safety_and_watchdog_helpers.yaml (modbus_write_*, modbus_queue_pending_count, modbus_queue_last_command_delta)
+# Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch); writes into Layer 1 helpers in safety_and_watchdog_helpers.yaml (modbus_write_*, modbus_queue_pending_count, modbus_queue_last_command_delta), via the async script.modbus_write_verify for anything but an unmatched queue_service
 # Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
 # Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap, Write-Outcome Telemetry Is Readback-Based); leftover debug logging - see roadmap.md
 
@@ -438,64 +438,23 @@ script:
       # Exception-Safe.
       - delay: "00:00:02"
 
-      # Enhanced Diagnostics: classify this run as success/failure by
-      # reading write_target_entity back now and comparing it to
-      # write_expected_value - see the caveat noted where those variables
-      # were set above (known_issues_and_fixes.md - Write-Outcome Telemetry
-      # Is Readback-Based). write_outcome is 'unmatched_service' when the
-      # queue_service never matched a branch above (same condition the
-      # choose: block's own default: hit), otherwise 'success'/'failure'.
-      - variables:
-          write_success: >-
-            {{ (states(write_target_entity) == write_expected_value)
-                 if (write_target_entity.split('.')[0] in ['select', 'switch'])
-               else
-                 (((states(write_target_entity) | float(-999999999)) - (write_expected_value | float(-999999998))) | abs < 1) }}
-          write_outcome: >-
-            {{ 'unmatched_service' if write_target_entity == 'none' else ('success' if write_success else 'failure') }}
-
+      # Enhanced Diagnostics: the unmatched-service case is classified
+      # synchronously right here - there's nothing to wait for, the
+      # dispatch above never matched any branch (same condition the
+      # choose: block's own default: hit). Every other case is handed off
+      # to script.modbus_write_verify (fire-and-forget, not awaited) so
+      # this script's own runtime goes back to what it was before Enhanced
+      # Diagnostics - mode: queued on this script means anything that
+      # blocks THIS sequence also delays the start of the NEXT queued
+      # command, so the actual write verification (which needs longer than
+      # the 2s pacing delay above to be accurate - see
+      # known_issues_and_fixes.md - Write-Outcome Telemetry Is
+      # Readback-Based, Update 2026-10-07) must happen outside this
+      # sequence, not by extending it.
       - if:
           - condition: template
-            value_template: "{{ write_outcome == 'success' }}"
+            value_template: "{{ write_target_entity == 'none' }}"
         then:
-          - service: input_text.set_value
-            target:
-              entity_id: input_text.modbus_last_successful_write
-            data:
-              value: "{{ queue_service }}={{ queue_value | default('') }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-          - service: input_number.set_value
-            target:
-              entity_id: input_number.modbus_write_success_count_total
-            data:
-              value: "{{ (states('input_number.modbus_write_success_count_total') | int(0)) + 1 }}"
-
-          - service: input_number.set_value
-            target:
-              entity_id: input_number.modbus_write_success_count_today
-            data:
-              value: "{{ (states('input_number.modbus_write_success_count_today') | int(0)) + 1 }}"
-
-          - service: input_number.set_value
-            target:
-              entity_id: input_number.modbus_write_consecutive_failures
-            data:
-              value: 0
-
-          # Command delta only means something for the numeric branches
-          # (write_target_entity domain "number") - mode selects and the
-          # negative-site-limit switch have no meaningful numeric delta.
-          - if:
-              - condition: template
-                value_template: "{{ write_target_entity.split('.')[0] == 'number' }}"
-            then:
-              - service: input_number.set_value
-                target:
-                  entity_id: input_number.modbus_queue_last_command_delta
-                data:
-                  value: >-
-                    {{ ((write_expected_value | float(0)) - (write_before_value | float(0))) | round(2) }}
-        else:
           - service: input_text.set_value
             target:
               entity_id: input_text.modbus_last_failed_write
@@ -506,9 +465,7 @@ script:
             target:
               entity_id: input_text.modbus_last_failed_reason
             data:
-              value: >-
-                {{ 'No matching queue_service' if write_outcome == 'unmatched_service' else
-                   ('Entity ' + write_target_entity + ' expected ' + (write_expected_value | string) + ' but reads ' + states(write_target_entity)) }}
+              value: "No matching queue_service"
 
           - service: input_number.set_value
             target:
@@ -527,6 +484,17 @@ script:
               entity_id: input_number.modbus_write_consecutive_failures
             data:
               value: "{{ (states('input_number.modbus_write_consecutive_failures') | int(0)) + 1 }}"
+        else:
+          - service: script.turn_on
+            target:
+              entity_id: script.modbus_write_verify
+            data:
+              variables:
+                queue_service: "{{ queue_service }}"
+                queue_value: "{{ queue_value | default('') }}"
+                write_target_entity: "{{ write_target_entity }}"
+                write_expected_value: "{{ write_expected_value }}"
+                write_before_value: "{{ write_before_value }}"
 
       # DEBUG END
       - service: system_log.write
@@ -571,6 +539,119 @@ script:
         data:
           message: "[{{ now() }}] Modbus Queue → Lock released, command {{ queue_service }} completed"
           level: debug
+
+    mode: queued
+    max: 10
+
+  modbus_write_verify:
+    alias: Modbus Write Verify
+    description: >
+      Enhanced Diagnostics: classifies one script.modbus_queue write as
+      success/failure by waiting for write_target_entity to actually reach
+      write_expected_value (up to 8s beyond the 2s pacing delay already
+      elapsed, ~10s total from dispatch - matches the settle time observed
+      live 2026-10-07), instead of a single fixed-delay readback. Started
+      fire-and-forget (script.turn_on) from script.modbus_queue so this
+      wait never blocks the next queued command - see
+      known_issues_and_fixes.md - Write-Outcome Telemetry Is
+      Readback-Based, Update 2026-10-07. mode: queued so concurrent runs
+      can't race on the shared counters below.
+    fields:
+      queue_service:
+        description: "Service that was dispatched"
+      queue_value:
+        description: "Value that was sent"
+      write_target_entity:
+        description: "Entity the dispatch should have written, or 'none'"
+      write_expected_value:
+        description: "Value/option write_target_entity should now hold"
+      write_before_value:
+        description: "write_target_entity's value just before the dispatch"
+
+    sequence:
+      - wait_template: >-
+          {{ (states(write_target_entity) == write_expected_value)
+               if (write_target_entity.split('.')[0] in ['select', 'switch'])
+             else
+               (((states(write_target_entity) | float(-999999999)) - (write_expected_value | float(-999999998))) | abs < 1) }}
+        timeout: "00:00:08"
+        continue_on_timeout: true
+
+      - variables:
+          write_outcome: "{{ 'success' if wait.completed else 'failure' }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ write_outcome == 'success' }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.modbus_last_successful_write
+            data:
+              value: "{{ queue_service }}={{ queue_value }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_success_count_total
+            data:
+              value: "{{ (states('input_number.modbus_write_success_count_total') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_success_count_today
+            data:
+              value: "{{ (states('input_number.modbus_write_success_count_today') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_consecutive_failures
+            data:
+              value: 0
+
+          # Command delta only means something for the numeric branches
+          # (write_target_entity domain "number") - mode selects and the
+          # negative-site-limit switch have no meaningful numeric delta.
+          - if:
+              - condition: template
+                value_template: "{{ write_target_entity.split('.')[0] == 'number' }}"
+            then:
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.modbus_queue_last_command_delta
+                data:
+                  value: >-
+                    {{ ((write_expected_value | float(0)) - (write_before_value | float(0))) | round(2) }}
+        else:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.modbus_last_failed_write
+            data:
+              value: "{{ queue_service }}={{ queue_value }} @ {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.modbus_last_failed_reason
+            data:
+              value: >-
+                {{ 'Entity ' + write_target_entity + ' expected ' + (write_expected_value | string) + ' but reads ' + states(write_target_entity) + ' (after ~10s)' }}
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_failure_count_total
+            data:
+              value: "{{ (states('input_number.modbus_write_failure_count_total') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_failure_count_today
+            data:
+              value: "{{ (states('input_number.modbus_write_failure_count_today') | int(0)) + 1 }}"
+
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_write_consecutive_failures
+            data:
+              value: "{{ (states('input_number.modbus_write_consecutive_failures') | int(0)) + 1 }}"
 
     mode: queued
     max: 10

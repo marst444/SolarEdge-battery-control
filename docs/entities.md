@@ -91,7 +91,7 @@ input_text.modbus_last_failed_reason
 input_number.modbus_write_success_count_total / _today
 -> Lifetime / since-midnight count of writes classified as successful.
    Written by solaredge_modbusqueue.yaml; _today zeroed daily by
-   automation.reset_watchdog_daily_counters.
+   automation.watchdog_reset_daily_diagnostic_counters.
 ```
 
 ---
@@ -101,7 +101,7 @@ input_number.modbus_write_failure_count_total / _today
 -> Lifetime / since-midnight count of writes classified as failed
    (including unmatched queue_service). Written by
    solaredge_modbusqueue.yaml; _today zeroed daily by
-   automation.reset_watchdog_daily_counters.
+   automation.watchdog_reset_daily_diagnostic_counters.
 ```
 
 ---
@@ -109,8 +109,9 @@ input_number.modbus_write_failure_count_total / _today
 ```text
 input_number.modbus_write_consecutive_failures
 -> Running count of consecutive failed writes; reset to 0 on the next
-   successful write. Drives binary_sensor.solaredge_modbus_write_health
-   below. Written by solaredge_modbusqueue.yaml.
+   successful write. Drives binary_sensor.solaredge_modbus_write_unhealthy
+   below. Written by solaredge_modbusqueue.yaml (via
+   script.modbus_write_verify as of 2026-10-07).
 ```
 
 ---
@@ -142,7 +143,7 @@ input_number.mode_command_skipped_count_total / _today
    Command Guard skipped the mode-select command (see
    apply_effective_battery_control automation below). Written by
    apply_effective_battery_control.yaml; _today zeroed daily by
-   automation.reset_watchdog_daily_counters. Deliberately no equivalent
+   automation.watchdog_reset_daily_diagnostic_counters. Deliberately no equivalent
    counter exists yet for charge/discharge limit writes - no
    skip/dedup logic exists for those (see roadmap.md - Write Pressure).
 ```
@@ -340,11 +341,15 @@ binary_sensor.solaredge_modbus_port_stable
 ---
 
 ```text
-binary_sensor.solaredge_modbus_write_health
--> device_class: problem - friendly name "SolarEdge Modbus Write
-   Unhealthy" (on = problem) to avoid the same on/off-naming ambiguity
-   flagged on binary_sensor.emhass_healthy (see roadmap.md). On when
-   input_number.modbus_write_consecutive_failures >= 3.
+binary_sensor.solaredge_modbus_write_unhealthy
+-> device_class: problem - named "Write Unhealthy" (on = problem) to
+   avoid the same on/off-naming ambiguity flagged on
+   binary_sensor.emhass_healthy (see roadmap.md). On when
+   input_number.modbus_write_consecutive_failures >= 3. NOTE: its
+   unique_id is solaredge_modbus_write_health (the originally intended
+   entity_id) but Home Assistant derives the real entity_id from the
+   friendly name, not unique_id - see known_issues_and_fixes.md, Entity
+   ID Documentation Mismatches, for why these two disagree.
 ```
 
 ---
@@ -381,12 +386,16 @@ automation.EMHASS_watchdog_mpc_stalled
 ---
 
 ```text
-automation.reset_watchdog_daily_counters
+automation.watchdog_reset_daily_diagnostic_counters
 -> Zeroes the "_today" Modbus write and mode-command-skip counters
    (modbus_write_success_count_today, modbus_write_failure_count_today,
    mode_command_skipped_count_today) at local midnight. Added 2026-10-06
    alongside the Enhanced Diagnostics helpers above; mirrors
-   automation.reset_modbus_queue_daily_counters in Layer 4C.
+   automation.reset_modbus_queue_daily_telemetry_counters in Layer 4C.
+   NOTE: its YAML id: is reset_watchdog_daily_counters - that field only
+   sets the internal automation id, not the entity_id, which Home
+   Assistant derives from alias: instead. See
+   known_issues_and_fixes.md, Entity ID Documentation Mismatches.
 ```
 ---
 
@@ -1167,7 +1176,7 @@ input_number.modbus_queue_command_count_total
 ```text
 input_number.modbus_queue_command_count_today
 -> Count of commands processed since local midnight; zeroed daily by
-   automation.reset_modbus_queue_daily_counters.
+   automation.reset_modbus_queue_daily_telemetry_counters.
 ```
 
 ---
@@ -1184,7 +1193,7 @@ input_number.modbus_queue_timeout_count_total
 ```text
 input_number.modbus_queue_timeout_count_today
 -> Same as above, since local midnight; zeroed daily by
-   automation.reset_modbus_queue_daily_counters.
+   automation.reset_modbus_queue_daily_telemetry_counters.
 ```
 
 ---
@@ -1223,19 +1232,22 @@ input_text.modbus_queue_last_executed_command
 
 Enhanced Diagnostics (2026-10-06) added write-outcome classification
 (success/failure/unmatched_service), per-write success/failure counters,
-consecutive-failure tracking, live pending-count, and command-delta to
-this same script - see Layer 1 - Modbus Write/Queue Diagnostic Helpers
-above for the entity list (defined there per the user's placement
-instruction; written here in solaredge_modbusqueue.yaml) and
+consecutive-failure tracking, live pending-count, and command-delta -
+see Layer 1 - Modbus Write/Queue Diagnostic Helpers above for the entity
+list (defined there per the user's placement instruction) and
 known_issues_and_fixes.md - Write-Outcome Telemetry Is Readback-Based
-for exactly what the classification can and cannot catch.
+for exactly what the classification can and cannot catch. As of the
+2026-10-07 update there, the actual wait-and-classify step runs in the
+separate script.modbus_write_verify below (fired fire-and-forget from
+script.modbus_queue), not inline in script.modbus_queue itself - see
+Queue Scripts.
 
 ---
 
 ## Queue Automations
 
 ```text
-automation.reset_modbus_queue_daily_counters
+automation.reset_modbus_queue_daily_telemetry_counters
 -> Zeroes modbus_queue_command_count_today and
    modbus_queue_timeout_count_today at local midnight. The _total
    counters are lifetime and untouched by this automation.
@@ -1248,6 +1260,23 @@ automation.reset_modbus_queue_daily_counters
 ```text
 script.modbus_queue
 -> Serialises all SolarEdge Modbus commands.
+```
+
+---
+
+```text
+script.modbus_write_verify
+-> Enhanced Diagnostics (added 2026-10-06, redesigned 2026-10-07).
+   Classifies one write as success/failure by waiting (wait_template,
+   up to 8s, continue_on_timeout) for its target entity to actually
+   reach the expected value, then writes the Layer 1 write-outcome
+   helpers (see above). Started fire-and-forget
+   (service: script.turn_on) from script.modbus_queue so this wait
+   never delays the next queued command - script.modbus_queue runs
+   mode: queued, so a wait left inline there would have serialized
+   with it. mode: queued here too, so concurrent runs can't race on
+   the shared counters. See known_issues_and_fixes.md - Write-Outcome
+   Telemetry Is Readback-Based, Update 2026-10-07.
 ```
 
 ---

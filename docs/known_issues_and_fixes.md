@@ -34,10 +34,14 @@ run, or the addon auto-restart firing) still awaits a real future
 EMHASS stall. The EV Charging Sensor Swap incomplete-trigger follow-up
 found 2026-09-24 was fixed 2026-09-25 - see EV Charging Sensor Swap
 below; not yet confirmed against the live file or a real EV session. The
-Enhanced Diagnostics write-outcome telemetry added 2026-10-06 is a
-knowingly imperfect, readback-based signal, not an exception-based one -
-see Write-Outcome Telemetry Is Readback-Based below for exactly what it
-can and cannot catch.)
+Enhanced Diagnostics write-outcome telemetry added 2026-10-06 hit a real
+~50% false-positive rate live the next day and was fixed 2026-10-07 by
+moving the verification wait into a separate async script - see
+Write-Outcome Telemetry Is Readback-Based below, including its Update
+2026-10-07, for what it can and cannot catch. A related documentation-
+only issue - three entity_ids documented differently than what Home
+Assistant actually assigned them - was found and fixed the same day,
+see Entity ID Documentation Mismatches below.)
 
 ---
 
@@ -114,6 +118,125 @@ against the live file or any real write (success or failure) - no trace
 or history evidence yet collected for `modbus_write_success_count_total`,
 `modbus_write_failure_count_total`, or the derived port-health/write-
 health/queue-backlog binary sensors in `watchdog_sensors.yaml`.
+
+### Update 2026-10-07 - Gap 2 confirmed live, far worse than expected; fixed via async verification
+
+The user deployed the 2026-10-06 design live. Verification the same day
+found gap 2 above - the 2s readback happening before the entity has
+actually settled - firing on roughly half of numeric writes, not a rare
+edge case: in under 5 minutes of live operation, 3 of ~6 writes were
+misclassified as `failure`. Two concrete examples, both real:
+`number.solaredge_i1_storage_discharge_limit` commanded to `0`, read
+back as `2` (its old value) at the 2s mark, classified `failure` -
+confirmed via history it actually settled to `0` about 10 seconds later
+(not a real failure, just slow). Same pattern on
+`number.solaredge_i1_storage_charge_limit` (commanded `5000`, read `0`
+at the 2s mark). `modbus_write_consecutive_failures` reached 2 (of the
+3-failure threshold for `binary_sensor.solaredge_modbus_write_unhealthy`
+- see entities.md for the naming note: the `unique_id` is
+`solaredge_modbus_write_health`, but HA derives the real entity_id from
+the friendly name, not the unique_id, so the two disagree)
+within minutes, which would have been a false alarm if a third
+misclassification had landed before a real success reset it. Gap 1
+(optimistic-vs-poll-confirmed entities) was not what caused this - the
+live evidence shows these entities genuinely wait for poll confirmation,
+they just take longer than the 2s pacing delay to do it, consistent with
+the 5s Modbus scan interval set during the Modbus Connectivity
+investigation (see roadmap.md).
+
+Root cause of why a longer delay couldn't just be added inline: `script.
+modbus_queue` runs `mode: queued`, which serializes the script's own
+execution - HA won't start the next queued run until the current one's
+entire sequence finishes, regardless of the separate `modbus_busy`
+lock. Any wait added directly in the main sequence (even after releasing
+the lock) would still have delayed the start of the next queued command
+by that same amount, reintroducing exactly the kind of write-pressure
+problem roadmap.md's Write Pressure item is about.
+
+Fixed 2026-10-07 by splitting the wait out of `script.modbus_queue`
+entirely: a new script, `script.modbus_write_verify` (mode: queued, its
+own independent queue), is started fire-and-forget
+(`service: script.turn_on`, not a direct service call - the latter
+blocks until the called script finishes, confirmed from a live trace of
+`apply_effective_battery_control_to_solaredge_inverter` showing a ~4.7s
+gap waiting on a child script run) with the dispatch's variables passed
+via `script.turn_on`'s `variables:` data key. It then
+`wait_template`s (reusing the same success-comparison logic, moved
+out of a plain variable into the wait condition itself) for up to 8
+more seconds (continue_on_timeout: true) - resolving as soon as the
+real value lands rather than always waiting a fixed window, and only
+calling it `failure` if the entity genuinely never reaches the expected
+value within ~10s total from dispatch (2s pacing + up to 8s more).
+`script.modbus_queue` itself no longer waits for or computes
+write-outcome at all (except the one synchronous, no-wait-needed case:
+an unmatched `queue_service`, classified immediately since there's
+nothing to wait for) - its own runtime is back to what it was before
+Enhanced Diagnostics, so queue throughput is unaffected.
+
+One implementation detail flagged rather than silently assumed:
+`script.turn_on`'s `variables:` data key passing initial values into a
+script started this way is standard, documented Home Assistant
+behavior, but hadn't been exercised anywhere else in this project before
+now - worth confirming via `script.modbus_write_verify`'s own trace
+after deployment (fields should show the real `queue_service`/
+`write_target_entity`/etc., not blank) rather than assuming it worked
+silently.
+
+Status: implemented in project docs 2026-10-07. Not yet deployed live or
+re-verified - the live numbers above are from the *previous* (2026-10-06)
+design; a fresh live check is needed to confirm the false-positive rate
+actually drops and that `script.modbus_write_verify` is really receiving
+its variables.
+
+---
+
+## Entity ID Documentation Mismatches (Derived From Name/Alias, Not unique_id/id)
+
+Found 2026-10-07 while verifying the Enhanced Diagnostics deployment
+live. Three entity_ids documented in this project's docs turned out not
+to exist - the entities are live and working, just under a different
+entity_id than documented:
+
+```text
+documented                                    actual (live)
+binary_sensor.solaredge_modbus_write_health   binary_sensor.solaredge_modbus_write_unhealthy
+automation.reset_watchdog_daily_counters      automation.watchdog_reset_daily_diagnostic_counters
+automation.reset_modbus_queue_daily_counters  automation.reset_modbus_queue_daily_telemetry_counters
+```
+
+Root cause, same in all three cases: Home Assistant derives a template
+entity's entity_id by slugifying its `name:` field, and an automation's
+entity_id by slugifying its `alias:` field - in both cases, NOT from the
+`unique_id:` (template entities) or `id:` (automations) field, which
+only identify the entity/automation for editing/registry purposes and
+have no effect on the entity_id once assigned. The first case
+(`write_health`/`write_unhealthy`) was introduced 2026-10-06: the
+friendly name was deliberately written as "SolarEdge Modbus Write
+Unhealthy" (to avoid the same on/off-naming ambiguity already flagged on
+`binary_sensor.emhass_healthy` - see Cleanup section of roadmap.md),
+without accounting for that name also becoming the entity_id. The second
+case (`reset_watchdog_daily_counters`) was introduced the same day for
+the same structural reason (the `id:` field was chosen to read
+cleanly, independent of the alias). The third case
+(`reset_modbus_queue_daily_counters`) predates this session entirely
+(from the 2026-10-02 Add Queue Telemetry work) and was only found
+incidentally while double-checking the other two - it was wrong in
+entities.md and roadmap.md all along, just never actually looked up
+live until now.
+
+Fixed 2026-10-07: corrected all three references across entities.md,
+roadmap.md, and this file to the real, live entity_ids. No YAML changed
+- the entities themselves were never broken, only the documentation
+pointing at them. General note for future Enhanced-Diagnostics-style
+work: when a template entity's chosen friendly name needs to differ from
+what the entity_id "should" read as (to dodge a naming-ambiguity trap
+like the emhass_healthy one), the actual entity_id Home Assistant
+assigns needs to be looked up live (e.g. via ha_search) rather than
+assumed from the name used in the YAML - `unique_id`/`id:` do not
+control it.
+
+Status: docs corrected 2026-10-07. No live/functional impact - this was
+purely an accuracy problem in the project's own documentation.
 
 ---
 
