@@ -35,10 +35,12 @@ EMHASS stall. The EV Charging Sensor Swap incomplete-trigger follow-up
 found 2026-09-24 was fixed 2026-09-25 - see EV Charging Sensor Swap
 below; not yet confirmed against the live file or a real EV session. The
 Enhanced Diagnostics write-outcome telemetry added 2026-10-06 hit a real
-~50% false-positive rate live the next day and was fixed 2026-10-07 by
-moving the verification wait into a separate async script - see
-Write-Outcome Telemetry Is Readback-Based below, including its Update
-2026-10-07, for what it can and cannot catch. A related documentation-
+~50% false-positive rate live the next day; a fix moving the
+verification wait into a separate async script was designed 2026-10-07,
+an initial redeploy left it unwired, and a corrected redeploy the same
+day was then **confirmed wired in and working live** via a real trace -
+see Write-Outcome Telemetry Is Readback-Based below, all three
+2026-10-07 updates, for the full picture. A related documentation-
 only issue - three entity_ids documented differently than what Home
 Assistant actually assigned them - was found and fixed the same day,
 see Entity ID Documentation Mismatches below.)
@@ -182,11 +184,112 @@ after deployment (fields should show the real `queue_service`/
 `write_target_entity`/etc., not blank) rather than assuming it worked
 silently.
 
-Status: implemented in project docs 2026-10-07. Not yet deployed live or
-re-verified - the live numbers above are from the *previous* (2026-10-06)
-design; a fresh live check is needed to confirm the false-positive rate
-actually drops and that `script.modbus_write_verify` is really receiving
-its variables.
+Status: implemented in project docs 2026-10-07. Superseded by the Update
+below - the live redeploy did not actually wire this fix in.
+
+### Update 2026-10-07 (second check) - redeploy left the fix unwired; old 2s classification is still what's running live
+
+The user redeployed and reported it live. Re-verification the same day,
+within minutes, found the exact same false-positive pattern as the
+original 2026-10-06 incident: `input_text.modbus_last_failed_reason`
+recorded "Entity number.solaredge_i1_storage_discharge_limit expected 0
+but reads 289" immediately after a `set_storage_discharge_limit=0`
+command - the entity's *old* value (289), read back too soon, same as
+before.
+
+Confirmed via a full detailed trace (`script.modbus_queue`, run_id
+`ef46f005c6f908cf8f688293f04429f0`, 2026-10-07 11:00:07-11:00:25 UTC)
+that the live sequence is still the *old*, pre-fix structure: `delay:
+"00:00:02"` (sequence/16) immediately followed by a `variables:` step
+computing `write_success`/`write_outcome` inline (sequence/17), then an
+`if`/`else` on that outcome writing straight into the success/failure
+telemetry helpers (sequence/18) - word-for-word the design this fix was
+supposed to replace. There is no `service: script.turn_on` dispatch to
+`script.modbus_write_verify` anywhere in the trace.
+
+Separately confirmed `script.modbus_write_verify` itself: the entity
+exists live (`state: off`, `mode: queued`, `max: 10` - matching what was
+specified), but `ha_get_automation_traces` shows `trace_count: 0`,
+`last_triggered: null` - it has never once been invoked - and
+`ha_search` across all automations/scripts for `modbus_write_verify`
+found exactly one match (the script's own name) with
+`match_in_config: false` and `match_in_references: false` - nothing in
+the live config calls it. It was added as a standalone, fully dead
+script.
+
+Net effect: the redeploy added the new `script.modbus_write_verify`
+script as a live entity, but `script.modbus_queue`'s own sequence was
+not updated to replace its old inline classification block with the
+dispatch to it. Likely cause: the new script was pasted into the live
+YAML without replacing the corresponding block in `script.modbus_queue`
+- a partial copy of this fix's diff rather than the full one. This is a
+deployment gap, not a design flaw - the design itself hasn't actually
+been exercised live yet.
+
+Status: still only genuinely implemented in project docs. The live
+instance has the new `script.modbus_write_verify` script present but
+unused, and `script.modbus_queue` is unchanged from before this fix -
+needs a corrected redeploy of `solaredge_modbusqueue.yaml` (specifically
+the end of `script.modbus_queue`'s sequence, replacing the inline
+`write_success`/`write_outcome`/`if`/`else` block with the
+`if target==none / else: script.turn_on script.modbus_write_verify`
+dispatch) before this can be verified again.
+
+### Update 2026-10-07 (third check) - corrected redeploy confirmed wired in correctly, via a real live write
+
+The user ran a Home Assistant update/restart around 12:00 UTC, which
+reloaded `solaredge_modbusqueue.yaml` again (`script.modbus_queue` and
+`script.modbus_write_verify` both show a config reload at 12:12:51 UTC).
+The next real write after that reload - `set_storage_discharge_limit`
+dispatched 12:30:07 UTC - gives the first clean evidence of the fix
+actually running as designed:
+
+`script.modbus_queue` (run_id `355c5403720034a5f7c95416902a976c`)
+dispatches `number.set_value` (`number.solaredge_i1_storage_discharge_
+limit` -> 3300), waits the normal 2s pacing delay, then - unlike every
+prior trace - its step right after the delay is `service: script.
+turn_on` targeting `script.modbus_write_verify`, with a `child_id`
+linking to that script's own run
+(`774a4e2a80f6edea2955a009420ebaa0`), and its `service_data.variables`
+show `queue_service`, `queue_value`, `write_target_entity`,
+`write_expected_value`, and `write_before_value` all correctly
+populated - confirming the previously-flagged-as-untested
+`script.turn_on` variables-passing mechanism does work as expected.
+`script.modbus_queue` itself then finished its own remaining steps
+(lock release, counters) within ~13ms of that dispatch - it did not
+block waiting on the child script, confirming the fire-and-forget
+design is genuinely non-blocking live, not just in theory. A second,
+simpler write in the same burst (`set_storage_charge_limit`, 0 -> 0, a
+no-op) shows the same dispatch pattern and its own
+`script.modbus_write_verify` run (`4bbf462a0118a298e914b8cb35433a36`)
+resolved instantly (`wait.completed: true` immediately, since
+before/expected were already equal) - classified `success`, counters
+incremented correctly.
+
+One residual wrinkle, not the systemic bug this fix targeted but worth
+tracking: the discharge-limit write's own verify run
+(`774a4e2a80f6edea2955a009420ebaa0`) timed out at the full 8s
+(`wait.completed: false`) and classified `failure` - but
+`number.solaredge_i1_storage_discharge_limit` actually did land on
+3300, just ~2 more seconds after that timeout (history shows the real
+state change at 12:30:35.903 UTC, vs. the verify script's timeout
+firing at 12:30:33.695 UTC - about 28s after the original dispatch,
+well past the design's ~10s total budget). This happened on the first
+real write after an HA restart, immediately after the Modbus
+integration itself was reconnecting, which is a plausible one-off
+explanation (not yet confirmed) rather than evidence the 8s window is
+generally too short - worth re-checking whether this recurs during
+normal (non-restart) operation before concluding anything about the
+window size itself.
+
+Status: the core fix - splitting the wait out of `script.modbus_queue`
+into `script.modbus_write_verify`, dispatched via `script.turn_on` with
+variables - is now **confirmed wired in and working live** 2026-10-07,
+with trace evidence of both the dispatch and the non-blocking behavior.
+The classification logic itself produced one false `failure` in this
+same verification window (discharge-limit write, likely restart-related
+slow settle) - not yet enough data to say whether the 8s wait needs
+widening; watch for a repeat under normal operating conditions.
 
 ---
 

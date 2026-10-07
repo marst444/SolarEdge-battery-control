@@ -590,6 +590,35 @@ cascading failure). Consistent with the existing "adequately resolved,
 stable, self-recovering" verdict above - not a new finding, just another
 data point confirming it has held. No change to the working verdict.
 
+### Update 2026-10-07 - Nightly blip is now twice-daily; 6.7-day lock-cycle re-check, still no lockups
+
+Two separate checks, both routine re-verification rather than new
+investigation:
+
+1. **Timing update to the nightly ~22:00 dropout.** Cross-referencing
+   `select.solaredge_i1_storage_command_mode`'s history over a 10-day
+   window found ~15 short (21-33s) "unavailable" blips, but now
+   clustered around two times a day - roughly 06:3x-06:5x local and
+   20:1x-20:5x local - rather than the single ~22:00-only pattern
+   originally documented (known_issues_and_fixes.md - Modbus
+   Connectivity - SOC-Sensor Unavailable False-Trigger). Each blip
+   affects multiple entities simultaneously (command_mode, site_limit,
+   the negative-site-limit switch all drop together, per the Test 3.1
+   evidence from 2026-10-06), consistent with a brief whole-integration
+   reconnect rather than anything entity-specific. Still not root-caused,
+   still harmless (caught by the existing unavailable/unknown guards) -
+   this just updates the "when" rather than the "whether."
+2. **Fresh 6.7-day `modbus_busy` lock-cycle sample** (2026-10-01 to
+   2026-10-07, spanning a live HA update/restart): 1500 on/off cycles,
+   zero over 60s, max 50.4s. Extends the existing "no lockup" evidence
+   (48h as of 2026-08-28, 4.5 days as of 2026-09-24) into October and
+   across a restart with the same clean result - see test_plan.md Test
+   S.4 (upgraded NOT VERIFIED -> PARTIAL PASS on this basis) for the
+   full numbers.
+
+Neither changes the working verdict - the `close_after_polling`/
+`scan_interval` settings remain adequately resolved and stable.
+
 ---
 
 ## Dynamic Discharge Oscillation
@@ -1200,12 +1229,24 @@ or an automation's `alias:`, not from `unique_id`/`id:`. No functional
 impact - see known_issues_and_fixes.md, Entity ID Documentation
 Mismatches.
 
-Status: the 2026-10-07 fix is implemented in project docs only - not yet
-deployed live or re-verified. The false-positive-rate numbers above are
-from the superseded 2026-10-06 design; needs a fresh live check once
-redeployed to confirm the fix actually resolves it and that
-`script.modbus_write_verify` receives its variables correctly via
-`script.turn_on` (an untested-elsewhere mechanism in this project).
+Status: **confirmed wired in and working live** 2026-10-07. The first
+redeploy left the fix unwired (old inline 2s-delay-then-classify block
+still running, `script.modbus_write_verify` never called - see
+known_issues_and_fixes.md Update 2026-10-07 (second check) for that
+evidence). The user then ran an HA update/restart around 12:00 UTC,
+which reloaded the package again; the next real write afterward
+(12:30:07 UTC, `set_storage_discharge_limit`) shows `script.modbus_queue`
+correctly dispatching via `script.turn_on` to `script.modbus_write_verify`
+with all variables arriving intact, and returning control immediately
+(~13ms) rather than blocking on the child script's wait - see
+known_issues_and_fixes.md Update 2026-10-07 (third check) for the full
+trace evidence. One residual wrinkle from that same verification window:
+that write's classification still timed out at 8s and read `failure`,
+while the entity actually landed ~2s after the timeout (total ~28s from
+dispatch, past the ~10s design budget) - plausibly a one-off tied to
+being the first write right after the restart (Modbus still
+reconnecting), not yet confirmed either way. Worth a further check
+under normal operating conditions to see if this recurs.
 
 ---
 
