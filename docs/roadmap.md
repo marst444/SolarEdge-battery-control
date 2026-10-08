@@ -47,6 +47,71 @@ here: the addon-side question of whether EMHASS itself should serve a
 degraded/cached plan when a fresh optimisation fails, rather than simply
 not publishing.
 
+### Update 2026-10-08 - Both halves of the original question now answered; item narrows to one confirmed-out-of-scope question
+
+No optimisation failure has actually occurred to observe directly:
+`sensor.mpc_pv_optim_status`/`sensor.dh_pv_optim_status` both held
+"Optimal" with zero state changes across the last 30 days.
+Investigation instead worked from live automation traces plus the
+actual current YAML (`ha_config_get_automation` hits the same
+YAML-automations-not-REST-visible limitation documented elsewhere in
+this project for these two automations specifically - worked around by
+reading `watchdog_automations.yaml` directly, which is authoritative).
+
+**The original question - do these two watchdogs only update status, or
+also trigger fallback behaviour - is now fully answered, in two parts:**
+
+1. **At Layer 1 (the watchdogs themselves): confirmed notification-only,
+   exactly as the item suspected.** `EMHASS_watchdog_dayahead_missing`
+   and `EMHASS_watchdog_mpc_stalled` (both `time_pattern: /15`, both seen
+   firing and correctly evaluating `failed_conditions` in current traces
+   - consistent with the 30-day "no failure" history) each do nothing but
+   `persistent_notification.create` + `notify.mobile_app_fp3_ms`. No
+   fallback planning action lives in either one.
+
+2. **But Layer 1 isn't the whole picture - a third, adjacent automation in
+   the same file already goes beyond notification.**
+   `EMHASS_addon_watchdog_auto_restart` escalates after 90 minutes of MPC
+   stall: calls `hassio.addon_restart` on the EMHASS addon (rate-limited
+   to once/hour), stamping `input_datetime.emhass_addon_last_restart_attempt`
+   and notifying either way. This is a real automatic recovery action
+   triggered by the same stall condition - not "fallback planning" in the
+   sense of serving a degraded plan, but it is already more than "only
+   updating watchdog status." (This automation predates this
+   investigation - see known_issues_and_fixes.md, EMHASS Outage Fallback
+   Guard - but hadn't previously been connected back to this specific
+   roadmap item.)
+
+3. **And the consumer side (Layer 4A) already does the fallback-planning
+   equivalent, confirmed by re-reading `battery_forecast_control.yaml`'s
+   2026-09-22 guard with this question in mind:** when
+   `sensor.emhass_health` reads "MPC stalled"/"MPC problem", the entire
+   15-minute decision run is skipped - which means
+   `emhass_requested_storage_mode`/`_charge_limit`/`_discharge_limit`
+   simply hold their last-computed values rather than being recalculated
+   from stale/zeroed EMHASS data. That *is* "serve the last known-good
+   plan instead of a bad one," functionally the fallback behaviour the
+   item asked about, just implemented as "don't overwrite the last plan"
+   rather than "compute a new degraded one."
+
+**What's left, confirmed genuinely out of scope here:** whether EMHASS
+*itself* (the add-on/core software) should serve a degraded/cached plan
+internally on a failed optimisation, rather than simply not publishing a
+fresh one. Checked via `ha_get_app` against the installed add-on
+(v0.18.4, up to date) - its exposed configuration options are entirely
+connection/data-path/forecast-provider settings (hass_url, data_path,
+solcast/solar.forecast params, InfluxDB/VictoriaMetrics credentials);
+nothing touches failure/fallback behaviour. This would require a change
+inside EMHASS's own code, not anything adjustable from this HA package -
+genuinely out of scope for this project, not just unexplored.
+
+**Recommend closing this item** as resolved-to-the-extent-actionable-here:
+the Layer 4A guard (2026-09-22) and the addon auto-restart escalation
+together already give this system fallback-on-failure behaviour at both
+the "use last known good plan" and "try to recover the data source"
+levels; the one remaining piece (EMHASS-core degraded-plan serving) is an
+upstream feature request, not a task for this project's YAML.
+
 ---
 
 ### EMHASS Addon Build-On-Start Fragility
