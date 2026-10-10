@@ -1,8 +1,8 @@
 # ── watchdog_automations.yaml ──
-# Layer 1: notifies on missing day-ahead/stalled MPC runs; auto-restarts EMHASS addon after 90 min stall (max 1/hr); resets daily diagnostic counters at midnight.
-# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today
-# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status  →  hassio.addon_restart, notify.mobile_app_fp3_ms
-# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard)
+# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); resets daily diagnostic counters at midnight.
+# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today, input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge_limit/_discharge_limit (fallback only)
+# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status  →  hassio.addon_restart, notify.mobile_app_fp3_ms, battery_forecast_control.yaml (Layer 4A output entities, fallback only)
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
 
 automation:
 
@@ -46,6 +46,34 @@ automation:
 
   - id: EMHASS_watchdog_mpc_stalled
     alias: "EMHASS Watchdog – MPC stalled"
+    description: >
+      Notifies once MPC has been stalled/failed for over 45 minutes, and
+      at the same time forces the Layer 4A requested mode to Maximize
+      Self Consumption with wide-open 3300W limits (3300W - the same
+      "full power" fallback value battery_forecast_control.yaml and
+      batterycontrol_sensors.yaml's dynamic limit sensors already use
+      elsewhere, e.g. dynamic_storage_discharge_limit's own
+      last_discharge_limit | float(3300) fallback). Rationale: the
+      forecast-driven requested mode/limits that Layer 4A
+      (battery_forecast_control.yaml) froze at their last-computed values
+      when it started skipping its run (see known_issues_and_fixes.md -
+      EMHASS Outage Fallback Guard) are increasingly likely to no longer
+      match current price/PV/load conditions the longer the stall
+      continues - especially if the frozen mode was a directional one
+      (charge_from_solar_and_grid, discharge_to_maximize_export) rather
+      than the self-adapting maximize_self_consumption, which balances
+      PV against house load live and doesn't depend on EMHASS forecasts
+      at all. Guarded against redundant writes once already in the
+      fallback state, so this re-fires the notification every 15 minutes
+      the stall continues but only re-writes the mode/limits on a real
+      change. Layer 1 safety overrides (safety_limits_and_override.yaml)
+      still apply on top of this unchanged - SOC floor/ceiling protection
+      is never affected by what Layer 4A requests. Self-healing: as soon
+      as EMHASS recovers, battery_forecast_control.yaml's own guard
+      unblocks and overwrites these on its next normal 15-minute run, the
+      same way it always has.
+      See roadmap.md - Improve EMHASS Optimisation Failure Handling,
+      Update 2026-10-10.
     trigger:
       - platform: time_pattern
         minutes: "/15"
@@ -62,13 +90,41 @@ automation:
             MPC has not run successfully in over 45 minutes.
             Status: {{ states('sensor.mpc_pv_optim_status') }}
             Last success: {{ states('input_datetime.emhass_mpc_last_success') }}
+            Requested storage mode is being held at Maximize Self
+            Consumption (3300W limits) until EMHASS recovers.
       - service: notify.mobile_app_fp3_ms
         data:
           title: "⚠️ EMHASS MPC stalled"
           message: >
-            MPC has not run successfully in over 45 minutes.
+            MPC has not run successfully in over 45 minutes - falling
+            back to Maximize Self Consumption (3300W limits) until it
+            recovers.
             Status: {{ states('sensor.mpc_pv_optim_status') }}
             Last changed: {{ states.sensor.emhass_mpc_last_success }}
+      - choose:
+          - conditions:
+              # Avoid redundant writes once already in the fallback state
+              - condition: not
+                conditions:
+                  - condition: state
+                    entity_id: input_select.emhass_requested_storage_mode
+                    state: "maximize_self_consumption"
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.emhass_requested_storage_mode
+                data:
+                  option: "maximize_self_consumption"
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_charge_limit
+                data:
+                  value: 3300
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.emhass_requested_discharge_limit
+                data:
+                  value: 3300
 
   - id: EMHASS_addon_watchdog_auto_restart
     alias: "EMHASS Watchdog – Addon Auto-Restart"

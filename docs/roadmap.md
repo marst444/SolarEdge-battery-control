@@ -112,6 +112,119 @@ the "use last known good plan" and "try to recover the data source"
 levels; the one remaining piece (EMHASS-core degraded-plan serving) is an
 upstream feature request, not a task for this project's YAML.
 
+### Update 2026-10-08 (later same day) - How long the fallback plan survives, checked against a real restart
+
+Follow-up question: does the frozen "last requested" plan hold only until
+something restarts, after which it would reset/fall through to the
+inverter's own native default (`maximize_self_consumption`)? Checked
+against a real HA core restart that already happened
+(known_issues_and_fixes.md's 2026-10-07 ~12:00 UTC HA update/restart).
+History for `input_select.emhass_requested_storage_mode` and
+`input_number.emhass_requested_charge_limit`/`_discharge_limit` across
+that restart (confirmed by `sensor.emhass_health` showing the expected
+`MPC problem`/`RUNNING` disruption at 12:14-12:20 UTC) shows **zero
+value changes across the restart** - each entity held its pre-restart
+value straight through. This matches Home Assistant's standard
+`input_select`/`input_number` behaviour: they are restore-state helpers
+that reload their last known value from the recorder on startup rather
+than resetting to a default, so the frozen fallback plan survives an HA
+core restart, not just surviving while HA stays running.
+
+Two restart types, two different (both reassuring) answers:
+
+```text
+EMHASS addon restart (the 90-min auto-restart escalation above) - HA
+core itself never restarts, so the requested_*/effective_* helpers are
+never touched at all; they only change once a fresh successful
+optimisation produces new values.
+
+HA core restart - confirmed live 2026-10-07: the helpers restore their
+pre-restart value via HA's normal input_*-entity restore mechanism, so
+the frozen plan survives this too.
+```
+
+One correction to the "falls back to maximize self consumption"
+framing: that is not an automatic consequence of an EMHASS/MPC failure
+on its own. `battery_forecast_control.yaml`'s top-level condition
+requires `select.solaredge_i1_storage_control_mode == "Remote Control"`
+to run at all, but the EMHASS-health guard never touches that select -
+it only withholds updates to the *requested* mode/limits. As long as the
+inverter stays in Remote Control (a separate concern - loss of Remote
+Control itself is a different, more severe failure mode, see Test 7.6 in
+test_plan.md), Layers 4B/4C keep re-applying the same last-computed
+`effective_storage_mode`/`_charge_limit`/`_discharge_limit` to the
+inverter every cycle, indefinitely - they are not gated on EMHASS health
+themselves. So the practical behaviour is: hold the last known-good
+command and keep re-sending it, for as long as MPC stays unhealthy, with
+no time limit and no restart-triggered reset. The inverter would only
+actually drop to its own onboard `maximize_self_consumption` default if
+Remote Control itself were lost - which is a Modbus-control-authority
+problem, not an optimisation-failure problem, and already tracked
+separately.
+
+### Update 2026-10-10 - Escalation implemented: force Maximize Self Consumption at the same 45-minute mark as the existing notification
+
+Per the user's call: an indefinite freeze is fine briefly, but the frozen
+pre-failure plan is increasingly likely to no longer match current
+price/PV/load the longer MPC stays down - especially if it froze on a
+directional mode (`charge_from_solar_and_grid`,
+`discharge_to_maximize_export`) rather than the self-adapting
+`maximize_self_consumption`. First cut used a separate 1-hour escalation
+tier; the user then simplified it to fire at the same 45-minute mark as
+the existing stalled-MPC notification instead of adding a new threshold.
+Folded directly into the existing `EMHASS_watchdog_mpc_stalled`
+automation in `watchdog_automations.yaml` (no new automation):
+
+```text
+automation.EMHASS_watchdog_mpc_stalled
+  trigger:   time_pattern /15 (unchanged)
+  condition: now() - emhass_mpc_last_success > 2700s (45 min, unchanged)
+  action:    persistent_notification + mobile notify (unchanged, wording
+             updated to mention the fallback)
+             + choose: only if emhass_requested_storage_mode !=
+               maximize_self_consumption (avoids redundant writes once
+               already in the fallback state):
+                 emhass_requested_storage_mode -> maximize_self_consumption
+                 emhass_requested_charge_limit -> 3300 (W)
+                 emhass_requested_discharge_limit -> 3300 (W)
+```
+
+Why `maximize_self_consumption` specifically, and why 3300W: per
+README.md, this mode balances PV against house load live and discharges
+only to cover the gap - it's the one mode that doesn't depend on EMHASS
+forecasts to behave sensibly, which is exactly what's needed once the
+forecast-driven alternative has gone stale. 3300W isn't arbitrary - it's
+the same "full power" fallback value `batterycontrol_sensors.yaml`'s own
+`dynamic_storage_charge_limit`/`_discharge_limit` sensors already fall
+back to (via `last_charge_limit`/`last_discharge_limit`) when no forecast
+data is available at all, so this reuses an existing convention rather
+than introducing a new magic number. Layer 1 safety overrides
+(`safety_limits_and_override.yaml`) are untouched and still take final
+precedence over whatever Layer 4A requests. Because the automation
+re-fires every 15 minutes for as long as the stall continues, the
+notification keeps repeating as it always did, but the mode/limit writes
+only happen on an actual transition into the fallback state.
+
+This closes the loop the user asked about directly: rather than relying
+on the EMHASS-health guard's freeze lasting forever, or on the separate
+(and much rarer) Remote-Control-loss path to ever reach
+`maximize_self_consumption` on its own, the system now actively converges
+to the safe adaptive mode on the same clock that already triggers the
+first notification. Self-healing is unchanged - once EMHASS recovers,
+`battery_forecast_control.yaml`'s own guard unblocks and overwrites these
+on its next normal run, same as always.
+
+Status: **implemented in project docs 2026-10-10, not yet deployed live
+or observed through a real extended failure.** No MPC failure has lasted
+anywhere near 45 minutes in the 30-day window checked for this
+investigation, so this is untested against a real event - worth a
+deliberate live test (or waiting for a real occurrence) once deployed,
+the same way the negative-price redesign and the write-verify fix were
+each confirmed live after deployment. Also updated in `entities.md`
+(Layer 1 - Automations), including an incidental documentation fix for
+`automation.EMHASS_addon_watchdog_auto_restart`, which existed since the
+EMHASS Outage Fallback Guard fix but had never been listed there.
+
 ---
 
 ### EMHASS Addon Build-On-Start Fragility

@@ -380,7 +380,28 @@ automation.EMHASS_watchdog_dayahead_missing
 
 ```text
 automation.EMHASS_watchdog_mpc_stalled
--> Detects stalled EMHASS MPC optimisation.
+-> Detects stalled/failed EMHASS MPC optimisation (45 min). Notifies, and
+   - as of 2026-10-10 (roadmap.md - Improve EMHASS Optimisation Failure
+   Handling) - at the same time forces
+   input_select.emhass_requested_storage_mode to maximize_self_consumption
+   with input_number.emhass_requested_charge_limit/_discharge_limit both
+   set to 3300W (guarded against redundant writes once already in that
+   mode), so Layer 4A's frozen pre-failure plan (see
+   known_issues_and_fixes.md - EMHASS Outage Fallback Guard) doesn't keep
+   being re-applied once it's likely stale. Self-healing: overwritten by
+   the next normal emhass_battery_forecast_control run once EMHASS
+   recovers.
+```
+
+---
+
+```text
+automation.EMHASS_addon_watchdog_auto_restart
+-> After 90 minutes of MPC stall, restarts the EMHASS addon
+   (hassio.addon_restart), rate-limited to once/hour. Previously
+   undocumented here despite existing since the EMHASS Outage Fallback
+   Guard fix - added as an incidental correction alongside the entry
+   above.
 ```
 
 ---
