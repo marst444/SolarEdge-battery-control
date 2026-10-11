@@ -429,6 +429,21 @@ Layer 2 prepares forecast data, runs EMHASS optimisation and publishes optimisat
 ## EMHASS Control Helpers
 
 ```text
+input_number.emhass_max_inverter_power
+-> Static nameplate/rated AC power (W) of the hybrid inverter, fed into
+   EMHASS as inverter_ac_output_max/inverter_ac_input_max
+   (emhass_scripts.yaml). Added 2026-10-11, replacing a live read of
+   sensor.max_active_power_1 (a cloud-portal entity, not local Modbus) -
+   see known_issues_and_fixes.md, EMHASS Rejects Optimisation Requests
+   When sensor.max_active_power_1 Goes Unavailable. Initial 10600W, from
+   that entity's own last-reported value before its integration broke.
+   Deliberately distinct from input_number.ac_maxpower (Layer 1, 5000W) -
+   that one is an unrelated Layer 4A decision threshold, not this field.
+```
+
+---
+
+```text
 input_number.mpc_window_start
 -> Start timestep for MPC sliding window.
 ```

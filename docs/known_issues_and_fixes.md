@@ -12,7 +12,23 @@ these project docs so far.
 
 ---
 
-(None currently open requiring code changes. The Negative Price
+Two issues are currently open, both found 2026-10-11 while verifying a
+real SOC<10% critical-recovery event against the user's request to check
+it against the stats: Critical-Recovery Charge Limit Write Silently
+Dropped (the physical charge-limit register never actually reached the
+critical-recovery value, stuck at a stale 5000W for ~28 minutes) and SOC<10%
+Critical Recovery Triggered By a Physically-Implausible Single-Sample SOC
+Reading (strong evidence the underlying SOC<10% condition itself may never
+have been real). See Open Issues below for both.
+
+EMHASS Rejects Optimisation
+Requests When `sensor.max_active_power_1` Goes Unavailable, diagnosed and
+fixed live 2026-10-11 by removing that cloud-sourced entity from EMHASS's
+critical path entirely - see Fixed Issues below - is now **confirmed
+against a live post-fix EMHASS run** (16:15 local MPC cycle: payload
+showed `inverter_ac_output_max`/`inverter_ac_input_max: 10600`, no HTTP
+400, `sensor.emhass_health` back to OK). The 45-minute Maximize-Self-
+Consumption fallback remains as a second line of defense regardless. The Negative Price
 Curtailment - Site Limit Restore Gap found 2026-10-06 is a confirmed
 real asymmetry (the old design's deactivation path never restored
 `number.solaredge_i1_site_limit`) that was empirically verified the same
@@ -47,7 +63,300 @@ see Entity ID Documentation Mismatches below.)
 
 ---
 
+# Open Issues
+
+## Critical-Recovery Charge Limit Write Silently Dropped
+
+Found 2026-10-11, while verifying a real SOC<10% critical-recovery event
+against the user's request to check it against the stats (see the
+companion issue below for the trigger itself). The Layer 1 logic and the
+mode/discharge-limit writes all checked out - but the charge-limit write
+did not.
+
+Timeline (local time, 2026-10-11): `calculate_effective_battery_control`
+fired correctly at 15:47:41.92, setting `input_select.effective_storage_
+mode` -> `charge_from_solar_and_grid`, `input_number.effective_charge_
+limit` -> 3000, `input_number.effective_discharge_limit` -> 0. The apply
+automation (`apply_effective_battery_control_to_solaredge_inverter`,
+`mode: restart`) then dispatched all three physical writes in series
+through `script.modbus_queue`. Confirmed via automation trace + the
+`modbus_queue` telemetry helpers:
+
+```text
+storage command timeout   dispatched 15:47:42.09, ~26.5s (incl. a 10.03s
+                           internal queue wait, logged as timeout #2 of
+                           the day - recovered, not a hard failure)
+mode write (charge_from_solar_and_grid)
+                           dispatched 15:48:10.63, 18.04s execution,
+                           reported success
+charge limit write (3000) dispatched 15:48:30.75, 18.14s execution,
+                           reported success - no error, no timeout
+discharge limit write (0) dispatched 15:48:50.96, 18.17s execution,
+                           reported success
+```
+
+Physical register history confirms mode and discharge limit both landed
+correctly - `select.solaredge_i1_storage_command_mode` ->
+"Charge from Solar Power and Grid" and `number.solaredge_i1_storage_
+discharge_limit` -> 0, both at 15:49:19.00 (within ~1.2ms of each other,
+consistent with both riding the same coordinator poll cycle that first
+reflected the already-completed writes).
+
+`number.solaredge_i1_storage_charge_limit`, however, never shows 3000 at
+all. Its full history across this window: 3300 (baseline) -> **5000** at
+15:47:41.436 (half a second *before* the critical branch even fired - a
+leftover from a different, unrelated write, most likely
+`battery_forecast_control.yaml`'s Clipped Solar branch, which hardcodes
+`value: 5000`) -> stays at 5000 continuously through both the SOC<10
+critical band and the following SOC 10-20% band -> finally changes,
+**straight to 3300** (skipping 3000 again), at 16:15:37 - nearly 28
+minutes later, coincident with a later, unrelated burst of modbus_queue
+activity. Both the automation's own trace and the modbus_queue telemetry
+reported the 3000W write as a clean, timely success - there is nothing
+in Home Assistant's own records that flags this write as having failed.
+
+This means the charge-rate ceiling actually enforced at the inverter
+(5000W, a stale leftover from a different branch) was looser than the
+3000W the critical-recovery logic intended, for the entire ~28-minute
+critical-recovery window. Not a direct safety hazard - the two controls
+that actually prevent over-discharge (mode and discharge limit) both
+landed correctly and promptly - but it is a real gap in the control
+chain that nothing currently detects: the existing write-outcome
+telemetry (see Write-Outcome Telemetry Is Readback-Based below) reads
+back via `script.modbus_write_verify`, dispatched fire-and-forget from
+inside `script.modbus_queue`'s own sequence - but traces for
+`script.modbus_queue` and `script.modbus_write_verify` only retain their
+last 5 runs each, and by the time this was investigated (after the
+scheduled post-restart EMHASS check-in that prompted a return to this
+session), those traces from 15:48 had long since rolled past that limit.
+So it isn't known what, if anything, `modbus_write_verify` itself
+reported for this specific write - only that the entity's real-world
+value never reflects the intended one.
+
+Not yet root-caused at the Modbus/inverter level. Two hypotheses, neither
+confirmed: (a) the SolarEdge inverter's firmware may gate charge-limit
+register writes on the command mode already being in a compatible state,
+and the mode write for this same cycle hadn't yet taken hold on the wire
+when the charge-limit write arrived 20 seconds later; (b) a genuine
+dropped/overwritten write at the Modbus transport layer, independent of
+mode timing. Needs a fresh `script.modbus_queue`/`script.modbus_write_
+verify` trace captured *during* a future occurrence (caught promptly,
+before the 5-trace retention rolls it off) to distinguish between these -
+not proposing a blind fix without that.
+
+Status: **open, not yet fixed**. `test_plan.md` Test 1.3 downgraded
+from the "NOT VERIFIED" placeholder to PARTIAL PASS on this basis - mode
+and discharge-limit application confirmed live, charge-limit application
+confirmed *not* reaching the inverter.
+
+---
+
+## SOC<10% Critical Recovery Triggered By a Physically-Implausible Single-Sample SOC Reading
+
+Found 2026-10-11, investigating the same event as above, in response to
+the user's question: why was the battery allowed to discharge to 0% at
+all, when `input_number.minimum_state_of_charge` (20%) and the Layer 1
+"SOC < MIN" branch should stop discharge well before that point?
+
+Short answer: the live evidence says the battery most likely never
+actually reached 0% - the SOC reading itself looks like a bad single
+sample, not a real measurement, and the existing SOC-sensor guard
+(`calculate_effective_battery_control`'s unavailable/unknown condition)
+doesn't catch it because a bad `0.0` is a syntactically valid state, not
+`unavailable`/`unknown`.
+
+Evidence: `sensor.solaredge_b1_state_of_energy` history for 2026-10-11
+shows a slow, steady decline through the afternoon - 27.78% (14:00) ->
+26.67% (14:14) -> 25.56% (14:35) -> 24.44% (14:56) -> 23.33% (15:16) ->
+22.22% (15:36:15) - roughly 1.1 points per ~20 minutes. The very next
+recorded sample is **0.0% at 15:47:41.905** - an 11.43-minute gap with
+*zero* intermediate samples, unlike every other transition in this
+dataset. For contrast, the recovery climb immediately afterward (0.0% ->
+20.0%, 15:47:41 to 16:15:37) shows 20 clean, evenly-spaced samples at
+~1.11-point steps roughly every 70-90 seconds - a textbook real charge
+curve, consistent with the ~3000W critical-recovery charge rate on this
+4600Wh battery. The drop has none of that texture.
+
+Physics check, using this project's own numbers: `input_number.
+effective_discharge_limit` (and the physical discharge-limit register)
+had been pinned at **100W** continuously since well before 14:00 (the EV
+Charging branch - `binary_sensor.ev_charging_active` was "on" the whole
+window). At 100W for 11.43 minutes, maximum possible energy drawn is
+~19Wh - about 0.4% of the 4600Wh battery, nowhere near the observed
+22.2-point (~1021Wh) drop. Even granting the maximally generous (and
+unproven) assumption that the 100W cap itself was silently unenforced the
+whole time (the same class of gap as the issue above) and the battery
+discharged continuously at its own absolute hardware ceiling
+(`battery_discharge_power_max: 4096W`, confirmed live from EMHASS's own
+MPC payload), the most energy that could physically have been drawn in
+11.43 minutes is ~779Wh - about 16.9% of capacity. That is still short of
+the observed 22.2-point drop. No combination of assumptions this
+project's own numbers support explains a real, continuous physical
+discharge from 22.2% to 0.0% in this window.
+
+Most likely explanation: a bad single-sample read from `sensor.
+solaredge_b1_state_of_energy` - the same Modbus-sourced entity already
+documented as prone to flaky reads (see Modbus Connectivity - SOC-Sensor
+Unavailable False-Trigger below, plus the recurring "Coordinator has
+timed out 3 times in a row" warnings and TCP connect/close cycling
+visible in the error log around this timeframe) - except this time it
+returned a plausible-looking but wrong numeric value (`0.0`) instead of
+`unavailable`/`unknown`. Nothing in the current guard logic screens for
+that: `calculate_effective_battery_control` and `battery_high_soc_hold`
+both only exclude the literal states `unavailable`/`unknown`, with no
+rate-of-change or plausibility check against what the currently-enforced
+limits could actually produce.
+
+Consequence assessment: the system's *response* to this likely-false
+reading was itself safe. Forcing `charge_from_solar_and_grid` and zeroing
+discharge can't harm a battery that was actually healthy around 22% - it
+just means an unnecessary (but harmless) ~28+ minute grid-assisted charge
+cycle, plus the stale-charge-limit gap documented above compounding on
+top of it. This is the same "safe side-effect of a bad trigger" pattern
+already proven for the original SOC-Sensor Unavailable False-Trigger
+fix - just a new variant (a bad *value* instead of a bad *state*) that
+guard doesn't cover.
+
+Proposed hardening (not yet implemented - needs a design decision, not
+blind-fixed here): a plausibility check alongside the existing
+unavailable/unknown guard - e.g. hold the last good SOC value (same
+freeze behaviour the unavailable/unknown guard already uses) whenever a
+new reading implies a single-step change bigger than what the
+currently-enforced discharge/charge limit, or the battery's absolute
+max charge/discharge power, could physically produce in the elapsed time
+since the previous reading.
+
+Status: **open, not yet fixed**. Reclassifies what the live stats
+showed the user as probably a sensor glitch responded to safely, not a
+genuine near-empty-battery near-miss - `test_plan.md` Test 1.3 updated
+accordingly (see below).
+
+---
+
 # Fixed Issues
+
+## EMHASS Rejects Optimisation Requests When `sensor.max_active_power_1` Goes Unavailable
+
+Found live 2026-10-11, during the first real MPC stall since the new
+45-minute Maximize-Self-Consumption fallback was deployed (see
+roadmap.md - Improve EMHASS Optimisation Failure Handling). Root cause
+chased down precisely, not inferred:
+
+`sensor.max_active_power_1` ("Inverter 3622516.1 Max. aktiv effekt," kW)
+went `unavailable` at **11:46:12 local** and stayed unavailable for the
+rest of the day - last good value 10.6 (kW) at 10:00:00, no recovery
+observed as of this writing. `emhass_scripts.yaml` feeds this single
+entity into BOTH `inverter_ac_output_max` and `inverter_ac_input_max` in
+every MPC/day-ahead payload (`max_inverter_power:
+sensor.max_active_power_1`, `| float(0) * 1000`), so once the entity went
+unavailable, both fields silently became `0` instead of erroring or
+falling back to something sane.
+
+Confirmed directly from `homeassistant.components.rest_command`'s own
+log (not inferred): both `http://127.0.0.1:5000/action/naive-mpc-optim`
+and `.../action/publish-data` have returned **HTTP 400 Bad Request**
+every 15-minute cycle since ~11:51 local, logged with the full request
+payload showing `inverter_ac_output_max: 0, inverter_ac_input_max: 0`
+alongside otherwise-normal values (battery limits, prices, forecasts all
+populated correctly). The EMHASS addon itself is not down (structured
+400 response, not a connection error; `ha_get_app` shows `state:
+started`, on `v0.18.5`).
+
+**Corrected root cause (superseding the initial "isolated Modbus
+register" read above)**: `sensor.max_active_power_1` is NOT part of the
+`solaredge_modbus_multi` local Modbus integration that drives the rest of
+this project (that integration - entry "SolarEdge", v4.0.6, HACS shows no
+pending update - stayed `state: loaded` throughout, with
+`sensor.solaredge_i1_ac_power`, `sensor.solaredge_m1_ac_power`,
+`select.solaredge_i1_storage_command_mode`, and
+`sensor.solaredge_b1_state_of_energy` all updating normally the whole
+time, so this is **not** a Modbus Connectivity episode and the
+2026-10-11 entry added to that roadmap.md section under that assumption
+has been retracted). `sensor.max_active_power_1` instead belongs to a
+completely separate, cloud-API-based custom integration -
+`custom_components.solaredgeoptimizers` (HACS: "SolarEdge Optimizers
+Data," AndrewTapp/solaredgeoptimizers, installed v2.5.0, which is also
+HACS's latest - no pending update fixes this), config entry "SolarEdge
+Site 3622516," which pulls per-optimizer/inverter data from SolarEdge's
+monitoring portal rather than reading local Modbus registers. All 8
+entities on that integration's one device (`current_average_1`,
+`power_1`, `voltage_average_1`, `lifetime_energy_1`,
+`last_measurement_1`, `child_count_1`, `status_1`, and
+`max_active_power_1`) went `unavailable` within the same millisecond
+(11:46:12.41xxxx local) - a whole-config-entry failure, not a
+single-register glitch. HA's system log pins the cause precisely: this
+config entry has been in `state: setup_retry` since **09:45:13 UTC
+(11:45:13 local) - 59 seconds before the entities dropped** - with the
+integration logging `SolarEdge Optimizers: Login check failed (status:
+410)` on every retry, repeating every 10 minutes continuously through at
+least 15:37 local with no recovery. HTTP 410 Gone (not a timeout or a
+5xx) means the login endpoint itself is gone, not transiently
+unreachable - the component's own log names it a "Dual API" that
+maintains both a "SolarEdge One" and a "legacy" portal client
+("Closed One and legacy API clients" on every failed retry), so this
+looks like SolarEdge retiring the legacy portal login this custom
+component depends on, not an update on the Home Assistant/Modbus side.
+The user's initial suspicion that a SolarEdge Modbus integration update
+caused this was checked directly and ruled out - that integration is
+healthy, unchanged, and unaffected.
+
+The 90-minute addon-auto-restart escalation (`EMHASS_addon_watchdog_auto_restart`)
+fired right on schedule at 13:15:01 - and, as expected once the real
+cause was understood, did not help: the 13:30 run failed with the
+identical HTTP 400, since restarting the addon does nothing for a
+different integration's cloud-login failure.
+
+**Fixed 2026-10-11, same day as diagnosis**, by removing
+`sensor.max_active_power_1` from EMHASS's critical path entirely rather
+than hardening its fallback in place - the user's call once the root
+cause (a separate, currently-broken cloud integration with no fix ETA)
+was clear: this is a hardware nameplate rating, not a live measurement,
+so it essentially never changes, and a static value loses nothing
+meaningful in exchange for removing a fragile cloud dependency from
+every MPC/day-ahead run.
+
+Implementation: a new helper, `input_number.emhass_max_inverter_power`
+(`emhass_helpers.yaml`, Layer 2, unit W, initial `10600` - the entity's
+own last-reported value before it broke, min 5000/max 15000/step 100),
+replaces `sensor.max_active_power_1` in both
+`generate_emhass_energy_plan_mpc_pv` and `generate_emhass_energy_plan_dh_pv`
+(`emhass_scripts.yaml`)'s `sensors.max_inverter_power` mapping. The
+calculation line dropped its `* 1000` conversion (the old sensor read in
+kW; the new helper is defined directly in W, consistent with every other
+power helper in this project) and its fallback default changed from
+`| float(0)` to `| float(10600)` as defense in depth.
+
+Deliberately **not** reused: `input_number.ac_maxpower`
+(`safety_and_watchdog_helpers.yaml`, currently 5000W) - checked directly
+before implementing and ruled out. That helper is a distinct, pre-existing
+Layer 4A decision threshold (`battery_forecast_control.yaml`'s `ac_lim`,
+the Clipped Solar branch's `pv > ac_lim` comparison), deliberately set
+well below the inverter's real 10.6kW AC capacity for its own purpose
+(README.md's Clipped Solar section itself notes some ambiguity over
+whether that threshold represents the inverter's AC limit or the site's
+grid-export limit). Reusing it for EMHASS's `inverter_ac_output_max`/
+`inverter_ac_input_max` would have silently capped the optimizer's
+planning at under half the inverter's true throughput - a materially
+wrong constraint, not just an imperfect fallback - so a new, dedicated
+helper was created instead.
+
+The `solaredgeoptimizers` integration itself is left unfixed - its
+cloud-portal login still returns HTTP 410 as of this writing - but
+nothing in this project's control path depends on it any longer, so
+that's now optional cleanup (useful only if those 7 other entities on
+the same device are wanted for something else) rather than a blocker.
+
+Status: **fixed and confirmed live 2026-10-11** - the first scheduled
+MPC cycle after the restart (16:15 local) succeeded:
+`input_datetime.emhass_mpc_last_success` advanced from the stalled
+11:30:16 to 16:15:24, the actual request payload (pulled from the
+automation trace) shows `inverter_ac_output_max`/`inverter_ac_input_max:
+10600` (not 0), no new HTTP 400 in the error log after the restart, and
+`sensor.emhass_health`/`input_text.emhass_mpc_status` both read `OK`.
+The 45-minute Maximize-Self-Consumption fallback (see roadmap.md)
+remains in place as a second line of defense regardless.
+
+---
 
 ## Write-Outcome Telemetry Is Readback-Based
 

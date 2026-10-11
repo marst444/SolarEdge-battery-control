@@ -5,10 +5,15 @@
 # Fixes: known_issues_and_fixes.md
 
 # Sensors used by the MPC and day-ahead scripts below: energy capacity (kWh),
-# charging/discharging power (W), max inverter power (kW), battery SOC (%),
-# house load excl. variable loads (W), current PV power (W), import/export
-# price (SEK/kWh). The load forecast used in the payload comes from EMHASS's
-# own ML predict step, published to sensor.p_load_forecast_ml_pv.
+# charging/discharging power (W), battery SOC (%), house load excl. variable
+# loads (W), current PV power (W), import/export price (SEK/kWh). Max
+# inverter power (W) is NOT a live sensor - as of 2026-10-11 it's the static
+# input_number.emhass_max_inverter_power helper (emhass_helpers.yaml), not
+# sensor.max_active_power_1 - see known_issues_and_fixes.md, EMHASS Rejects
+# Optimisation Requests When sensor.max_active_power_1 Goes Unavailable, for
+# why that cloud-sourced entity was removed from this critical path. The
+# load forecast used in the payload comes from EMHASS's own ML predict step,
+# published to sensor.p_load_forecast_ml_pv.
 # Both scripts are a modification of Brendan Annable's Sigenergy script -
 # see README.md (Big thanks) for attribution/details.
 
@@ -38,7 +43,7 @@ script:
             energy_capacity: sensor.solaredge_b1_maximum_energy
             charging_power: sensor.solaredge_b1_max_charge_power
             discharging_power: sensor.solaredge_b1_max_discharge_power
-            max_inverter_power: sensor.max_active_power_1
+            max_inverter_power: input_number.emhass_max_inverter_power
             battery_soc: sensor.solaredge_b1_state_of_energy
             consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev
             solar:
@@ -63,7 +68,11 @@ script:
           soc_init: '{{ (states(sensors.battery_soc) | float(0) / 100) | round(3) }}'
           soc_final: '{{ battery_minimum_percent / 100 }}'
           now_iso: '{{ now().replace(microsecond=0).isoformat() }}'
-          max_inverter_power: '{{ (states(sensors.max_inverter_power) | float(0) * 1000) | round }}'
+          # Already Watts - input_number.emhass_max_inverter_power, unlike the
+          # old sensor.max_active_power_1 it replaced, is not in kW, so no
+          # *1000 conversion here. See emhass_helpers.yaml for why this is a
+          # static helper rather than a live sensor.
+          max_inverter_power: '{{ (states(sensors.max_inverter_power) | float(10600)) | round }}'
           common:
             costfun: '{{ costfun }}'
             prediction_horizon: '{{ num_forecasts }}'
@@ -253,7 +262,7 @@ script:
             energy_capacity: sensor.solaredge_b1_maximum_energy
             charging_power: sensor.solaredge_b1_max_charge_power
             discharging_power: sensor.solaredge_b1_max_discharge_power
-            max_inverter_power: sensor.max_active_power_1
+            max_inverter_power: input_number.emhass_max_inverter_power
             battery_soc: sensor.solaredge_b1_state_of_energy
             consumed_power: sensor.power_myhouse_load_no_var_loads_no_ev
             solar:
@@ -278,7 +287,11 @@ script:
           soc_init: '{{ (states(sensors.battery_soc) | float(0) / 100) | round(3) }}'
           soc_final: '{{ battery_minimum_percent / 100 }}'
           now_iso: '{{ now().replace(microsecond=0).isoformat() }}'
-          max_inverter_power: '{{ (states(sensors.max_inverter_power) | float(0) * 1000) | round }}'
+          # Already Watts - input_number.emhass_max_inverter_power, unlike the
+          # old sensor.max_active_power_1 it replaced, is not in kW, so no
+          # *1000 conversion here. See emhass_helpers.yaml for why this is a
+          # static helper rather than a live sensor.
+          max_inverter_power: '{{ (states(sensors.max_inverter_power) | float(10600)) | round }}'
           common:
             costfun: '{{ costfun }}'
             prediction_horizon: '{{ num_forecasts }}'

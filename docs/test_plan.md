@@ -10,7 +10,7 @@ This document verifies the SolarEdge Battery Control package layer by layer. A l
 Layer 1   STRONG PARTIAL PASS 🟡
     ✅ 1.1 Minimum SOC Protection
     ✅ 1.2 Maximum SOC Protection
-    ⏳ 1.3 Recovery Mode
+    🟡 1.3 Recovery Mode
 
 Layer 2   PARTIAL PASS 🟡 (strong)
     ✅ 2.1 EMHASS Forecast Availability
@@ -69,7 +69,7 @@ Open observation: dynamic charge/discharge limits (Layer 4A "dynamic" helpers) a
 
 # Layer 1 - Safety and Watchdog
 
-Layer 1 = STRONG PARTIAL PASS 🟡 — Verified: 1.1, 1.2. Outstanding: 1.3.
+Layer 1 = STRONG PARTIAL PASS 🟡 — Verified: 1.1, 1.2. Partial: 1.3.
 
 ## Test 1.1 Minimum SOC Protection
 
@@ -95,11 +95,22 @@ Layer 1 = STRONG PARTIAL PASS 🟡 — Verified: 1.1, 1.2. Outstanding: 1.3.
 
 ## Test 1.3 Recovery Mode
 
-**Status:** NOT VERIFIED
+**Status:** PARTIAL PASS 🟡 (upgraded 2026-10-11, from NOT VERIFIED)
 
 **Purpose:** verify critical low-SOC recovery behaviour (SOC < 10% → forced `charge_from_solar_and_grid`, charge limit > 0, discharge limit = 0).
 
-**Evidence:** none. Never naturally occurred, and deliberately forcing SOC below 10% on a real battery is a live-intervention action that needs explicit user approval before attempting - not yet given.
+**Evidence:** a real SOC<10% event occurred 2026-10-11 (reported SOC dropped from 22.22% at 15:36:15 to 0.0% at 15:47:41.905 local, spotted by the user in the stats). Investigated in full depth, logic through hardware:
+
+**Confirmed working:**
+- `calculate_effective_battery_control` fired correctly and atomically at 15:47:41.92: `effective_storage_mode` → `charge_from_solar_and_grid`, `effective_charge_limit` → 3000, `effective_discharge_limit` → 0, reason → "SOC critical below 10 - forced recovery charge" - correctly overriding both the active EMHASS fallback and the EV-charging discharge-limiting branch that had been active moments before.
+- The physical mode and discharge-limit writes both landed correctly: `select.solaredge_i1_storage_command_mode` → "Charge from Solar Power and Grid" and `number.solaredge_i1_storage_discharge_limit` → 0, both at 15:49:19.00 local. The ~97s gap between the helper change and the physical landing is fully explained by the apply-automation's own serialized write sequence through `script.modbus_queue` (each step taking ~16-18s) - not a defect.
+- The clean hand-off to the next branch (SOC 10-20%, "SOC below minimum - dynamic recovery charge", charge_limit → 3300) at 16:04:25.64, exactly matching the SOC crossing 10.00% at 16:04:25.621 - no mode flicker, since both branches request the same mode.
+
+**Confirmed NOT working - two real gaps found, both now logged in known_issues_and_fixes.md:**
+- *Charge-limit application*: `number.solaredge_i1_storage_charge_limit` never reached 3000 (or 3300) during this event at all. It was already at a stale 5000W (left over from an unrelated branch) half a second before the critical branch even fired, and stayed there continuously through both the SOC<10 and SOC<MIN bands - only correcting, straight to 3300, nearly 28 minutes later. Both the automation trace and the modbus_queue telemetry reported the 3000W write as a clean success - this is a silent failure nothing currently detects. See known_issues_and_fixes.md - Critical-Recovery Charge Limit Write Silently Dropped.
+- *The trigger itself*: physics strongly suggests the reported 0.0% SOC was itself a bad sensor reading, not a real battery state. The drop from 22.22% to 0.0% happened with zero intermediate samples in an 11.43-minute gap (unlike every other transition in this dataset, including the clean 20-sample recovery climb right after it) - and even under the most generous assumption (continuous discharge at the battery's absolute hardware maximum of 4096W, well above the 100W cap actually in effect via the EV-charging branch the whole time), the maximum energy that could physically have been lost in that window is ~17% of capacity, not the observed ~22%. See known_issues_and_fixes.md - SOC<10% Critical Recovery Triggered By a Physically-Implausible Single-Sample SOC Reading.
+
+**Result:** PARTIAL PASS - this confirms the Layer 1 decision logic and the mode/discharge-limit halves of the response chain work correctly when a SOC<10% condition is reported, including correctly overriding competing lower-priority logic and handing off cleanly as SOC recovers. It does **not** confirm the charge-limit half of the response actually reaches the inverter, and it does not confirm a genuine SOC<10% battery state was ever involved in the first place - if anything, the evidence points the other way. A clean full PASS would need both gaps closed: a charge-limit write confirmed landing correctly during a critical-recovery event, and either a plausibility guard added so a future event like this can be trusted at face value, or independent confirmation (e.g. a secondary SOC-estimation signal) that a reported near-0% reading is real.
 
 ---
 

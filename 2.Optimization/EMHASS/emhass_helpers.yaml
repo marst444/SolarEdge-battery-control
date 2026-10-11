@@ -9,7 +9,7 @@ input_number:
     name: MPC Window Start
     initial: 0
     min: 0
-    max: 96   
+    max: 96
     step: 1
     mode: box
 
@@ -28,7 +28,7 @@ input_number:
     max: 96
     step: 1
     mode: box
-    
+
   mpc_soc_final_target:
     name: MPC SOC Final Target
     initial: 30
@@ -36,7 +36,35 @@ input_number:
     max: 90
     step: 1
     mode: box
-    
+
+# Static nameplate/rated AC power of the hybrid inverter (SE10K-RWB48BFN4),
+# fed into EMHASS as inverter_ac_output_max/inverter_ac_input_max
+# (emhass_scripts.yaml). Replaces a live read of sensor.max_active_power_1
+# (a cloud-portal entity from the separate solaredgeoptimizers integration,
+# not the local Modbus one) as of 2026-10-11 - that entity's integration
+# got stuck in setup_retry (SolarEdge portal login HTTP 410) and silently
+# fed EMHASS a 0, which EMHASS rejected outright with HTTP 400, stalling
+# every MPC/day-ahead run. This value essentially never changes (it's a
+# hardware rating, not a measurement) so a static helper carries no real
+# accuracy cost and removes a fragile dependency on a cloud integration
+# from EMHASS's critical path entirely. Initial value (10600W) is the
+# inverter's own last-reported nameplate reading before that integration
+# broke - see known_issues_and_fixes.md, EMHASS Rejects Optimisation
+# Requests When sensor.max_active_power_1 Goes Unavailable. Deliberately
+# a separate helper from input_number.ac_maxpower (safety_and_watchdog_
+# helpers.yaml) - that one is a Layer 4A decision threshold (the Clipped
+# Solar branch's ac_lim, currently 5000W) with its own distinct purpose
+# and value; reusing it here would have wrongly capped EMHASS's planning
+# at half the inverter's real AC capacity.
+  emhass_max_inverter_power:
+    name: EMHASS Max Inverter Power
+    initial: 10600
+    min: 5000
+    max: 15000
+    step: 100
+    unit_of_measurement: W
+    mode: box
+
   emhass_requested_charge_limit:
     name: EMHASS Requested Charge Limit
     min: 0
@@ -51,8 +79,8 @@ input_number:
     max: 5000
     step: 1
     unit_of_measurement: W
-    mode: box    
-    
+    mode: box
+
 # Currently only 1 or 0 def loads in helper. If adding more, Max must be increased, and the EMHASS DH and MPC script must be updated accordingly!
 
 #
@@ -61,15 +89,15 @@ input_number:
     min: 0
     max: 1
     step: 1
-    mode: box 
-    
+    mode: box
+
 input_datetime:
 
   day_ahead_forecast_end:
     name: Day-ahead Forecast End
     has_date: true
     has_time: true
-    
+
 input_select:
   emhass_requested_storage_mode:
     name: EMHASS Requested Storage Mode

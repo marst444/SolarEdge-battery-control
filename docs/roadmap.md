@@ -214,16 +214,62 @@ first notification. Self-healing is unchanged - once EMHASS recovers,
 `battery_forecast_control.yaml`'s own guard unblocks and overwrites these
 on its next normal run, same as always.
 
-Status: **implemented in project docs 2026-10-10, not yet deployed live
-or observed through a real extended failure.** No MPC failure has lasted
-anywhere near 45 minutes in the 30-day window checked for this
-investigation, so this is untested against a real event - worth a
-deliberate live test (or waiting for a real occurrence) once deployed,
-the same way the negative-price redesign and the write-verify fix were
-each confirmed live after deployment. Also updated in `entities.md`
-(Layer 1 - Automations), including an incidental documentation fix for
-`automation.EMHASS_addon_watchdog_auto_restart`, which existed since the
-EMHASS Outage Fallback Guard fix but had never been listed there.
+Status: **implemented 2026-10-10, deployed live the same day, and
+confirmed live 2026-10-11 against the first real extended MPC stall
+since deployment - see Update 2026-10-11 below.** Also updated in
+`entities.md` (Layer 1 - Automations), including an incidental
+documentation fix for `automation.EMHASS_addon_watchdog_auto_restart`,
+which existed since the EMHASS Outage Fallback Guard fix but had never
+been listed there.
+
+---
+
+### Update 2026-10-11 - Confirmed live against a real extended MPC stall, end-to-end down to the physical inverter
+
+First real test of the 45-minute fallback since deployment, triggered
+not by a planned drill but by a genuine live MPC stall (root cause: see
+`known_issues_and_fixes.md` - EMHASS Rejects Optimisation Requests When
+`sensor.max_active_power_1` Goes Unavailable). Verified at every layer,
+not just that the automation fired:
+
+- **HA-entity level**: `input_select.emhass_requested_storage_mode` ->
+  `maximize_self_consumption` and both
+  `input_number.emhass_requested_charge_limit`/`_discharge_limit` -> 3300
+  all changed together at 12:30:00, sharing one automation-trace context
+  ID - a single atomic transition, not three independent/racing writes.
+- **Layer 1 passthrough level**: `effective_storage_mode`/
+  `effective_charge_limit` (the safety-override passthrough layer,
+  `apply_effective_battery_control.yaml`) mirrored the fallback's values
+  immediately after, with a matching parent context ID - confirming the
+  values actually propagated through Layer 1 rather than being
+  overridden or stuck.
+- **Physical hardware level**: the real SolarEdge inverter's own
+  `select.solaredge_i1_storage_command_mode` and
+  `number.solaredge_i1_storage_charge_limit`/`_discharge_limit` Modbus
+  registers reflect Maximize Self Consumption / 3300W - the command chain
+  reached the actual device, not just HA's internal helper entities.
+- **Redundant-write guard**: confirmed working - no re-writes on
+  subsequent 15-minute ticks while the mode stayed unchanged, only the
+  notification re-fired each cycle as designed.
+- **No conflict with other automations**: the pre-existing, unrelated
+  EV-charging discharge-reduction automation continued to correctly
+  modulate `emhass_requested_discharge_limit` on top of the fallback's
+  3300W base value throughout, with no interference either direction.
+- **90-minute addon-restart escalation**: also fired exactly on schedule
+  (13:15:01) and, as expected given the real root cause (a separate,
+  unrelated integration's cloud-login failure, not an addon crash), did
+  not resolve the underlying stall - restarting the EMHASS addon doesn't
+  fix another integration's broken login to SolarEdge's monitoring
+  portal. The 45-minute fallback already covered the gap regardless,
+  which is exactly the point of having it be mode-level rather than
+  depending on the addon recovering.
+
+This closes out the live-verification gap noted in Update 2026-10-10: the
+fallback now has a real, complete, multi-layer confirmation rather than
+only a design-time one.
+
+Status: **confirmed live 2026-10-11, end-to-end to the physical
+inverter.** No outstanding verification gap remains for this item.
 
 ---
 
@@ -796,6 +842,29 @@ investigation:
 
 Neither changes the working verdict - the `close_after_polling`/
 `scan_interval` settings remain adequately resolved and stable.
+
+---
+
+### Update 2026-10-11 - Retraction: the `sensor.max_active_power_1` MPC-stall episode is NOT a Modbus Connectivity case
+
+An entry was briefly added here claiming a fourth instance of this
+section's unexplained pattern, triggered by `sensor.max_active_power_1`
+going unavailable and stalling MPC. Follow-up investigation (checking
+the user's own suspicion that a SolarEdge Modbus integration update was
+responsible) found that framing wrong and it has been removed:
+`sensor.max_active_power_1` is not part of the `solaredge_modbus_multi`
+local Modbus integration this section tracks at all - it belongs to a
+separate, cloud-API-based custom integration
+(`custom_components.solaredgeoptimizers`, "SolarEdge Optimizers Data"),
+whose config entry has been stuck in `setup_retry` since 11:45:13 local
+with `Login check failed (status: 410)` on every retry - an external
+SolarEdge monitoring-portal API change, not a Modbus issue. The local
+Modbus integration (`solaredge_modbus_multi`, v4.0.6) stayed healthy
+throughout, confirmed via its own entities updating normally the whole
+time. Full corrected root cause now lives entirely in
+`known_issues_and_fixes.md` - EMHASS Rejects Optimisation Requests When
+`sensor.max_active_power_1` Goes Unavailable - rather than here, since it
+isn't one of this section's cases.
 
 ---
 
