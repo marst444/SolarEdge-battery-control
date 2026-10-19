@@ -1148,6 +1148,69 @@ Item 2 is now closed for the restore/guard half. Items 1 and 3 remain
 open - no negative-price window has occurred yet since deployment, and
 the switch is still sitting "off" (confirmed again this evening).
 
+### Update 2026-10-19 - Items 2 and 3 fully closed against a real negative-price episode; item 1 still open
+
+The switch sat "off" for a full week (confirmed via history: zero
+negative-price episodes 2026-10-14 through 2026-10-19). On the night of
+2026-10-13, a user-anticipated negative-price window arrived with
+deliberately zero PV surplus (a safe live test: no export to curtail
+either way). The mechanism worked on the first real tick: price crossed
+negative three times in a ~20-minute window (oscillating in a ~0.0003
+SEK/kWh band around exactly zero), the switch flipped `off -> on` at
+22:34:13 on the very first crossing, and `number.
+solaredge_i1_site_limit` correctly tracked all three curtail/restore
+cycles (0 <-> 1,000,000) in lockstep with `input_boolean.
+negative_price_active`/`grid_export_blocked`. The switch has stayed on
+through 6 days and 12+ of the twice-daily Modbus blips since, confirming
+durability, not just the triggering moment. Full evidence in
+known_issues_and_fixes.md - Negative Price Curtailment - Site Limit
+Restore Gap, Update 2026-10-19.
+
+This closes item 2 (new mechanism observed live through a real
+activate/deactivate cycle - previously only the restore/guard half was
+confirmed) and item 3 (switch self-heal) both. **Item 1 remains open**:
+2026-10-13's episode was deliberately chosen for zero PV, specifically
+to make it a safe test, so the one scenario this item has always been
+waiting on - negative price coinciding with real PV surplus, to
+directly observe export actually get suppressed rather than inferring it
+from command correctness alone - still has not occurred. Minor
+footnote, not a new item: the three rapid cycles driven by price noise
+around exactly zero cost a handful of extra Modbus writes (1-2 per
+cycle) on a night like this; worth keeping in mind given this project's
+SD-card-wear sensitivity, but not frequent or large enough to warrant a
+deadband/hysteresis fix on current evidence.
+
+---
+
+## Modbus Queue Pending-Count Leak
+
+Found 2026-10-19 during a routine behaviour review (see
+known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On
+Lock-Wait Timeout, for the full evidence and status - this entry just
+tracks it here as an open investigation/fix item). `input_number.
+modbus_queue_pending_count`'s resting floor does not return to 0: it
+reached 67 over 2026-10-17, was reset to 0 (most likely by an HA
+restart, not a code fix) on the morning of 2026-10-18, and has since
+climbed again to 10 by 2026-10-19 and stuck there. The floor tracks
+`modbus_queue_timeout_count_total` 1:1, pointing at the lock-wait
+timeout branch leaking a +1 that the normal end-of-run decrement never
+claws back - not yet confirmed at the code/trace level, only by strong
+correlation. Consequence so far is diagnostic-only:
+`binary_sensor.solaredge_modbus_queue_backlog` has been reporting a
+false "on" (backlog) for 33+ hours straight while real command
+throughput stayed normal, and nothing currently acts on that sensor, so
+there's no operational impact yet - but a sensor that's already wrong
+this long can't be trusted to flag a real future backlog either.
+
+Needs: a live trace of a `script.modbus_queue` run where the lock wait
+actually times out (`wait.completed == false`), to see directly whether
+the decrement step is reached or skipped for that run. Candidate fix
+once confirmed: either decrement `pending_count` in the timeout branch
+too, or rebase it off something self-correcting instead of a manually
+paired increment/decrement (e.g. HA's own script run-count state for
+`script.modbus_queue`). `test_plan.md` Test 6.4 (new) tracks this on the
+test-plan side.
+
 ---
 
 # 4. Enhanced Diagnostics

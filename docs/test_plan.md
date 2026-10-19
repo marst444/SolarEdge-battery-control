@@ -19,7 +19,7 @@ Layer 2   PARTIAL PASS 🟡 (strong)
 
 Layer 3   PARTIAL PASS 🟡 (strong)
     ✅ 3.1 Negative Price Curtailment
-    🟡 3.2 Site Limit Enforcement
+    🟡 3.2 Site Limit Enforcement (strong)
 
 Layer 4A  STRONG PARTIAL PASS 🟡
     ✅ 4A.1 Charge Decision
@@ -35,6 +35,7 @@ Layer 4C  PARTIAL PASS 🟡
     ✅ 6.1 Modbus Queue Serialization
     🟡 6.2 Concurrent Write Protection
     🟡 6.3 Recovery After Failed Write
+    ❌ 6.4 Queue Telemetry Integrity (new 2026-10-19)
 
 Layer 4D  STRONG PARTIAL PASS 🟡
     ✅ 7.1 Storage Mode Apply
@@ -189,7 +190,9 @@ Note: none of these episodes coincided with PV production (all pre-sunrise), so 
 
 **Evidence under the new mechanism (2026-10-06 evening):** a one-time migration write corrected the stale 0 → 1,000,000 at 15:09:13 (price ≥ 0, number ≠ 1,000,000 → normal branch fired, self-healing as designed). Over the next ~5h25m (hundreds of trigger firings, price fluctuating but always ≥ 0), zero further writes occurred - compare-before-write guard confirmed both empirically and at the trace level (run `028e729419fc0e03a368eaee6389548a`: branch matched but no service call made). A real ~21s Modbus outage at 20:33:58 took the number "unavailable"; on recovery it was rewritten to 1,000,000 (the `| float(-1)` fallback correctly parsed "unavailable" as ≠ 1,000,000, triggering a safe rewrite rather than trusting a stale state).
 
-**Result:** PARTIAL PASS - deactivation/normal-value path now confirmed correct and self-healing, including through a real Modbus outage. Still open: a live negative-price *activation* under the new mechanism (writes to 0), and the enforcement-while-ON scenario (negative price coinciding with real PV surplus, to directly observe curtailed export rather than infer it). Neither has occurred yet.
+**Evidence under the new mechanism, activation side (2026-10-19, upgraded from PARTIAL PASS):** the switch had sat "off" for a full week with zero negative-price episodes to exercise it. A real overnight episode on 2026-10-13 (deliberately zero PV, a safe live test) exercised the activation side for the first time: price crossed negative three times in ~20 minutes, the switch's defensive re-assert correctly flipped it `off -> on` on the very first crossing (22:34:13), and `number.solaredge_i1_site_limit` correctly cycled `1000000 <-> 0` in lockstep with all three crossings (22:34:11, 22:46:25, 22:49:16, 22:51:44, 22:54:50, 23:02:40), matched by `input_boolean.negative_price_active`/`grid_export_blocked` throughout. The switch has since stayed `on` through 6 days and 12+ twice-daily Modbus blips, confirming durability. Full evidence in known_issues_and_fixes.md - Negative Price Curtailment - Site Limit Restore Gap, Update 2026-10-19.
+
+**Result:** PARTIAL PASS (strong) - both the deactivation/normal-value path (2026-10-06) and the activation/curtailed-value path (2026-10-19) are now confirmed correct and self-healing, including through both a real Modbus outage and a full week-plus of durability. Still open, the one scenario this test has always been waiting on: the enforcement-while-ON scenario - negative price coinciding with real PV surplus, to directly observe curtailed export rather than infer it from command correctness alone. 2026-10-13's episode was deliberately zero-PV, so this remains the single outstanding gap for a full PASS.
 
 ---
 
@@ -268,7 +271,7 @@ Layer 4B = STRONG PARTIAL PASS 🟡 — Verified: 5.1, 5.2. Outstanding: none.
 
 # Layer 4C - Modbus Queue
 
-Layer 4C = PARTIAL PASS 🟡 — Verified: 6.1. Outstanding: 6.2, 6.3.
+Layer 4C = PARTIAL PASS 🟡 — Verified: 6.1. Outstanding: 6.2, 6.3, 6.4 (6.4 is a confirmed FAIL, not just unverified).
 
 ## Test 6.1 Modbus Queue Serialization
 
@@ -299,6 +302,20 @@ Layer 4C = PARTIAL PASS 🟡 — Verified: 6.1. Outstanding: 6.2, 6.3.
 **Evidence:** real incident, 2026-08-27 06:45: a discharge-limit write failed ("Connection failed... Not connected"). Root cause (confirmed by reading `solaredge_modbusqueue.yaml`): the final `modbus_busy` turn-off step is a plain sequence step, not exception-safe - a service-call failure inside the `choose:` block aborts the script and skips it, leaving the lock stuck "on". It sat stuck for ~30 minutes (nothing else needed sending in that window, not a deeper hang) until the next real command at 07:15 triggered `modbus_queue`'s own 10s `wait_template`/`continue_on_timeout` guard, which force-cleared the stale lock and resumed normal operation - directly observed working, including a clean subsequent trace and correct mode transition.
 
 **Result:** recovery is real but not prompt - the lock isn't released by the failure itself, only forced through by the *next* caller's 10s timeout (worst case ~10s extra wait). No command was silently/permanently lost. Suggested fix logged in roadmap.md: make the lock-release step exception-safe so it runs immediately on failure.
+
+Note (2026-10-19): this test's evidence predates the 2026-09-20 exception-safe lock-release fix (known_issues_and_fixes.md - Modbus Queue Lock Release Not Exception-Safe, confirmed behaviorally live 2026-09-24) - the stuck-lock *mechanism* this test describes no longer matches the current code. Left as-is rather than rewritten, since it's still accurate history and the fix's own verification lives in that known_issues_and_fixes.md entry; a future pass could fold a current-behavior confirmation in here instead.
+
+---
+
+## Test 6.4 Queue Telemetry Integrity
+
+**Status:** ❌ FAIL (new 2026-10-19)
+
+**Purpose:** verify `script.modbus_queue`'s own diagnostic counters (`input_number.modbus_queue_pending_count` and friends) accurately reflect queue state, since downstream watchdog sensors (`binary_sensor.solaredge_modbus_queue_backlog`) and this test plan's own evidence trail depend on them being trustworthy.
+
+**Evidence:** found during a routine behaviour review, not a targeted test - `binary_sensor.solaredge_modbus_queue_backlog` had been reporting "on" (backlog, pending_count >= 5) continuously for 33+ hours. Investigation found `modbus_queue_pending_count`'s resting floor does not return to 0 after draining: it reached 67 over 2026-10-17, was reset to 0 (most likely an HA restart, not a fix) on 2026-10-18 morning, then climbed again to 10 by 2026-10-19 and has sat there since - tracking `modbus_queue_timeout_count_total` 1:1 throughout, pointing at the lock-wait timeout branch (`wait.completed == false`) leaking an uncorrected +1. Actual command throughput was verified normal the whole time (writes dispatch and land correctly), and nothing currently consumes the backlog sensor downstream, so the blast radius so far is "this one sensor and this test's own future evidence can't be trusted at face value" rather than any control-path impact. Full write-up in known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
+
+**Result:** FAIL - the counter does not reflect reality; `binary_sensor.solaredge_modbus_queue_backlog` is consequently unreliable until this is fixed. Needs a live trace of a lock-wait-timeout run to confirm the exact mechanism (not yet pinned down at the code level, only by strong correlation), then a fix and a re-test confirming the floor returns to 0 after a timeout event drains.
 
 ---
 
@@ -404,7 +421,7 @@ System = PARTIAL PASS 🟡 — all four (S.1-S.4) verified-but-partial. Outstand
 
 **Purpose:** verify the complete export-curtailment flow, Layer 3 → 4B → 4C → 4D.
 
-**Evidence:** command path confirmed via Test 3.1/3.2's 7-cycle overnight event (Layer 3 → 4D correct and prompt). Site-limit mechanism was redesigned the same day (see Test 3.2); the new `set_site_limit` path's *normal* (1,000,000) side was exercised live that evening via the migration write and subsequent guarded no-op behaviour. Still missing: a live negative-price *activation* under the new mechanism, and the one scenario that would show curtailment as an actual export reduction - negative price coinciding with real PV surplus. Every episode so far has been overnight with zero PV.
+**Evidence:** command path confirmed via Test 3.1/3.2's 7-cycle overnight event (Layer 3 → 4D correct and prompt). Site-limit mechanism was redesigned the same day (see Test 3.2); the new `set_site_limit` path's *normal* (1,000,000) side was exercised live that evening via the migration write and subsequent guarded no-op behaviour. The *curtailed* (0) side was confirmed live 2026-10-19 against a real overnight negative-price episode (see Test 3.2's 2026-10-19 update) - three full activate/deactivate cycles, command path correct and prompt each time. Still missing: the one scenario that would show curtailment as an actual export reduction rather than inferring it from command correctness - negative price coinciding with real PV surplus. Every episode so far (2026-10-06 and 2026-10-13) has been overnight with zero PV, 2026-10-13 deliberately so.
 
 ---
 
