@@ -35,7 +35,7 @@ Layer 4C  PARTIAL PASS 🟡
     ✅ 6.1 Modbus Queue Serialization
     🟡 6.2 Concurrent Write Protection
     🟡 6.3 Recovery After Failed Write
-    ❌ 6.4 Queue Telemetry Integrity (new 2026-10-19)
+    🟡 6.4 Queue Telemetry Integrity (bug found 2026-10-19, fixed in docs same day, pending live confirmation)
 
 Layer 4D  STRONG PARTIAL PASS 🟡
     ✅ 7.1 Storage Mode Apply
@@ -271,7 +271,7 @@ Layer 4B = STRONG PARTIAL PASS 🟡 — Verified: 5.1, 5.2. Outstanding: none.
 
 # Layer 4C - Modbus Queue
 
-Layer 4C = PARTIAL PASS 🟡 — Verified: 6.1. Outstanding: 6.2, 6.3, 6.4 (6.4 is a confirmed FAIL, not just unverified).
+Layer 4C = PARTIAL PASS 🟡 — Verified: 6.1. Outstanding: 6.2, 6.3, 6.4 (6.4's bug is confirmed and a fix is now implemented in project docs as of 2026-10-19, but not yet deployed live or re-tested against a real timeout event).
 
 ## Test 6.1 Modbus Queue Serialization
 
@@ -309,13 +309,15 @@ Note (2026-10-19): this test's evidence predates the 2026-09-20 exception-safe l
 
 ## Test 6.4 Queue Telemetry Integrity
 
-**Status:** ❌ FAIL (new 2026-10-19)
+**Status:** 🟡 PARTIAL PASS (bug found and fixed in project docs 2026-10-19; fix not yet deployed live or re-tested)
 
 **Purpose:** verify `script.modbus_queue`'s own diagnostic counters (`input_number.modbus_queue_pending_count` and friends) accurately reflect queue state, since downstream watchdog sensors (`binary_sensor.solaredge_modbus_queue_backlog`) and this test plan's own evidence trail depend on them being trustworthy.
 
-**Evidence:** found during a routine behaviour review, not a targeted test - `binary_sensor.solaredge_modbus_queue_backlog` had been reporting "on" (backlog, pending_count >= 5) continuously for 33+ hours. Investigation found `modbus_queue_pending_count`'s resting floor does not return to 0 after draining: it reached 67 over 2026-10-17, was reset to 0 (most likely an HA restart, not a fix) on 2026-10-18 morning, then climbed again to 10 by 2026-10-19 and has sat there since - tracking `modbus_queue_timeout_count_total` 1:1 throughout, pointing at the lock-wait timeout branch (`wait.completed == false`) leaking an uncorrected +1. Actual command throughput was verified normal the whole time (writes dispatch and land correctly), and nothing currently consumes the backlog sensor downstream, so the blast radius so far is "this one sensor and this test's own future evidence can't be trusted at face value" rather than any control-path impact. Full write-up in known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
+**Evidence:** found during a routine behaviour review, not a targeted test - `binary_sensor.solaredge_modbus_queue_backlog` had been reporting "on" (backlog, pending_count >= 5) continuously for 33+ hours. Investigation found `modbus_queue_pending_count`'s resting floor does not return to 0 after draining: it reached 67 over 2026-10-17, was reset to 0 (most likely an HA restart, not a fix) on 2026-10-18 morning, then climbed again to 10 by 2026-10-19 and has sat there since - tracking `modbus_queue_timeout_count_total` 1:1 throughout, pointing at the lock-wait timeout branch (`wait.completed == false`) leaking an uncorrected +1. Actual command throughput was verified normal the whole time (writes dispatch and land correctly), and nothing currently consumes the backlog sensor downstream, so the blast radius so far was "this one sensor and this test's own future evidence can't be trusted at face value" rather than any control-path impact. Full write-up in known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
 
-**Result:** FAIL - the counter does not reflect reality; `binary_sensor.solaredge_modbus_queue_backlog` is consequently unreliable until this is fixed. Needs a live trace of a lock-wait-timeout run to confirm the exact mechanism (not yet pinned down at the code level, only by strong correlation), then a fix and a re-test confirming the floor returns to 0 after a timeout event drains.
+**Fix (2026-10-19):** `solaredge_modbusqueue.yaml`'s lock-wait-timeout branch now also decrements `modbus_queue_pending_count` by 1 (floored at 0), exactly once per timeout event, making the counter self-correcting regardless of which run's own end-of-run decrement went missing. Made on the strength of the 1:1 correlation with `modbus_queue_timeout_count_total` rather than a live trace pinning down the exact HA-concurrency mechanism first (that trace still hasn't been captured).
+
+**Result:** PARTIAL PASS - the bug is confirmed and a fix now exists in this project's docs, but the live HA instance is in Read-Only Mode so this session could not deploy it, and no future timeout event has yet been observed against the corrected code. Needs: (1) the user to deploy the corrected `solaredge_modbusqueue.yaml` to the live config, and (2) a re-test confirming the floor returns to and stays at 0 across a real lock-wait-timeout event, to upgrade this to a full PASS.
 
 ---
 

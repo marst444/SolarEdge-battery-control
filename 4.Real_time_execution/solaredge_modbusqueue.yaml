@@ -2,7 +2,7 @@
 # Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue + write-outcome telemetry.
 # Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch); writes into Layer 1 helpers in safety_and_watchdog_helpers.yaml (modbus_write_*, modbus_queue_pending_count, modbus_queue_last_command_delta), via the async script.modbus_write_verify for anything but an unmatched queue_service
 # Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
-# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap, Write-Outcome Telemetry Is Readback-Based); leftover debug logging - see roadmap.md
+# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap, Write-Outcome Telemetry Is Readback-Based, Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout); leftover debug logging - see roadmap.md
 
 input_boolean:
   modbus_busy:
@@ -175,6 +175,26 @@ script:
               entity_id: input_number.modbus_queue_timeout_count_today
             data:
               value: "{{ (states('input_number.modbus_queue_timeout_count_today') | int(0)) + 1 }}"
+
+          # Fix 2026-10-19 - Modbus Queue Pending-Count Counter Leaks On
+          # Lock-Wait Timeout (known_issues_and_fixes.md): every time this
+          # branch fires, pending_count's resting floor was observed to
+          # permanently gain +1 that the normal end-of-run decrement below
+          # never claws back (confirmed live: the floor tracked
+          # modbus_queue_timeout_count_total 1:1, reaching 67 before an
+          # apparent counter reset, then climbing again). Rather than rely
+          # on the end-of-run decrement reaching every caller on every
+          # path, compensate right here, exactly once per timeout event -
+          # this makes the counter self-correcting regardless of which
+          # earlier run's decrement went missing. Floored at 0 so this
+          # can't drive it negative; a brief undercount is harmless for a
+          # diagnostic counter, unlike the permanent overcount this
+          # replaces.
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.modbus_queue_pending_count
+            data:
+              value: "{{ max((states('input_number.modbus_queue_pending_count') | int(0)) - 1, 0) }}"
 
       - service: input_boolean.turn_on
         target:
@@ -522,8 +542,9 @@ script:
 
       # Enhanced Diagnostics: this run is no longer pending, success or
       # failure - decrement before releasing the lock. Floored at 0 so a
-      # stray double-decrement (e.g. after an HA restart mid-run) can't
-      # drive it negative.
+      # stray double-decrement (e.g. after an HA restart mid-run, or the
+      # compensating decrement added above for the lock-wait-timeout case)
+      # can't drive it negative.
       - service: input_number.set_value
         target:
           entity_id: input_number.modbus_queue_pending_count

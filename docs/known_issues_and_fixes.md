@@ -12,18 +12,20 @@ these project docs so far.
 
 ---
 
-Three issues are currently open: two found 2026-10-11 while verifying a
+Two issues are currently open: both found 2026-10-11 while verifying a
 real SOC<10% critical-recovery event against the user's request to check
 it against the stats - Critical-Recovery Charge Limit Write Silently
 Dropped (the physical charge-limit register never actually reached the
 critical-recovery value, stuck at a stale 5000W for ~28 minutes) and SOC<10%
 Critical Recovery Triggered By a Physically-Implausible Single-Sample SOC
 Reading (strong evidence the underlying SOC<10% condition itself may never
-have been real) - and one found 2026-10-19 during a routine behaviour
-review: Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout (a
-telemetry-only bug - `binary_sensor.solaredge_modbus_queue_backlog` has
-been reporting a false "backlog" for extended periods while real command
-throughput stayed normal). See Open Issues below for all three.
+have been real). See Open Issues below for both. A third issue found
+2026-10-19 during the same routine behaviour review - Modbus Queue
+Pending-Count Counter Leaks On Lock-Wait Timeout, a telemetry-only bug
+where `binary_sensor.solaredge_modbus_queue_backlog` had been reporting a
+false "backlog" for extended periods while real command throughput stayed
+normal - was fixed in project docs the same day it was found; see Fixed
+Issues below.
 
 EMHASS Rejects Optimisation
 Requests When `sensor.max_active_power_1` Goes Unavailable, diagnosed and
@@ -40,7 +42,12 @@ day to have no live impact, and was then closed the same day by a
 structural redesign rather than a patch; that redesign's remaining
 live-verification gap (the switch's defensive re-assert, and the number's
 curtail/restore cycling, actually firing live) was **closed 2026-10-19**
-against a real overnight negative-price episode - see below. The branch-coverage gap found 2026-09-10 was fixed 2026-09-15
+against a real overnight negative-price episode - see below. The Modbus
+Queue Pending-Count Counter Leak found 2026-10-19 was fixed the same day
+via a compensating decrement in `script.modbus_queue`'s lock-wait-timeout
+branch - see Modbus Queue Pending-Count Counter Leaks On Lock-Wait
+Timeout below; not yet deployed to the live config or confirmed against
+a real future timeout event. The branch-coverage gap found 2026-09-10 was fixed 2026-09-15
 and confirmed firing live - see Branch-Coverage Gaps below. Its related,
 unconfirmed corner - `grid_fc < 0` together with `batt_fc <
 0`, a contradictory-forecast edge case - is still uncovered by any
@@ -240,6 +247,8 @@ accordingly (see below).
 
 ---
 
+# Fixed Issues
+
 ## Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout
 
 Found 2026-10-19 during a routine "how has the system behaved lately"
@@ -277,9 +286,11 @@ circumstantial evidence that every lock-wait timeout (the initial 10s
 `modbus_queue_pending_count` - on top of whatever that same run's own
 normal +1/-1 pair does. The exact code path producing this has not been
 pinned down by reading alone: nothing in the sequence after the timeout
-branch looks conditionally skipped, so this needs a live trace caught
-in the act (a `script.modbus_queue` run where `wait.completed == false`)
-to confirm mechanism, not just correlation.
+branch looks conditionally skipped, so a live trace caught in the act
+(a `script.modbus_queue` run where `wait.completed == false`) would be
+needed to confirm mechanism precisely, not just correlation - the fix
+below was made on the strength of the correlation rather than waiting
+for that trace.
 
 Practical impact so far is cosmetic/diagnostic, not operational: actual
 command throughput looks normal throughout this period (writes dispatch
@@ -288,27 +299,41 @@ and land correctly - e.g. a `set_storage_discharge_limit=409` write at
 register read back correctly at 409 by 17:00:36, i.e. retried/settled
 fine), and nothing in this project currently *acts* on
 `binary_sensor.solaredge_modbus_queue_backlog` being "on" (checked
-`watchdog_automations.yaml` - no automation consumes it). The sensor is
-just wrong, persistently, which undermines it as a diagnostic signal:
-it has already cried wolf for over a day with no real backlog behind
-it, and would mask a genuine future backlog by making "on" look like
+`watchdog_automations.yaml` - no automation consumes it). The sensor was
+just wrong, persistently, which undermined it as a diagnostic signal: it
+had already cried wolf for over a day with no real backlog behind it,
+and would have masked a genuine future backlog by making "on" look like
 background noise.
 
-Status: **open, not yet fixed**. Suggested next step: either decrement
-`modbus_queue_pending_count` in the timeout branch too (if a timed-out
-run is still going to run to completion and decrement again, the
-existing floor-at-0 clamp'y already guards against double-decrementing
-negative, so this is likely a cheap, safe fix), or - more conservatively
-- derive `pending_count` from something self-correcting (e.g. reset it
-to the actual number of currently-running script instances via Home
-Assistant's own script-state fields) rather than a manually
-incremented/decremented counter. `test_plan.md` gets a new Test 6.4 for
-this (see below) since no existing test previously covered queue
-telemetry accuracy itself, only the write path it describes.
+Fixed 2026-10-19, same day as diagnosis: `solaredge_modbusqueue.yaml`'s
+lock-wait-timeout branch (the `if: wait.completed == false` block that
+already bumps `modbus_queue_timeout_count_total`/`_today`) now also
+decrements `input_number.modbus_queue_pending_count` by 1 (floored at 0
+via the same `max(...,0)` pattern the existing end-of-run decrement
+uses), exactly once per timeout event. This makes the counter
+self-correcting regardless of which earlier run's own decrement went
+missing, rather than depending on fully proving the internal HA
+`mode: queued` concurrency mechanism that caused the leak in the first
+place - a pragmatic, evidence-driven fix (the 1:1 correlation with
+`modbus_queue_timeout_count_total` was strong enough to act on) rather
+than a mechanism-proven one. A brief undercount from this compensating
+decrement is harmless for a diagnostic counter, unlike the permanent
+overcount it replaces. The pre-existing end-of-run decrement's own
+comment was updated to note this new compensating path as another
+legitimate reason the counter might already be below where a naive
++1/-1 pairing would expect. The header `# Fixes:` comment in the YAML
+now lists this entry too.
+
+Status: **fixed in project docs 2026-10-19, not yet deployed to the
+live config or confirmed against a real future timeout event.** The
+live HA instance is in Read-Only Mode as of this writing, so this
+session cannot push the change live itself - the corrected
+`solaredge_modbusqueue.yaml` needs to be copied/reloaded into the live
+config, same as every other fix in this document. `test_plan.md` Test
+6.4 updated accordingly (see below) - re-test needed once deployed and
+a future lock-wait timeout actually occurs.
 
 ---
-
-# Fixed Issues
 
 ## EMHASS Rejects Optimisation Requests When `sensor.max_active_power_1` Goes Unavailable
 

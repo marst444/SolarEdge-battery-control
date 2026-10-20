@@ -1182,37 +1182,6 @@ deadband/hysteresis fix on current evidence.
 
 ---
 
-## Modbus Queue Pending-Count Leak
-
-Found 2026-10-19 during a routine behaviour review (see
-known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On
-Lock-Wait Timeout, for the full evidence and status - this entry just
-tracks it here as an open investigation/fix item). `input_number.
-modbus_queue_pending_count`'s resting floor does not return to 0: it
-reached 67 over 2026-10-17, was reset to 0 (most likely by an HA
-restart, not a code fix) on the morning of 2026-10-18, and has since
-climbed again to 10 by 2026-10-19 and stuck there. The floor tracks
-`modbus_queue_timeout_count_total` 1:1, pointing at the lock-wait
-timeout branch leaking a +1 that the normal end-of-run decrement never
-claws back - not yet confirmed at the code/trace level, only by strong
-correlation. Consequence so far is diagnostic-only:
-`binary_sensor.solaredge_modbus_queue_backlog` has been reporting a
-false "on" (backlog) for 33+ hours straight while real command
-throughput stayed normal, and nothing currently acts on that sensor, so
-there's no operational impact yet - but a sensor that's already wrong
-this long can't be trusted to flag a real future backlog either.
-
-Needs: a live trace of a `script.modbus_queue` run where the lock wait
-actually times out (`wait.completed == false`), to see directly whether
-the decrement step is reached or skipped for that run. Candidate fix
-once confirmed: either decrement `pending_count` in the timeout branch
-too, or rebase it off something self-correcting instead of a manually
-paired increment/decrement (e.g. HA's own script run-count state for
-`script.modbus_queue`). `test_plan.md` Test 6.4 (new) tracks this on the
-test-plan side.
-
----
-
 # 4. Enhanced Diagnostics
 
 ## Required Telemetry
@@ -1557,6 +1526,27 @@ dispatch, past the ~10s design budget) - plausibly a one-off tied to
 being the first write right after the restart (Modbus still
 reconnecting), not yet confirmed either way. Worth a further check
 under normal operating conditions to see if this recurs.
+
+**Modbus Queue Pending-Count Leak** (found and fixed 2026-10-19) - a
+routine behaviour review surfaced `input_number.
+modbus_queue_pending_count`'s resting floor never returning to 0 (it
+reached 67 on 2026-10-17, was reset by what was most likely an HA
+restart on 2026-10-18, then climbed again to 10 by 2026-10-19), tracking
+`modbus_queue_timeout_count_total` 1:1 - strong evidence every
+lock-wait timeout left a permanent, uncorrected +1 that the normal
+end-of-run decrement never claws back. Diagnostic-only impact: real
+command throughput stayed normal throughout, but
+`binary_sensor.solaredge_modbus_queue_backlog` had been reporting a
+false "on" (backlog) for 33+ hours. Fixed the same day with a
+compensating decrement inside the lock-wait-timeout branch itself
+(floored at 0, same pattern as the existing end-of-run decrement) -
+self-correcting regardless of which run's own decrement went missing,
+rather than waiting on a live trace to fully prove the internal HA
+concurrency mechanism first. See known_issues_and_fixes.md for full
+detail and current deployment status (implemented in project docs,
+not yet deployed to the live config or confirmed against a real future
+timeout event). `test_plan.md` Test 6.4 tracks this on the test-plan
+side.
 
 ---
 
