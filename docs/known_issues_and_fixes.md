@@ -24,7 +24,8 @@ have been real). See Open Issues below for both. A third issue found
 Pending-Count Counter Leaks On Lock-Wait Timeout, a telemetry-only bug
 where `binary_sensor.solaredge_modbus_queue_backlog` had been reporting a
 false "backlog" for extended periods while real command throughput stayed
-normal - was fixed in project docs the same day it was found; see Fixed
+normal - was fixed the same day it was found and **confirmed deployed
+and working live 2026-10-20** against a real timeout event; see Fixed
 Issues below.
 
 EMHASS Rejects Optimisation
@@ -45,9 +46,9 @@ curtail/restore cycling, actually firing live) was **closed 2026-10-19**
 against a real overnight negative-price episode - see below. The Modbus
 Queue Pending-Count Counter Leak found 2026-10-19 was fixed the same day
 via a compensating decrement in `script.modbus_queue`'s lock-wait-timeout
-branch - see Modbus Queue Pending-Count Counter Leaks On Lock-Wait
-Timeout below; not yet deployed to the live config or confirmed against
-a real future timeout event. The branch-coverage gap found 2026-09-10 was fixed 2026-09-15
+branch, deployed live 2026-10-20, and **confirmed working against a real
+timeout event that same night** - see Modbus Queue Pending-Count
+Counter Leaks On Lock-Wait Timeout below. The branch-coverage gap found 2026-09-10 was fixed 2026-09-15
 and confirmed firing live - see Branch-Coverage Gaps below. Its related,
 unconfirmed corner - `grid_fc < 0` together with `batt_fc <
 0`, a contradictory-forecast edge case - is still uncovered by any
@@ -324,14 +325,52 @@ legitimate reason the counter might already be below where a naive
 +1/-1 pairing would expect. The header `# Fixes:` comment in the YAML
 now lists this entry too.
 
-Status: **fixed in project docs 2026-10-19, not yet deployed to the
-live config or confirmed against a real future timeout event.** The
-live HA instance is in Read-Only Mode as of this writing, so this
-session cannot push the change live itself - the corrected
-`solaredge_modbusqueue.yaml` needs to be copied/reloaded into the live
-config, same as every other fix in this document. `test_plan.md` Test
-6.4 updated accordingly (see below) - re-test needed once deployed and
-a future lock-wait timeout actually occurs.
+### Update 2026-10-20 - deployed live and confirmed against a real timeout event the same night
+
+The user copied/reloaded the corrected `solaredge_modbusqueue.yaml` into
+the live config. A real lock-wait timeout occurred overnight -
+`modbus_queue_timeout_count_total` ticked 10 -> 11 at 04:05:24.891 local
+on 2026-10-20 - giving the first chance to observe the fix against the
+exact failure mode it targets.
+
+`input_number.modbus_queue_pending_count`'s history across that event
+(local times, 2026-10-20):
+
+```text
+04:05:14.722  10 -> 11   run A starts (pending +1)
+04:05:14.875  11 -> 12   run B starts, stacked behind run A (pending +1)
+04:05:24.896  12 -> 11   compensating decrement fires - 5ms after
+                          modbus_queue_timeout_count_total's own
+                          04:05:24.891 bump, i.e. the same timeout
+                          branch, same step order as written
+04:05:41.564  11 -> 10   run B's own end-of-run decrement
+04:05:43.607  10 -> 11   run C starts (pending +1)
+04:06:01.681  11 -> 10   run C's end-of-run decrement
+```
+
+Net change across the whole burst: zero - the floor returned to 10
+(its pre-fix resting value) rather than climbing to 11 the way every
+prior timeout event had. The 5-millisecond gap between the timeout
+counter's own increment and the compensating decrement is as close to
+a direct trace as live history can give (the actual `script.
+modbus_queue` trace for run A itself already rolled off the 5-trace
+retention by the time this was checked, per the known limitation noted
+above) - it confirms the fix's step fired exactly once, exactly when
+the timeout branch fired, consistent with the code as written rather
+than coincidence.
+
+Residual, not a bug: the floor itself is still sitting at 10, not 0 -
+this fix stops *future* leaks, it does not retroactively repay the
+debt accumulated before 2026-10-19. `binary_sensor.
+solaredge_modbus_queue_backlog` will keep reading a false "on" until
+that resting value is manually cleared (e.g. `input_number.set_value`
+to 0, or it will reset naturally on the next HA restart) - a one-time
+cleanup action for the user, not something this fix needed to handle
+itself.
+
+Status: **fixed, deployed live, and confirmed against a real timeout
+event, all as of 2026-10-20.** `test_plan.md` Test 6.4 upgraded to PASS
+accordingly (see below).
 
 ---
 
@@ -1343,3 +1382,33 @@ Status: deployed and confirmed working (test_plan.md Test 7.6)
 guard-caused, but before/after impact on the overall error rate hasn't
 been quantified. The new skip counter (2026-10-06) is implemented in
 project docs only, not yet confirmed against live history.
+
+### Update 2026-10-22 - third guard precondition (configured default mode) confirmed live, with user's explicit approval for the live intervention
+
+The one precondition never yet exercised live - the guard staying
+inactive when the inverter's configured default mode disagrees with
+Maximize Self Consumption, even though effective mode and live command
+mode both still say MSC - needed someone to deliberately change the
+default mode on the live inverter, since 30 days of history (checked
+2026-10-08) had shown it never once deviating from MSC on its own. The
+user did so with explicit approval, changing `select.solaredge_i1_storage_
+default_mode` to "Solar Power Only (Off)" via the entity's real control.
+
+Unexpected but useful: the live `select.solaredge_i1_storage_command_mode`
+changed to the same value at the same instant (10:08:51.52 local, 2ms
+apart) - on this installation, writing the configured default mode
+evidently also lands on the live command register, not just the
+fallback. `sensor.battery_mode_command_guard` flipped `guarded -> active`
+immediately. The next natural automation trigger (`effective_discharge_
+limit` ticking at 10:15:01, trace `9d6c21d44d77ee8e0aeb55ccecfb67da`)
+confirmed `mode_guard_active: false` and ran the full command sequence -
+`set_value_storage_command_timeout15m`, `maximize_self_consumption_
+script`, then both limit scripts - correctly resending the mode command
+that a MSC-only check on effective mode and live command mode alone
+would have skipped. `select.solaredge_i1_storage_command_mode` landed
+back on "Maximize Self Consumption" ~69s later, and `mode_command_
+skipped_count_total`/`_today` stayed flat throughout, confirming the
+skip counter correctly did not fire while the guard was inactive.
+
+Status: **all three guard preconditions now confirmed live** -
+test_plan.md Test 7.6 upgraded to PASS.

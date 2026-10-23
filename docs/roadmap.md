@@ -1527,26 +1527,33 @@ being the first write right after the restart (Modbus still
 reconnecting), not yet confirmed either way. Worth a further check
 under normal operating conditions to see if this recurs.
 
-**Modbus Queue Pending-Count Leak** (found and fixed 2026-10-19) - a
-routine behaviour review surfaced `input_number.
-modbus_queue_pending_count`'s resting floor never returning to 0 (it
-reached 67 on 2026-10-17, was reset by what was most likely an HA
-restart on 2026-10-18, then climbed again to 10 by 2026-10-19), tracking
-`modbus_queue_timeout_count_total` 1:1 - strong evidence every
-lock-wait timeout left a permanent, uncorrected +1 that the normal
-end-of-run decrement never claws back. Diagnostic-only impact: real
-command throughput stayed normal throughout, but
+**Modbus Queue Pending-Count Leak** (found and fixed 2026-10-19,
+confirmed live 2026-10-20) - a routine behaviour review surfaced
+`input_number.modbus_queue_pending_count`'s resting floor never
+returning to 0 (it reached 67 on 2026-10-17, was reset by what was
+most likely an HA restart on 2026-10-18, then climbed again to 10 by
+2026-10-19), tracking `modbus_queue_timeout_count_total` 1:1 - strong
+evidence every lock-wait timeout left a permanent, uncorrected +1 that
+the normal end-of-run decrement never claws back. Diagnostic-only
+impact: real command throughput stayed normal throughout, but
 `binary_sensor.solaredge_modbus_queue_backlog` had been reporting a
 false "on" (backlog) for 33+ hours. Fixed the same day with a
 compensating decrement inside the lock-wait-timeout branch itself
 (floored at 0, same pattern as the existing end-of-run decrement) -
 self-correcting regardless of which run's own decrement went missing,
 rather than waiting on a live trace to fully prove the internal HA
-concurrency mechanism first. See known_issues_and_fixes.md for full
-detail and current deployment status (implemented in project docs,
-not yet deployed to the live config or confirmed against a real future
-timeout event). `test_plan.md` Test 6.4 tracks this on the test-plan
-side.
+concurrency mechanism first. Deployed live 2026-10-20; a real lock-wait
+timeout occurred that same night and the floor returned cleanly to its
+prior resting value instead of climbing further, with the compensating
+decrement firing within 5ms of the timeout counter's own increment -
+about as direct a confirmation as live history can give once the
+script's own trace had already rolled off its 5-run retention. The
+pre-existing floor of 10 itself is unchanged (the fix stops future
+leaks, it doesn't retroactively repay the old debt), so the backlog
+sensor will keep reading a false "on" until that resting value is
+manually cleared or an HA restart resets it - a one-time cleanup, not
+a further code fix. See known_issues_and_fixes.md for full detail.
+`test_plan.md` Test 6.4 upgraded to PASS.
 
 ---
 

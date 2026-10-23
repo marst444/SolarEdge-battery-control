@@ -31,11 +31,11 @@ Layer 4B  STRONG PARTIAL PASS 🟡
     ✅ 5.1 Command Generation
     ✅ 5.2 Limit Updates
 
-Layer 4C  PARTIAL PASS 🟡
+Layer 4C  STRONG PARTIAL PASS 🟡
     ✅ 6.1 Modbus Queue Serialization
     🟡 6.2 Concurrent Write Protection
     🟡 6.3 Recovery After Failed Write
-    🟡 6.4 Queue Telemetry Integrity (bug found 2026-10-19, fixed in docs same day, pending live confirmation)
+    ✅ 6.4 Queue Telemetry Integrity (bug found 2026-10-19, fixed same day, confirmed live 2026-10-20)
 
 Layer 4D  STRONG PARTIAL PASS 🟡
     ✅ 7.1 Storage Mode Apply
@@ -43,7 +43,7 @@ Layer 4D  STRONG PARTIAL PASS 🟡
     ✅ 7.3 Discharge Limit Apply
     🟡 7.4 Mode Change Verification
     🟡 7.5 Modbus Long-Term Stability
-    🟡 7.6 Mode Command Guard
+    ✅ 7.6 Mode Command Guard
 
 System    PARTIAL PASS 🟡
     🟡 S.1 End-to-End Charge
@@ -271,7 +271,7 @@ Layer 4B = STRONG PARTIAL PASS 🟡 — Verified: 5.1, 5.2. Outstanding: none.
 
 # Layer 4C - Modbus Queue
 
-Layer 4C = PARTIAL PASS 🟡 — Verified: 6.1. Outstanding: 6.2, 6.3, 6.4 (6.4's bug is confirmed and a fix is now implemented in project docs as of 2026-10-19, but not yet deployed live or re-tested against a real timeout event).
+Layer 4C = STRONG PARTIAL PASS 🟡 — Verified: 6.1, 6.4. Outstanding: 6.2, 6.3.
 
 ## Test 6.1 Modbus Queue Serialization
 
@@ -309,21 +309,23 @@ Note (2026-10-19): this test's evidence predates the 2026-09-20 exception-safe l
 
 ## Test 6.4 Queue Telemetry Integrity
 
-**Status:** 🟡 PARTIAL PASS (bug found and fixed in project docs 2026-10-19; fix not yet deployed live or re-tested)
+**Status:** PASS ✅ (bug found 2026-10-19, fixed same day, deployed and confirmed live 2026-10-20)
 
 **Purpose:** verify `script.modbus_queue`'s own diagnostic counters (`input_number.modbus_queue_pending_count` and friends) accurately reflect queue state, since downstream watchdog sensors (`binary_sensor.solaredge_modbus_queue_backlog`) and this test plan's own evidence trail depend on them being trustworthy.
 
-**Evidence:** found during a routine behaviour review, not a targeted test - `binary_sensor.solaredge_modbus_queue_backlog` had been reporting "on" (backlog, pending_count >= 5) continuously for 33+ hours. Investigation found `modbus_queue_pending_count`'s resting floor does not return to 0 after draining: it reached 67 over 2026-10-17, was reset to 0 (most likely an HA restart, not a fix) on 2026-10-18 morning, then climbed again to 10 by 2026-10-19 and has sat there since - tracking `modbus_queue_timeout_count_total` 1:1 throughout, pointing at the lock-wait timeout branch (`wait.completed == false`) leaking an uncorrected +1. Actual command throughput was verified normal the whole time (writes dispatch and land correctly), and nothing currently consumes the backlog sensor downstream, so the blast radius so far was "this one sensor and this test's own future evidence can't be trusted at face value" rather than any control-path impact. Full write-up in known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
+**Evidence (the bug):** found during a routine behaviour review, not a targeted test - `binary_sensor.solaredge_modbus_queue_backlog` had been reporting "on" (backlog, pending_count >= 5) continuously for 33+ hours. Investigation found `modbus_queue_pending_count`'s resting floor does not return to 0 after draining: it reached 67 over 2026-10-17, was reset to 0 (most likely an HA restart, not a fix) on 2026-10-18 morning, then climbed again to 10 by 2026-10-19 and has sat there since - tracking `modbus_queue_timeout_count_total` 1:1 throughout, pointing at the lock-wait timeout branch (`wait.completed == false`) leaking an uncorrected +1. Actual command throughput was verified normal the whole time (writes dispatch and land correctly), and nothing currently consumes the backlog sensor downstream, so the blast radius so far was "this one sensor and this test's own future evidence can't be trusted at face value" rather than any control-path impact. Full write-up in known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
 
-**Fix (2026-10-19):** `solaredge_modbusqueue.yaml`'s lock-wait-timeout branch now also decrements `modbus_queue_pending_count` by 1 (floored at 0), exactly once per timeout event, making the counter self-correcting regardless of which run's own end-of-run decrement went missing. Made on the strength of the 1:1 correlation with `modbus_queue_timeout_count_total` rather than a live trace pinning down the exact HA-concurrency mechanism first (that trace still hasn't been captured).
+**Fix (2026-10-19):** `solaredge_modbusqueue.yaml`'s lock-wait-timeout branch now also decrements `modbus_queue_pending_count` by 1 (floored at 0), exactly once per timeout event, making the counter self-correcting regardless of which run's own end-of-run decrement went missing. Made on the strength of the 1:1 correlation with `modbus_queue_timeout_count_total` rather than a live trace pinning down the exact HA-concurrency mechanism first.
 
-**Result:** PARTIAL PASS - the bug is confirmed and a fix now exists in this project's docs, but the live HA instance is in Read-Only Mode so this session could not deploy it, and no future timeout event has yet been observed against the corrected code. Needs: (1) the user to deploy the corrected `solaredge_modbusqueue.yaml` to the live config, and (2) a re-test confirming the floor returns to and stays at 0 across a real lock-wait-timeout event, to upgrade this to a full PASS.
+**Evidence (live confirmation, 2026-10-20):** the user deployed the fix; a real lock-wait timeout occurred that same night (`modbus_queue_timeout_count_total` 10 -> 11 at 04:05:24.891 local). `modbus_queue_pending_count`'s history across the event: 10->11 (run A starts) -> 11->12 (run B starts, stacked) -> 12->11 at 04:05:24.896 (the compensating decrement, 5ms after the timeout counter's own bump) -> 11->10 (run B's end-of-run decrement) -> 10->11 (run C starts) -> 11->10 (run C's end-of-run decrement). Net change across the whole burst: zero - the floor returned to 10 (its pre-fix resting value) instead of climbing to 11 the way every prior timeout had. The 5ms gap between the two counters' updates is as close to a direct trace as live history can give, since `script.modbus_queue`'s own trace for this run had already rolled off its 5-run retention by the time this was checked.
+
+**Result:** PASS - the bug is confirmed, the fix is deployed live, and a real timeout event afterward confirms the counter no longer leaks. One residual item, not a defect: the pre-existing floor of 10 itself wasn't retroactively repaid (the fix only stops future leaks), so `binary_sensor.solaredge_modbus_queue_backlog` will keep reading a false "on" until that resting value is manually cleared or an HA restart resets it - a one-time cleanup action, not a re-test condition.
 
 ---
 
 # Layer 4D - SolarEdge Apply
 
-Layer 4D = STRONG PARTIAL PASS 🟡 — Verified: 7.1, 7.2, 7.3. Outstanding: 7.4, 7.5, 7.6.
+Layer 4D = STRONG PARTIAL PASS 🟡 — Verified: 7.1, 7.2, 7.3, 7.6. Outstanding: 7.4, 7.5.
 
 ## Test 7.1 Storage Mode Apply
 
@@ -379,13 +381,17 @@ Layer 4D = STRONG PARTIAL PASS 🟡 — Verified: 7.1, 7.2, 7.3. Outstanding: 7.
 
 ## Test 7.6 Mode Command Guard
 
-**Status:** PARTIAL PASS 🟡 (core behaviour verified 2026-08-27; diagnostic-sensor gap resolved 2026-08-28; case (c) still open)
+**Status:** PASS ✅ (core behaviour verified 2026-08-27; diagnostic-sensor gap resolved 2026-08-28; case (c) confirmed live 2026-10-22)
 
 **Purpose:** verify the mode-select command and 15-minute timeout reset are skipped only when effective mode, live command mode, and configured default mode all agree on Maximize Self Consumption - and that the full command sequence is sent for any real transition or guard-precondition mismatch.
 
 **Evidence:** trace `83276d1d92e8bb49a69e2f61c0082c9f` (2026-08-27) confirmed the skip branch firing correctly (only limit scripts ran, mode-select/timeout skipped) with `mode_guard_active` computed from live state, not a cache. 24h of command-mode history showed 7 real transitions, each correctly triggering the full sequence. One anomaly noted: a 12s mode flip with no corresponding `effective_storage_mode` change - likely a manual test during the evaluation session, not a control-loop issue; left unexplained but not treated as a guard defect. The standalone diagnostic `sensor.battery_mode_command_guard` was initially missing from the live config (file not yet copied) - resolved 2026-08-28, now reads "guarded"/"active" correctly.
 
-**Still open - case (c):** guard should stay inactive (resending the mode command) if the inverter's configured default mode isn't Maximize Self Consumption. Checked 2026-10-08 via 30 days of `select.solaredge_i1_storage_default_mode` history: it has never once deviated from "Maximize Self Consumption" (only brief "unavailable" blips during the twice-daily connectivity dropout, always recovering to MSC). This cannot be caught by waiting - it needs someone to deliberately set the default mode away from MSC on the live inverter, which is a live-intervention action needing explicit user approval not yet given.
+**Case (c), confirmed live 2026-10-22:** guard should stay inactive (resending the mode command) if the inverter's configured default mode isn't Maximize Self Consumption. 30 days of history (checked 2026-10-08) had shown `select.solaredge_i1_storage_default_mode` never once deviating from MSC, so this needed a deliberate live change - done with the user's explicit approval. The user set `select.solaredge_i1_storage_default_mode` to "Solar Power Only (Off)" via the entity's real control (not a Developer Tools state override) at 10:08:51 local; the SolarEdge integration's live `select.solaredge_i1_storage_command_mode` changed to the same value at the same instant (10:08:51.52, 2ms apart - the write evidently lands on both registers together on this installation, not just the configured fallback). `sensor.battery_mode_command_guard` flipped from "guarded" to "active" immediately (pure template, reacted within 2ms).
+
+The next natural trigger (`input_number.effective_discharge_limit` ticking 1→52 at 10:15:01 local, run `9d6c21d44d77ee8e0aeb55ccecfb67da`) confirmed the guard logic directly from its own trace: `mode_guard_active: false` (both `inverter_command_mode` and `inverter_default_mode` read "Solar Power Only (Off)", not MSC), `if: not mode_guard_active` resolved `true`, and the full "then" sequence ran - `script.set_value_storage_command_timeout15m`, then (via the `choose:` block matching `effective_mode == maximize_self_consumption`) `script.maximize_self_consumption_script`, then both limit scripts. Nothing was skipped. `select.solaredge_i1_storage_command_mode` landed back on "Maximize Self Consumption" at 10:16:19 (normal ~69s queue lag), and `input_number.mode_command_skipped_count_total`/`_today` stayed at 139/26 throughout - unchanged from immediately before the test, confirming the skip counter correctly did not increment while the guard was inactive.
+
+**Result:** PASS - all three guard preconditions (effective mode, live command mode, configured default mode) are now independently confirmed live: the skip path (2026-08-27), real mode transitions (24h history, same date), and now the guard correctly staying inactive and self-correcting the live mode when the configured default mode alone disagrees (2026-10-22), even though both the live and default mode happened to change together here. The guard never silently ceded control to an unexpected fallback - it caught the mismatch on its very next cycle and resent the full command.
 
 ---
 
