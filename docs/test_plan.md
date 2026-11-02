@@ -7,9 +7,9 @@ This document verifies the SolarEdge Battery Control package layer by layer. A l
 # Current Status
 
 ```text
-Layer 1   STRONG PARTIAL PASS 🟡
+Layer 1   PARTIAL PASS 🟡
     ✅ 1.1 Minimum SOC Protection
-    ✅ 1.2 Maximum SOC Protection
+    ❌ 1.2 Maximum SOC Protection (downgraded 2026-11-01 - charge-stop doesn't function under live PV; mode-switch fix implemented 2026-11-02, not yet verified live)
     🟡 1.3 Recovery Mode
 
 Layer 2   PARTIAL PASS 🟡 (strong)
@@ -70,7 +70,7 @@ Open observation: dynamic charge/discharge limits (Layer 4A "dynamic" helpers) a
 
 # Layer 1 - Safety and Watchdog
 
-Layer 1 = STRONG PARTIAL PASS 🟡 — Verified: 1.1, 1.2. Partial: 1.3.
+Layer 1 = PARTIAL PASS 🟡 — Verified: 1.1. Partial: 1.3. Failed: 1.2 (charge-stop doesn't function under live PV; see known_issues_and_fixes.md).
 
 ## Test 1.1 Minimum SOC Protection
 
@@ -84,13 +84,36 @@ Layer 1 = STRONG PARTIAL PASS 🟡 — Verified: 1.1, 1.2. Partial: 1.3.
 
 ## Test 1.2 Maximum SOC Protection
 
-**Status:** PASS ✅ (2026-08-06)
+**Status:** FAIL ❌ (downgraded 2026-11-01, from PASS 2026-08-06 - see Updates below; mode-switch fix implemented 2026-11-02, not yet verified live)
 
-**Purpose:** verify charging is blocked when SOC exceeds configured maximum SOC (High SOC Hold with hysteresis: enters at SOC ≥ Max, exits at SOC ≤ Max - 3%).
+**Purpose:** verify charging is blocked when SOC exceeds configured maximum SOC (High SOC Hold with hysteresis: enters at SOC ≥ Max - 1%, exits at SOC ≤ Max - 3%).
 
-**Evidence:** Enter - SOC 54.44% ≥ max 40.00% → High SOC Hold on, charge limit 0W, discharge limit 53W, self-consumption mode preserved. Exit - max raised to 80.00% → Hold off, charge limit 5000W, discharge limit 7W, normal control restored. The old forced export-discharge strategy has been replaced by this hysteresis-based hold and both transitions were verified.
+**Original evidence (2026-08-06):** Enter - SOC 54.44% ≥ max 40.00% → High SOC Hold on, charge limit 0W, discharge limit 53W, self-consumption mode preserved. Exit - max raised to 80.00% → Hold off, charge limit 5000W, discharge limit 7W, normal control restored. The old forced export-discharge strategy has been replaced by this hysteresis-based hold and both transitions were verified. At the time this was recorded as a full PASS, with a note (quoted below) that the margin itself might need tightening - neither the note nor the original test actually exercised the Hold while meaningful PV surplus was available, which turned out to be exactly the condition that breaks it.
 
-**Note:** on the same day, SOC was observed continuing to rise past 90% to 94.44% before the charge limit zeroed out (quantization/apply latency). Proposed fix logged: enter Hold at Max - 1% instead of exactly at Max, to compensate. Not yet implemented/re-tested.
+**Original note (now stale/superseded - kept for history):** "on the same day, SOC was observed continuing to rise past 90% to 94.44% before the charge limit zeroed out (quantization/apply latency). Proposed fix logged: enter Hold at Max - 1% instead of exactly at Max, to compensate. Not yet implemented/re-tested." This is now confirmed stale on two counts: the `soc_max - 1` entry margin **is** already implemented live (`safety_limits_and_override.yaml`'s `battery_high_soc_hold` automation, confirmed by direct read 2026-11-01), and - more importantly - the margin turns out not to be the actual problem (see Update below). "Quantization/apply latency" undersold what's actually happening: it isn't a brief latency before the limit "catches up," the limit is confirmed held at 0 throughout and the battery still charges to 100% regardless.
+
+### Update 2026-11-01 - downgraded to FAIL: charge limit = 0 confirmed held throughout, battery still charges to 100% anyway
+
+Investigated in response to the user's report "the SOC now recurrently goes over 90%." 10 days of history (2026-10-22 to 2026-11-01) show 11 regular daily Hold-engage cycles, every one engaging at exactly SOC = 90.00% (not ~89%, despite the coded `-1` margin - most likely SOC-sensor quantization skipping straight from <89% to 90% in one sample). In 10 of the 11 cycles, SOC continued climbing all the way to 100.00% after Hold engaged, not a small quantization overshoot.
+
+Pulled `number.solaredge_i1_storage_charge_limit` (the live inverter register) directly for the two clearest windows:
+
+- 2026-10-23, 10:10-16:45 (6h45m): the register shows **exactly one state for the entire window - `0`.** Never rewritten, never reverted. SOC climbed from 87.78% to 100.00% regardless.
+- 2026-11-01 (live at time of writing): register dropped to `0` at 10:54:48, the same moment Hold engaged at SOC 90.00%, and hasn't moved since. SOC climbed from 90.0% to 96.67% over the next 74+ minutes anyway. `effective_storage_mode` and the live `select.solaredge_i1_storage_command_mode` both stayed on Maximize Self Consumption throughout - no mode flapping, no fallback-timeout lapse to blame.
+
+This rules out a silent write-drop (the register demonstrably holds at the commanded 0, confirmed, no reversion - unlike the Critical-Recovery Charge Limit issue below) and rules out a mode-guard/timeout issue (mode never left MSC). It directly contradicts this test's own purpose statement and README.md's documented assumption that charge limit = 0 stops charging while Maximize Self Consumption remains active. Full write-up: known_issues_and_fixes.md - High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active.
+
+**Result:** FAIL - the test's stated purpose ("verify charging is blocked when SOC exceeds configured maximum SOC") is confirmed false under live PV conditions in 10 of the last 11 observed cycles. The hysteresis/exit side (SOC ≤ Max - 3% → Hold off, normal control restored) is not itself contradicted by this evidence and may still work as designed - this failure is specifically about the enter/charge-block side.
+
+### Update 2026-11-02 - mode-switch fix implemented (High SOC Hold now uses Discharge to Minimize Import), not yet verified live
+
+Root cause understood more precisely before this fix: Maximize Self Consumption's own internal self-consumption logic evidently overrides the charge-limit register whenever PV surplus is available, regardless of what the register is set to - no value of `charge_limit` alone can make this mode actually stop charging. Rather than continuing to rely on MSC plus a register value, High SOC Hold now switches `effective_storage_mode` itself to a different native SolarEdge command mode, `discharge_to_minimize_import`, with both charge and discharge limits pinned to 0 (previously: `maximize_self_consumption`, charge limit 0, dynamic discharge limit).
+
+Three files changed: `batterycontrol_helpers.yaml` (added `discharge_to_minimize_import` as a valid `effective_storage_mode` option - it wasn't selectable before), `apply_effective_battery_control.yaml` (added the dispatch branch calling `script.discharge_to_minimize_import_script`, which already existed but was never called by anything), and `safety_limits_and_override.yaml` (the HIGH SOC HOLD branch itself). Full write-up: known_issues_and_fixes.md - High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Update 2026-11-02 (later same day).
+
+**Key open risk, carried into this test rather than resolved by it:** whether SolarEdge's "Discharge to Minimize Import" mode actually blocks charging from PV surplus the way "Solar Power Only" is explicitly documented to (README.md only describes this mode's discharge behaviour, not its charging behaviour) is unconfirmed. If the next live Hold cycle still shows SOC climbing past the ceiling under this mode, the documented one-line fallback is to switch to `solar_power_only` instead in the same branch - see known_issues_and_fixes.md for the fallback plan. This test should be re-run against the next live Hold cycle after deployment, checking specifically: (a) SOC stops climbing once Hold engages (not just that the registers read 0), and (b) the battery still discharges to offset house load without exporting, confirming the mode is behaving as documented rather than as idle.
+
+**Result:** still FAIL pending live re-verification - the fix is implemented in project docs only. Not upgraded to PARTIAL PASS or PASS until a real Hold cycle is observed live under the new mode.
 
 ---
 
@@ -135,15 +158,13 @@ Layer 2 = PARTIAL PASS 🟡 (strong) — Verified: 2.1, 2.2. Outstanding: 2.3 (t
 
 **Purpose:** verify `input_number.soc_target` follows the smoothed EMHASS battery SOC forecast (`sensor.soc_batt_forecast_smooth`) and stays within min/max SOC.
 
-**Evidence:** Two separated live observations (09:31 and 21:28 on 2026-08-06) both showed Target tracking Smooth within ±0.5-1.6 points, Smooth tracking raw MPC SOC closely, 192 forecast entries present, and Target always within the 20-90% configured range. Chain confirmed: MPC SOC forecast → `soc_batt_forecast_smooth` → `soc_target`. (An earlier draft of this test referenced a wrong entity, `sensor.soc_forecast_smooth`, which read `unknown` - corrected to the real entity above.)
-
-**Update 2026-08-27:** while investigating the midday charge/discharge oscillation (see roadmap.md), `soc_target`/`soc_batt_forecast_smooth` were observed swinging 10-40 points between reads only 1-2 minutes apart. This doesn't contradict the chain verified above (it still faithfully follows whatever the latest MPC run publishes) - it shows the underlying MPC plan itself is volatile run-to-run, which this test doesn't cover. Logged as a follow-up, not a regression.
+**Evidence:** Verified live 2026-08-06 - `soc_target` tracked `soc_batt_forecast_smooth` within ±0.5-1.6 points, which tracked raw MPC SOC closely, staying within the 20-90% configured range (chain: MPC SOC forecast → `soc_batt_forecast_smooth` → `soc_target`). Update 2026-08-27: observed the MPC plan itself swinging 10-40 points run-to-run - doesn't contradict the chain (still followed faithfully), logged as a separate follow-up in roadmap.md, not a regression.
 
 ---
 
 ## Test 2.3 Dynamic Charge / Discharge Power
 
-**Status:** PARTIAL PASS 🟡 (upgraded 2026-10-08; 10 of 12 checklist items closed)
+**Status:** PARTIAL PASS 🟡 (upgraded 2026-10-08; 10 of 12 checklist items closed; formula widened 2026-11-02, not yet re-verified)
 
 **Purpose:** verify `sensor.dynamic_storage_charge_limit`/`_discharge_limit` are calculated correctly from the battery SOC forecast.
 
@@ -157,6 +178,10 @@ Layer 2 = PARTIAL PASS 🟡 (strong) — Verified: 2.1, 2.2. Outstanding: 2.3 (t
 - *Last Charge/Discharge Limit helpers still in use?* `last_charge_limit`/`last_discharge_limit` are confirmed alive - they track `dynamic_charge_limit`/`dynamic_discharge_limit` in exact lockstep, every tick, across both episodes above. Not confirmed: whether anything downstream actually *reads* them for a fallback decision. `ha_search` found only the writer automations (`automation.update_last_charge_limit`/`_discharge_limit`), no reader - but 60 YAML-defined automations and 39 YAML-defined scripts couldn't be scanned (this HA instance's config-fetch REST API doesn't expose YAML-defined automations/scripts, confirmed by `ha_config_get_automation` 404-ing on the writer automations themselves despite them being listed as existing).
 - *Fallback to last_* when forecast is missing:* only two sub-5-second sensor blips found in 30 days (2026-09-29, consistent with the known twice-daily connectivity blip) - too brief to exercise a real "forecast missing" condition. During those blips the helpers simply held their existing value (how `input_number` entities behave natively, not necessarily dedicated fallback logic). No sustained EMHASS outage observed; YAML source not inspectable via this API to confirm intent either way.
 
+### Update 2026-11-02 - formula widened to a 3-point weighted lookahead, not yet re-verified
+
+Found while investigating a real price-spike discharge under-delivering against EMHASS's own multi-step power plan (today's `batt_fc` peaked at 2136W while the applied dynamic discharge limit only reached 932W): both sensors previously computed their target from only the single next EMHASS forecast point (`forecast[0]`), which naturally decays toward zero as SOC approaches that one checkpoint regardless of whether the underlying plan wants sustained discharge for 30-60+ minutes. Changed to a weighted blend of the next three future points (0.5/0.3/0.2, reusing `sensor.soc_batt_forecast_smooth`'s proven weighting) - see known_issues_and_fixes.md (Dynamic Discharge Limit Under-Delivers vs. EMHASS Plan During Sustained Price Spikes) and architecture.md (Layer 2) for the full rationale. None of the evidence above (gathered under the old single-point formula) has been re-collected against the new one yet - this item stays PARTIAL PASS, not upgraded, until a real sustained-discharge episode is observed live under the new formula.
+
 ---
 
 # Layer 3 - Grid Constraints
@@ -169,9 +194,7 @@ Layer 3 = PARTIAL PASS 🟡 (strong) — Verified: 3.1. Outstanding: 3.2.
 
 **Purpose:** verify export is curtailed when export price goes negative.
 
-**Evidence:** 2026-07-30 steady-state check (price positive, all curtailment helpers off) was followed by a real multi-episode overnight event on 2026-10-06: `sensor.total_export_price` flipped negative/positive 7 times between 00:00-08:00, and `negative_price_active`/`grid_export_blocked`/`switch.solaredge_i1_negative_site_limit` tracked all 7 cycles within 1-2 price-sensor update intervals (e.g. 00:00 negative→on, 01:01 positive→off, ... 07:00→on, 08:00→off). Two brief "unavailable" blips on the switch (Modbus reconnects) self-healed via the automation's 30s periodic re-assertion. No queue backlog or missed toggle despite `mode: single`.
-
-Note: none of these episodes coincided with PV production (all pre-sunrise), so the discharge-block step fired but had nothing to actually block, and the site limit's export-curtailing *effect* was not exercised - that gap now lives in Test 3.2.
+**Evidence:** Confirmed live 2026-10-06: a 7-cycle overnight negative/positive price event (`sensor.total_export_price` flipping between 00:00-08:00) tracked correctly by `negative_price_active`/`grid_export_blocked`/`switch.solaredge_i1_negative_site_limit` within 1-2 price-sensor update intervals each time, with two brief switch "unavailable" blips (Modbus reconnects) self-healing via the automation's 30s periodic re-assertion, and no queue backlog or missed toggle. (All cycles were pre-sunrise/zero-PV, so the discharge-block step fired but had nothing to block, and the site limit's export-curtailing *effect* itself wasn't exercised - that gap carries into Test 3.2.)
 
 ---
 
@@ -206,7 +229,7 @@ Layer 4A = STRONG PARTIAL PASS 🟡 (upgraded 2026-10-07) — Verified: 4A.1, 4A
 
 **Purpose:** verify requested charging behaviour (`emhass_requested_storage_mode`/`_charge_limit`) follows forecast and SOC conditions.
 
-**Evidence:** the 2026-07-30 check caught the engine at SOC≈target (41.11% vs 41.10%, maintain-zone) - charge path under real charging-required conditions was explicitly left unverified. Closed 2026-10-07 using the 2026-10-06 12:15-15:45 `charge_from_solar_and_grid` episode: 13 ticks over 3.5 hours, every one with SOC < Target (gap 5-15 points), a charge request scaled to the gap (256W-1059W, shrinking as SOC approached target), and discharge blocked at 0W throughout.
+**Evidence:** Closed 2026-10-07 using a 2026-10-06 `charge_from_solar_and_grid` episode (13 ticks over 3.5 hours): SOC consistently below target (gap 5-15 points), charge request scaled correctly to the gap (256W-1059W, shrinking as SOC approached target), discharge blocked at 0W throughout. (The original 2026-07-30 check had only caught the engine at SOC≈target, leaving real charging conditions unverified.)
 
 ---
 
@@ -216,7 +239,7 @@ Layer 4A = STRONG PARTIAL PASS 🟡 (upgraded 2026-10-07) — Verified: 4A.1, 4A
 
 **Purpose:** verify requested discharge behaviour follows forecast and SOC conditions.
 
-**Evidence:** the 2026-07-30 check caught the engine only 1.6 points above target (barely outside deadband, 0W discharge). Closed 2026-10-07 using the 2026-10-04 17:00-19:00 `discharge_to_maximize_export` episode: 9 ticks over 2 hours, SOC 5-25 points above target throughout, charge blocked at 0W, discharge scaled with the gap (11W-1627W).
+**Evidence:** Closed 2026-10-07 using a 2026-10-04 `discharge_to_maximize_export` episode (9 ticks over 2 hours): SOC consistently 5-25 points above target, discharge scaled correctly with the gap (11W-1627W), charge blocked at 0W throughout. (The original 2026-07-30 check had only caught the engine 1.6 points above target, barely outside deadband.)
 
 ---
 
@@ -313,11 +336,7 @@ Note (2026-10-19): this test's evidence predates the 2026-09-20 exception-safe l
 
 **Purpose:** verify `script.modbus_queue`'s own diagnostic counters (`input_number.modbus_queue_pending_count` and friends) accurately reflect queue state, since downstream watchdog sensors (`binary_sensor.solaredge_modbus_queue_backlog`) and this test plan's own evidence trail depend on them being trustworthy.
 
-**Evidence (the bug):** found during a routine behaviour review, not a targeted test - `binary_sensor.solaredge_modbus_queue_backlog` had been reporting "on" (backlog, pending_count >= 5) continuously for 33+ hours. Investigation found `modbus_queue_pending_count`'s resting floor does not return to 0 after draining: it reached 67 over 2026-10-17, was reset to 0 (most likely an HA restart, not a fix) on 2026-10-18 morning, then climbed again to 10 by 2026-10-19 and has sat there since - tracking `modbus_queue_timeout_count_total` 1:1 throughout, pointing at the lock-wait timeout branch (`wait.completed == false`) leaking an uncorrected +1. Actual command throughput was verified normal the whole time (writes dispatch and land correctly), and nothing currently consumes the backlog sensor downstream, so the blast radius so far was "this one sensor and this test's own future evidence can't be trusted at face value" rather than any control-path impact. Full write-up in known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
-
-**Fix (2026-10-19):** `solaredge_modbusqueue.yaml`'s lock-wait-timeout branch now also decrements `modbus_queue_pending_count` by 1 (floored at 0), exactly once per timeout event, making the counter self-correcting regardless of which run's own end-of-run decrement went missing. Made on the strength of the 1:1 correlation with `modbus_queue_timeout_count_total` rather than a live trace pinning down the exact HA-concurrency mechanism first.
-
-**Evidence (live confirmation, 2026-10-20):** the user deployed the fix; a real lock-wait timeout occurred that same night (`modbus_queue_timeout_count_total` 10 -> 11 at 04:05:24.891 local). `modbus_queue_pending_count`'s history across the event: 10->11 (run A starts) -> 11->12 (run B starts, stacked) -> 12->11 at 04:05:24.896 (the compensating decrement, 5ms after the timeout counter's own bump) -> 11->10 (run B's end-of-run decrement) -> 10->11 (run C starts) -> 11->10 (run C's end-of-run decrement). Net change across the whole burst: zero - the floor returned to 10 (its pre-fix resting value) instead of climbing to 11 the way every prior timeout had. The 5ms gap between the two counters' updates is as close to a direct trace as live history can give, since `script.modbus_queue`'s own trace for this run had already rolled off its 5-run retention by the time this was checked.
+**Evidence:** Bug found 2026-10-19 during a routine review: `modbus_queue_pending_count`'s resting floor wasn't returning to 0 after draining (climbed to 10, tracking `modbus_queue_timeout_count_total` 1:1), caused by the lock-wait-timeout branch leaking an uncorrected +1; command throughput itself was unaffected, only this diagnostic counter (and this test's own evidence trail) was at risk. Fixed same day in `solaredge_modbusqueue.yaml` (the timeout branch now also decrements the counter, floored at 0). Fix confirmed live 2026-10-20: a real lock-wait timeout occurred and the counter's net change across the burst was zero, returning to its pre-fix floor of 10 instead of climbing further. Full write-up: known_issues_and_fixes.md - Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout.
 
 **Result:** PASS - the bug is confirmed, the fix is deployed live, and a real timeout event afterward confirms the counter no longer leaks. One residual item, not a defect: the pre-existing floor of 10 itself wasn't retroactively repaid (the fix only stops future leaks), so `binary_sensor.solaredge_modbus_queue_backlog` will keep reading a false "on" until that resting value is manually cleared or an HA restart resets it - a one-time cleanup action, not a re-test condition.
 
@@ -343,7 +362,9 @@ Layer 4D = STRONG PARTIAL PASS 🟡 — Verified: 7.1, 7.2, 7.3, 7.6. Outstandin
 
 **Purpose:** verify charge limit commands are applied to SolarEdge.
 
-**Evidence:** zero-limit path confirmed 2026-07-30. Non-zero path closed 2026-08-28: 21 sampled non-zero `effective_charge_limit` values (20W to 5000W, spanning small/mid-range/ceiling values) over a 2-day window, every one propagated to `number.solaredge_i1_storage_charge_limit` within ~15-55s with no mismatches or stale values.
+**Evidence:** Verified 2026-08-28: both the zero-limit path (2026-07-30) and non-zero path confirmed - 21 sampled non-zero `effective_charge_limit` values (20W-5000W, spanning small/mid-range/ceiling) all propagated to `number.solaredge_i1_storage_charge_limit` within ~15-55s with no mismatches or stale values.
+
+Note (2026-11-01): this test confirms the *write* lands on the register (re-confirmed independently by the Test 1.2 investigation, which found the register held at the commanded 0 for 6h45m+ with zero drift) - not that the inverter's *behavior* then matches the written value. See Test 1.2, where a correctly-written charge limit of 0 is still not obeyed.
 
 ---
 
@@ -365,6 +386,8 @@ Layer 4D = STRONG PARTIAL PASS 🟡 — Verified: 7.1, 7.2, 7.3, 7.6. Outstandin
 
 **Evidence:** 2026-08-28, 7-day history cross-reference confirmed `maximize_self_consumption`, `discharge_to_maximize_export`, and `charge_from_solar_and_grid` all apply correctly (each observed multiple times). `solar_power_only` and `charge_from_clipped_solar` hadn't occurred naturally in that window. **Update 2026-10-06:** `solar_power_only` occurred twice more in a fresh 10-day check (2026-09-26, 2026-09-30), both times applying correctly within 1-2 minutes - upgraded to 4 of 5. `charge_from_clipped_solar` still has not occurred naturally in any window checked - pure coverage gap, not a known defect.
 
+**Note (2026-11-02):** a sixth mode, `discharge_to_minimize_import`, became live-reachable for the first time today (High SOC Hold's new mode-switch fix - see Test 1.2). Not yet observed applying live; folds into this test's open coverage once it does.
+
 ---
 
 ## Test 7.5 Modbus Long-Term Stability
@@ -385,13 +408,13 @@ Layer 4D = STRONG PARTIAL PASS 🟡 — Verified: 7.1, 7.2, 7.3, 7.6. Outstandin
 
 **Purpose:** verify the mode-select command and 15-minute timeout reset are skipped only when effective mode, live command mode, and configured default mode all agree on Maximize Self Consumption - and that the full command sequence is sent for any real transition or guard-precondition mismatch.
 
-**Evidence:** trace `83276d1d92e8bb49a69e2f61c0082c9f` (2026-08-27) confirmed the skip branch firing correctly (only limit scripts ran, mode-select/timeout skipped) with `mode_guard_active` computed from live state, not a cache. 24h of command-mode history showed 7 real transitions, each correctly triggering the full sequence. One anomaly noted: a 12s mode flip with no corresponding `effective_storage_mode` change - likely a manual test during the evaluation session, not a control-loop issue; left unexplained but not treated as a guard defect. The standalone diagnostic `sensor.battery_mode_command_guard` was initially missing from the live config (file not yet copied) - resolved 2026-08-28, now reads "guarded"/"active" correctly.
+**Evidence:** Core behaviour verified 2026-08-27 (trace `83276d1d92e8bb49a69e2f61c0082c9f`): the skip branch fires correctly from live state (not a cache), and 24h of command-mode history showed 7 real transitions each correctly triggering the full command sequence (one unexplained 12s mode flip with no corresponding `effective_storage_mode` change was noted, likely a manual test, not treated as a guard defect). The diagnostic sensor `sensor.battery_mode_command_guard` (initially missing from live config) was confirmed working 2026-08-28. Case (c) - guard correctly staying inactive and self-correcting when the configured default mode alone disagrees with MSC - confirmed live 2026-10-22 via a deliberate, user-approved change to `select.solaredge_i1_storage_default_mode`: the guard sensor flipped to "active" within 2ms, and the next trigger's own trace confirmed the full command sequence ran (mode-select, timeout-refresh, both limit scripts) with the skip counter correctly unchanged.
 
-**Case (c), confirmed live 2026-10-22:** guard should stay inactive (resending the mode command) if the inverter's configured default mode isn't Maximize Self Consumption. 30 days of history (checked 2026-10-08) had shown `select.solaredge_i1_storage_default_mode` never once deviating from MSC, so this needed a deliberate live change - done with the user's explicit approval. The user set `select.solaredge_i1_storage_default_mode` to "Solar Power Only (Off)" via the entity's real control (not a Developer Tools state override) at 10:08:51 local; the SolarEdge integration's live `select.solaredge_i1_storage_command_mode` changed to the same value at the same instant (10:08:51.52, 2ms apart - the write evidently lands on both registers together on this installation, not just the configured fallback). `sensor.battery_mode_command_guard` flipped from "guarded" to "active" immediately (pure template, reacted within 2ms).
+**Result:** PASS - all three guard preconditions (effective mode, live command mode, configured default mode) are independently confirmed live across the three evidence points above; the guard never silently ceded control to an unexpected fallback.
 
-The next natural trigger (`input_number.effective_discharge_limit` ticking 1→52 at 10:15:01 local, run `9d6c21d44d77ee8e0aeb55ccecfb67da`) confirmed the guard logic directly from its own trace: `mode_guard_active: false` (both `inverter_command_mode` and `inverter_default_mode` read "Solar Power Only (Off)", not MSC), `if: not mode_guard_active` resolved `true`, and the full "then" sequence ran - `script.set_value_storage_command_timeout15m`, then (via the `choose:` block matching `effective_mode == maximize_self_consumption`) `script.maximize_self_consumption_script`, then both limit scripts. Nothing was skipped. `select.solaredge_i1_storage_command_mode` landed back on "Maximize Self Consumption" at 10:16:19 (normal ~69s queue lag), and `input_number.mode_command_skipped_count_total`/`_today` stayed at 139/26 throughout - unchanged from immediately before the test, confirming the skip counter correctly did not increment while the guard was inactive.
+**Caveat (2026-11-01, not a regression of this PASS):** a routine Modbus reconnect during a Hold window was found to reset `number.solaredge_i1_storage_charge_limit`/`_discharge_limit` and `_command_timeout` outside of this project's control. A same-day test disconfirmed the first-pass theory that skipping the timeout-refresh script while guarded causes this. This is tracked as its own open issue, not a reopening of this test - see known_issues_and_fixes.md, High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Updates 2026-11-01.
 
-**Result:** PASS - all three guard preconditions (effective mode, live command mode, configured default mode) are now independently confirmed live: the skip path (2026-08-27), real mode transitions (24h history, same date), and now the guard correctly staying inactive and self-correcting the live mode when the configured default mode alone disagrees (2026-10-22), even though both the live and default mode happened to change together here. The guard never silently ceded control to an unexpected fallback - it caught the mismatch on its very next cycle and resent the full command.
+**Note (2026-11-02):** following the Test 1.2 mode-switch fix, the guard will now read "active" (not "guarded") throughout every future Hold period, since Hold no longer requests `maximize_self_consumption`. Expected consequence of that fix, not a guard defect.
 
 ---
 

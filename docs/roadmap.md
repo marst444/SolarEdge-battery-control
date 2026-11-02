@@ -29,247 +29,11 @@ Evaluate moving these values into dedicated helpers so that they can be adjusted
 
 ### Improve EMHASS Optimisation Failure Handling
 
-Several automations rely on:
+Investigated whether EMHASS optimisation failures should automatically trigger fallback planning rather than only updating watchdog status (the automations in question rely on `sensor.mpc_pv_optim_status`/`sensor.dh_pv_optim_status`). No real optimisation failure occurred to observe directly, but tracing confirmed: the watchdogs themselves (`EMHASS_watchdog_dayahead_missing`/`_mpc_stalled`) are notification-only; a separate automation (`EMHASS_addon_watchdog_auto_restart`) already auto-restarts the EMHASS addon after 90 minutes of MPC stall; and Layer 4A (`battery_forecast_control.yaml`) already freezes the last-computed plan rather than recalculating from stale/zeroed data when EMHASS health is bad - functionally equivalent to serving a cached plan. The one remaining gap (EMHASS itself serving a degraded/cached plan internally on a failed optimisation) was confirmed genuinely out of scope - it would require a change inside EMHASS's own code, not this HA package.
 
-```text
-sensor.mpc_pv_optim_status
-sensor.dh_pv_optim_status
-```
+Per the user's decision, an escalation was added 2026-10-10: if MPC stays stalled for 45 minutes (the same threshold as the existing stall notification), the system now actively forces `maximize_self_consumption` with 3300W charge/discharge limits, folded into the existing `EMHASS_watchdog_mpc_stalled` automation, so the frozen pre-failure plan doesn't go stale indefinitely. The frozen/fallback plan was also confirmed to survive both an EMHASS addon restart and a full HA core restart (via HA's normal `input_select`/`input_number` restore-state behaviour). The escalation was confirmed live end-to-end on 2026-10-11 against a real extended MPC stall - verified at the HA-entity, Layer 1 passthrough, and physical-inverter Modbus-register levels, with the redundant-write guard and other automations (e.g. EV discharge limiting) behaving correctly alongside it.
 
-Investigate whether optimisation failures should automatically trigger fallback planning behaviour rather than only updating watchdog status.
-
-Update 2026-09-22: Layer 4A's own fallback behaviour (what
-`battery_forecast_control.yaml` does when these are missing) was fixed
-the same day after a real 8+ hour EMHASS outage caused a repeated
-charge/discharge oscillation - see Resolved section below and
-known_issues_and_fixes.md - EMHASS Outage Fallback Guard. Still open
-here: the addon-side question of whether EMHASS itself should serve a
-degraded/cached plan when a fresh optimisation fails, rather than simply
-not publishing.
-
-### Update 2026-10-08 - Both halves of the original question now answered; item narrows to one confirmed-out-of-scope question
-
-No optimisation failure has actually occurred to observe directly:
-`sensor.mpc_pv_optim_status`/`sensor.dh_pv_optim_status` both held
-"Optimal" with zero state changes across the last 30 days.
-Investigation instead worked from live automation traces plus the
-actual current YAML (`ha_config_get_automation` hits the same
-YAML-automations-not-REST-visible limitation documented elsewhere in
-this project for these two automations specifically - worked around by
-reading `watchdog_automations.yaml` directly, which is authoritative).
-
-**The original question - do these two watchdogs only update status, or
-also trigger fallback behaviour - is now fully answered, in two parts:**
-
-1. **At Layer 1 (the watchdogs themselves): confirmed notification-only,
-   exactly as the item suspected.** `EMHASS_watchdog_dayahead_missing`
-   and `EMHASS_watchdog_mpc_stalled` (both `time_pattern: /15`, both seen
-   firing and correctly evaluating `failed_conditions` in current traces
-   - consistent with the 30-day "no failure" history) each do nothing but
-   `persistent_notification.create` + `notify.mobile_app_fp3_ms`. No
-   fallback planning action lives in either one.
-
-2. **But Layer 1 isn't the whole picture - a third, adjacent automation in
-   the same file already goes beyond notification.**
-   `EMHASS_addon_watchdog_auto_restart` escalates after 90 minutes of MPC
-   stall: calls `hassio.addon_restart` on the EMHASS addon (rate-limited
-   to once/hour), stamping `input_datetime.emhass_addon_last_restart_attempt`
-   and notifying either way. This is a real automatic recovery action
-   triggered by the same stall condition - not "fallback planning" in the
-   sense of serving a degraded plan, but it is already more than "only
-   updating watchdog status." (This automation predates this
-   investigation - see known_issues_and_fixes.md, EMHASS Outage Fallback
-   Guard - but hadn't previously been connected back to this specific
-   roadmap item.)
-
-3. **And the consumer side (Layer 4A) already does the fallback-planning
-   equivalent, confirmed by re-reading `battery_forecast_control.yaml`'s
-   2026-09-22 guard with this question in mind:** when
-   `sensor.emhass_health` reads "MPC stalled"/"MPC problem", the entire
-   15-minute decision run is skipped - which means
-   `emhass_requested_storage_mode`/`_charge_limit`/`_discharge_limit`
-   simply hold their last-computed values rather than being recalculated
-   from stale/zeroed EMHASS data. That *is* "serve the last known-good
-   plan instead of a bad one," functionally the fallback behaviour the
-   item asked about, just implemented as "don't overwrite the last plan"
-   rather than "compute a new degraded one."
-
-**What's left, confirmed genuinely out of scope here:** whether EMHASS
-*itself* (the add-on/core software) should serve a degraded/cached plan
-internally on a failed optimisation, rather than simply not publishing a
-fresh one. Checked via `ha_get_app` against the installed add-on
-(v0.18.4, up to date) - its exposed configuration options are entirely
-connection/data-path/forecast-provider settings (hass_url, data_path,
-solcast/solar.forecast params, InfluxDB/VictoriaMetrics credentials);
-nothing touches failure/fallback behaviour. This would require a change
-inside EMHASS's own code, not anything adjustable from this HA package -
-genuinely out of scope for this project, not just unexplored.
-
-**Recommend closing this item** as resolved-to-the-extent-actionable-here:
-the Layer 4A guard (2026-09-22) and the addon auto-restart escalation
-together already give this system fallback-on-failure behaviour at both
-the "use last known good plan" and "try to recover the data source"
-levels; the one remaining piece (EMHASS-core degraded-plan serving) is an
-upstream feature request, not a task for this project's YAML.
-
-### Update 2026-10-08 (later same day) - How long the fallback plan survives, checked against a real restart
-
-Follow-up question: does the frozen "last requested" plan hold only until
-something restarts, after which it would reset/fall through to the
-inverter's own native default (`maximize_self_consumption`)? Checked
-against a real HA core restart that already happened
-(known_issues_and_fixes.md's 2026-10-07 ~12:00 UTC HA update/restart).
-History for `input_select.emhass_requested_storage_mode` and
-`input_number.emhass_requested_charge_limit`/`_discharge_limit` across
-that restart (confirmed by `sensor.emhass_health` showing the expected
-`MPC problem`/`RUNNING` disruption at 12:14-12:20 UTC) shows **zero
-value changes across the restart** - each entity held its pre-restart
-value straight through. This matches Home Assistant's standard
-`input_select`/`input_number` behaviour: they are restore-state helpers
-that reload their last known value from the recorder on startup rather
-than resetting to a default, so the frozen fallback plan survives an HA
-core restart, not just surviving while HA stays running.
-
-Two restart types, two different (both reassuring) answers:
-
-```text
-EMHASS addon restart (the 90-min auto-restart escalation above) - HA
-core itself never restarts, so the requested_*/effective_* helpers are
-never touched at all; they only change once a fresh successful
-optimisation produces new values.
-
-HA core restart - confirmed live 2026-10-07: the helpers restore their
-pre-restart value via HA's normal input_*-entity restore mechanism, so
-the frozen plan survives this too.
-```
-
-One correction to the "falls back to maximize self consumption"
-framing: that is not an automatic consequence of an EMHASS/MPC failure
-on its own. `battery_forecast_control.yaml`'s top-level condition
-requires `select.solaredge_i1_storage_control_mode == "Remote Control"`
-to run at all, but the EMHASS-health guard never touches that select -
-it only withholds updates to the *requested* mode/limits. As long as the
-inverter stays in Remote Control (a separate concern - loss of Remote
-Control itself is a different, more severe failure mode, see Test 7.6 in
-test_plan.md), Layers 4B/4C keep re-applying the same last-computed
-`effective_storage_mode`/`_charge_limit`/`_discharge_limit` to the
-inverter every cycle, indefinitely - they are not gated on EMHASS health
-themselves. So the practical behaviour is: hold the last known-good
-command and keep re-sending it, for as long as MPC stays unhealthy, with
-no time limit and no restart-triggered reset. The inverter would only
-actually drop to its own onboard `maximize_self_consumption` default if
-Remote Control itself were lost - which is a Modbus-control-authority
-problem, not an optimisation-failure problem, and already tracked
-separately.
-
-### Update 2026-10-10 - Escalation implemented: force Maximize Self Consumption at the same 45-minute mark as the existing notification
-
-Per the user's call: an indefinite freeze is fine briefly, but the frozen
-pre-failure plan is increasingly likely to no longer match current
-price/PV/load the longer MPC stays down - especially if it froze on a
-directional mode (`charge_from_solar_and_grid`,
-`discharge_to_maximize_export`) rather than the self-adapting
-`maximize_self_consumption`. First cut used a separate 1-hour escalation
-tier; the user then simplified it to fire at the same 45-minute mark as
-the existing stalled-MPC notification instead of adding a new threshold.
-Folded directly into the existing `EMHASS_watchdog_mpc_stalled`
-automation in `watchdog_automations.yaml` (no new automation):
-
-```text
-automation.EMHASS_watchdog_mpc_stalled
-  trigger:   time_pattern /15 (unchanged)
-  condition: now() - emhass_mpc_last_success > 2700s (45 min, unchanged)
-  action:    persistent_notification + mobile notify (unchanged, wording
-             updated to mention the fallback)
-             + choose: only if emhass_requested_storage_mode !=
-               maximize_self_consumption (avoids redundant writes once
-               already in the fallback state):
-                 emhass_requested_storage_mode -> maximize_self_consumption
-                 emhass_requested_charge_limit -> 3300 (W)
-                 emhass_requested_discharge_limit -> 3300 (W)
-```
-
-Why `maximize_self_consumption` specifically, and why 3300W: per
-README.md, this mode balances PV against house load live and discharges
-only to cover the gap - it's the one mode that doesn't depend on EMHASS
-forecasts to behave sensibly, which is exactly what's needed once the
-forecast-driven alternative has gone stale. 3300W isn't arbitrary - it's
-the same "full power" fallback value `batterycontrol_sensors.yaml`'s own
-`dynamic_storage_charge_limit`/`_discharge_limit` sensors already fall
-back to (via `last_charge_limit`/`last_discharge_limit`) when no forecast
-data is available at all, so this reuses an existing convention rather
-than introducing a new magic number. Layer 1 safety overrides
-(`safety_limits_and_override.yaml`) are untouched and still take final
-precedence over whatever Layer 4A requests. Because the automation
-re-fires every 15 minutes for as long as the stall continues, the
-notification keeps repeating as it always did, but the mode/limit writes
-only happen on an actual transition into the fallback state.
-
-This closes the loop the user asked about directly: rather than relying
-on the EMHASS-health guard's freeze lasting forever, or on the separate
-(and much rarer) Remote-Control-loss path to ever reach
-`maximize_self_consumption` on its own, the system now actively converges
-to the safe adaptive mode on the same clock that already triggers the
-first notification. Self-healing is unchanged - once EMHASS recovers,
-`battery_forecast_control.yaml`'s own guard unblocks and overwrites these
-on its next normal run, same as always.
-
-Status: **implemented 2026-10-10, deployed live the same day, and
-confirmed live 2026-10-11 against the first real extended MPC stall
-since deployment - see Update 2026-10-11 below.** Also updated in
-`entities.md` (Layer 1 - Automations), including an incidental
-documentation fix for `automation.EMHASS_addon_watchdog_auto_restart`,
-which existed since the EMHASS Outage Fallback Guard fix but had never
-been listed there.
-
----
-
-### Update 2026-10-11 - Confirmed live against a real extended MPC stall, end-to-end down to the physical inverter
-
-First real test of the 45-minute fallback since deployment, triggered
-not by a planned drill but by a genuine live MPC stall (root cause: see
-`known_issues_and_fixes.md` - EMHASS Rejects Optimisation Requests When
-`sensor.max_active_power_1` Goes Unavailable). Verified at every layer,
-not just that the automation fired:
-
-- **HA-entity level**: `input_select.emhass_requested_storage_mode` ->
-  `maximize_self_consumption` and both
-  `input_number.emhass_requested_charge_limit`/`_discharge_limit` -> 3300
-  all changed together at 12:30:00, sharing one automation-trace context
-  ID - a single atomic transition, not three independent/racing writes.
-- **Layer 1 passthrough level**: `effective_storage_mode`/
-  `effective_charge_limit` (the safety-override passthrough layer,
-  `apply_effective_battery_control.yaml`) mirrored the fallback's values
-  immediately after, with a matching parent context ID - confirming the
-  values actually propagated through Layer 1 rather than being
-  overridden or stuck.
-- **Physical hardware level**: the real SolarEdge inverter's own
-  `select.solaredge_i1_storage_command_mode` and
-  `number.solaredge_i1_storage_charge_limit`/`_discharge_limit` Modbus
-  registers reflect Maximize Self Consumption / 3300W - the command chain
-  reached the actual device, not just HA's internal helper entities.
-- **Redundant-write guard**: confirmed working - no re-writes on
-  subsequent 15-minute ticks while the mode stayed unchanged, only the
-  notification re-fired each cycle as designed.
-- **No conflict with other automations**: the pre-existing, unrelated
-  EV-charging discharge-reduction automation continued to correctly
-  modulate `emhass_requested_discharge_limit` on top of the fallback's
-  3300W base value throughout, with no interference either direction.
-- **90-minute addon-restart escalation**: also fired exactly on schedule
-  (13:15:01) and, as expected given the real root cause (a separate,
-  unrelated integration's cloud-login failure, not an addon crash), did
-  not resolve the underlying stall - restarting the EMHASS addon doesn't
-  fix another integration's broken login to SolarEdge's monitoring
-  portal. The 45-minute fallback already covered the gap regardless,
-  which is exactly the point of having it be mode-level rather than
-  depending on the addon recovering.
-
-This closes out the live-verification gap noted in Update 2026-10-10: the
-fallback now has a real, complete, multi-layer confirmation rather than
-only a design-time one.
-
-Status: **confirmed live 2026-10-11, end-to-end to the physical
-inverter.** No outstanding verification gap remains for this item.
+Status: resolved - no outstanding verification gap remains for this item.
 
 ---
 
@@ -520,351 +284,18 @@ harmless.
 
 ## Modbus Connectivity
 
-Observed errors:
+Observed Modbus errors (`Cancel send, because not connected`, `No response received after 3 retries`, `Request cancelled outside library`, `transaction_id mismatch`) prompted investigation into whether they correlate with port probe failures, data freshness failures, write bursts, battery control mode changes, or negative price curtailment. The `modbus_busy` stale-lock gap (found 2026-08-28) was fixed 2026-09-20 - see Resolved section below and known_issues_and_fixes.md for current deployment status. The original 48h baseline connectivity-noise rate (27x "Cancel send"/"Repeating call"/"No response", 7x transaction_id mismatch) was investigated separately, below.
 
-```text
-Cancel send, because not connected
-No response received after 3 retries
-Request cancelled outside library
-transaction_id mismatch
-```
+Investigation (2026-09-10 through 2026-10-07) found: two real Modbus command-write failures (2026-09-08, 2026-09-10), not just the usual poll/read noise; and that the `solaredge_modbus_multi` integration had migrated its underlying Modbus client library (pymodbus-family -> a `tmodbus`/`modbus-connection`-based one, release v4.0.0, 2026-09-14) at some point before the 2026-09-24 re-check, which changed the error message vocabulary and detection mechanism entirely - making a literal before/after comparison against the original baseline permanently unrecoverable (only a looser like-for-like reading remained possible). Two integration settings were changed live 2026-09-24 as a deliberate intervention - `close_after_polling` (`false` -> `true`) and `scan_interval` (`2s` -> `5s`) - to stop the polling coordinator from contending with `script.modbus_queue` writes for the inverter's single Modbus/TCP connection slot. Multiple follow-up samples (2026-10-02, 2026-10-06, 2026-10-07) found connection-cycle rates behaving as the new settings predict, connectivity episodes (brief "could not connect" drops) brief, self-recovering and non-escalating (not worse than before the settings change), and a 6.7-day `modbus_busy` lock-cycle sample (2026-10-01 to 2026-10-07, spanning a live HA restart) found zero lockups (max 50.4s, see test_plan.md Test S.4).
 
-Need to determine whether these correlate with:
+**Working verdict: adequately resolved** - the transaction-ID-mismatch rate never cleanly recovered to below the original (now unrecoverable, non-comparable) baseline, but the connectivity-episode rate itself - the thing that matters operationally - has stayed stable and self-recovering since the 2026-09-24 settings change. Recommend not continuing to chase a before/after against an unrecoverable baseline, and re-opening only if episode frequency or severity visibly increases.
 
-```text
-port probe failures
-data freshness failures
-write bursts
-battery control mode changes
-negative price curtailment
-```
+A briefly-added fourth "unexplained connectivity" entry (triggered by `sensor.max_active_power_1` stalling MPC) was retracted 2026-10-11: that sensor belongs to a separate, cloud-API-based custom integration (`solaredgeoptimizers`), not the local `solaredge_modbus_multi` integration this section tracks (which stayed healthy throughout, confirmed via its own entities updating normally). The real root cause (a SolarEdge monitoring-portal login failure, status 410) is documented in known_issues_and_fixes.md - EMHASS Rejects Optimisation Requests When `sensor.max_active_power_1` Goes Unavailable - instead.
 
-The modbus_busy stale-lock gap found 2026-08-28 (Test 6.3 / 7.5) was fixed
-2026-09-20 - see Resolved section below and known_issues_and_fixes.md for
-current deployment status. The 48h error-log baseline of connectivity
-noise (27x "Cancel send"/"Repeating call"/"No response", 7x transaction_id
-mismatch) found during that same review is still open and not yet
-root-caused - worth a focused before/after comparison now that the
-lock-release fix has landed, and/or a longer observation window to see
-whether it correlates with write bursts, mode-command-guard skip
-patterns, or something environmental (RS485/TCP contention, inverter
-response latency).
+**Still open:**
 
-### Update 2026-09-10 - Two new real Modbus write failures found
-
-The deeper charge/discharge review's Modbus sampling (5 windows across
-2026-09-04 through 2026-09-10, explicitly not exhaustive 6-day coverage)
-turned up two actual command **write** failures - not the usual poll/read
-noise - on 2026-09-08 22:45:02 and 2026-09-10 13:30:03: "Modbus
-Queue...Modbus Error: [Input/Output] Request cancelled outside library".
-Not previously documented. Same sampling also re-confirmed the baseline
-connectivity noise is essentially unchanged from the 2026-08-28 finding
-above (still present, similar magnitude). Not yet root-caused or
-correlated with anything specific; noted here for whoever picks up this
-investigation next.
-
-### Update 2026-09-19 - Extended SOC-sensor outage (~31 hours), root cause unknown
-
-A routine multi-day log review found `sensor.solaredge_b1_state_of_energy`
-stuck `unavailable` for roughly 31 hours (2026-09-16 14:29 to 2026-09-17
-21:37 local) - far beyond the usual 6.5-45s nightly blips already tracked
-below. It was isolated to this one entity: `sensor.solaredge_i1_ac_power`,
-`select.solaredge_i1_storage_control_mode`, and unrelated automations
-(e.g. `ev_charging_discharge_control`) kept running normally throughout,
-with only the usual brief reconnect blips. The outage only cleared when
-Home Assistant restarted that evening (an unrelated Supervisor
-auto-update, 2026.09.0 -> 2026.09.2) - no error in the available logs
-explains why the sensor was stuck for so long, or why nothing short of a
-full restart recovered it. Not yet correlated with the connectivity
-patterns above. The immediate consequence (Layer 4A silently running on a
-fallback `soc=0` for the full outage) was fixed the same day - see
-known_issues_and_fixes.md - but the cause of the outage itself is a new,
-open item here.
-
-Separately, the well-characterized short nightly dropout (6/6 nights,
-38-45s each as of the 2026-09-10 check) continues unchanged, with a
-noticed pattern: each night's episode lands ~11-13 minutes earlier than
-the previous night's (drifting ~22:00 -> ~21:13 over the 6 nights checked
-2026-09-04 through 2026-09-09) - a possible clue for the ~22:00 clustering
-question above, not yet chased further.
-
-### Update 2026-09-24 - Noise-rate re-check attempted; library appears to have changed underneath the investigation
-
-Attempted the "focused before/after comparison now that the lock-release
-fix has landed" suggested above. Two findings, both worth flagging for
-whoever continues this:
-
-1. **The Modbus client library itself appears to have changed** since the
-   original 2026-08-28 baseline. Every connectivity warning in current
-   logs comes from a `tmodbus.transport.async_tcp` logger (e.g. "Received
-   unexpected response with Transaction ID: N. Discarding bytes: ..." and
-   `custom_components.solaredge_modbus_multi.hub`'s "Coordinator has timed
-   out 3 times in a row"). A direct text search for the original baseline's
-   exact phrases - `"Cancel send"`, `"Repeating call"`, `"pymodbus"` - found
-   **zero** matches anywhere in the currently-retained log window. This
-   reads as the `solaredge_modbus_multi` custom integration having switched
-   its underlying Modbus client library (pymodbus-family -> a `tmodbus`-
-   named one) at some point between late August and now, likely via a
-   routine integration update - not something this project changed. The
-   new messages appear to be the semantic equivalents of the old ones
-   (transaction ID mismatch, retry-exhausted), so a *like-for-like* noise
-   comparison is still possible, just not a literal grep-for-the-same-string
-   one.
-
-   **Confirmed 2026-09-24 via the integration's GitHub repo**
-   (`WillCodeForCats/solaredge-modbus-multi`): this is real and dated.
-   Release **v4.0.0** (published 2026-09-14, 10 days before this check)
-   adopted Home Assistant's own `modbus-connection` library - "a
-   backend-neutral Modbus library with device-modelling" - replacing the
-   integration's previous direct `pymodbus` usage (issue #1024 "Adopt the
-   modbus-connection library", PR #1077). The `tmodbus.transport.async_tcp`
-   logger seen in our logs is that new library's transport layer. Also
-   bundled in v4.0.0: a repairable-issue path for Power Control detection
-   failures (previously silent), a user-configurable Modbus Request Timeout
-   (default 3s, confirmed matching our config's `request_timeout: 3`), and
-   "Coordinator timeout scales with configured request timeout" - i.e. the
-   "Coordinator has timed out 3 times in a row" message is itself new
-   surfacing behavior from this release, not evidence of a new underlying
-   failure mode. One correction to a same-day speculation: our config
-   (`ha_get_integration`) shows `close_after_polling: false` - this
-   installation keeps the Modbus connection open persistently, the
-   opposite of the library's now-documented recommended default (closed).
-   The frequent "Async TCP connection established/closed" cycles seen in
-   logs (9-13 per ~1.5h window) track 1:1 with `script.modbus_queue`
-   "Running script sequence" counts in the same windows, not with polling
-   - i.e. those are this project's own command-write connections opening
-   and closing per queued command, unrelated to the persistent polling
-   connection or to the library migration. No config change is indicated
-   here.
-2. **Rate comparison is inconclusive, and even less meaningful than first
-   thought.** HA's retained raw log window only reaches back a few hours
-   per query (deep pagination is expensive), and the only stretch of
-   2026-09-24 without a restart or the unrelated internet/router outage
-   that evening (see below) was 06:45-11:10 local (~4.7h): 2 transaction-
-   ID-mismatch events + 5 "Coordinator has timed out" events = 7 real
-   connectivity issues, extrapolating to roughly 70/48h - notably higher
-   than the original ~34/48h baseline (27+7). Given point 1 above (the
-   "Coordinator has timed out" message is new *surfacing* behavior in
-   v4.0.0, scaled to the configured request timeout, not necessarily a new
-   underlying failure), this comparison is now doubly unreliable: different
-   message vocabulary AND a changed detection/reporting mechanism, on top
-   of the small-sample extrapolation. It should not be read as a confirmed
-   regression - but it does not show
-   the improvement one might hope the lock-release fix (known_issues_and_
-   fixes.md - Modbus Queue Lock Release Not Exception-Safe) would produce
-   on the underlying connectivity noise itself (that fix only addressed the
-   stuck-lock *consequence* of a failure, never claimed to reduce the
-   failure rate - see known_issues_and_fixes.md, now confirmed deployed
-   and working as of 2026-09-24). A cleaner comparison needs a genuine
-   quiet 48h window sampled in a few passes going forward, now that a
-   post-library-change baseline exists to compare against.
-
-Both the evening's automations reload (~21:24) and a full HA restart
-(~22:16, from the 2026-09-23 deployment) reset HA's log buffers, and an
-unrelated `router_watchdog` entry logged "internet down since 22:16:53"
-recovering around 02:30 the next morning - a WAN/router event, not
-Modbus/LAN-specific, and outside this project's scope, but it (along with
-the two restarts) makes the first several hours of 2026-09-24's log
-window unrepresentative of steady-state noise; only the 06:45-11:10
-stretch above was used for the rate estimate.
-
-### Update 2026-09-24 (later same day) - Two integration options changed live: `close_after_polling` and `scan_interval`
-
-Following from point 1 above (SolarEdge inverters accept only one
-Modbus/TCP connection at a time, confirmed via the integration's own
-wiki), and the observation that `script.modbus_queue`'s own write
-connections were competing with the polling coordinator for that single
-slot whenever the coordinator held it open persistently:
-
-1. **`close_after_polling`** changed `false` -> `true` at 2026-09-24
-   11:52 local (user, via the integration's options UI) - the polling
-   coordinator now releases the connection after each poll instead of
-   holding it open, matching the integration's own recommended default
-   and leaving the slot free for `script.modbus_queue` writes almost all
-   the time instead of contending for it.
-2. **`scan_interval`** changed `2` -> `5` (seconds) at 2026-09-24 ~12:33
-   local (confirmed via `ha_get_integration`) - `close_after_polling:
-   true` means every poll now opens and closes a fresh TCP connection
-   (the integration's own documented default scan interval is 300s, for
-   context), so a 2s interval would have meant ~1800 connect/disconnect
-   cycles/hour on top of the single-connection constraint. 5s cuts that
-   to ~720/hour while staying well within the reaction-time margin
-   needed for the user's real reason for fast polling: per-phase
-   measurement and EV-charger load balancing (a separate `EV_charge`
-   package, out of scope here) - standard circuit breakers tolerate a
-   moderate overload for several seconds to tens of seconds before
-   tripping, so a 5s-old reading still leaves real margin.
-
-Both changes are live as of 2026-09-24 and were made specifically as an
-intervention in this investigation, not just incidentally observed -
-**this is the point to measure a real before/after from**, once enough
-quiet time has passed. Everything sampled earlier in this Update
-2026-09-24 section (the ~70/48h extrapolation) predates both changes and
-should not be blended with data collected after them.
-
-Also found while reviewing SOC-sensor history for the Layer 4A guard
-verification (see known_issues_and_fixes.md): two more extended
-`sensor.solaredge_b1_state_of_energy` outages beyond the well-known short
-nightly blip - 2026-09-20 21:26-21:38 local (~12 min) and 2026-09-22
-14:22-16:34 local (~2h13m, daytime, unrelated to the EMHASS addon outage
-that started later the same evening). Same open question as the
-2026-09-19 finding above (root cause unknown, no explanatory log entry
-found) - now three data points of "much longer than the usual 40s blip"
-instead of one, which may be a useful pattern once more accumulate. The
-Layer 4A guard correctly froze all outputs through the 2h13m one (see
-known_issues_and_fixes.md), so the operational risk from these is
-covered even though the cause isn't understood.
-
-### Update 2026-10-02 - First genuine 48h sample since the settings change; modest improvement, not a clean win, one new real episode found
-
-A proper 48h window (2026-09-30 21:29 through 2026-10-02 20:45 local, no
-restarts/reloads inside it) is now available entirely **after** both the
-`close_after_polling` and `scan_interval` changes above - the real
-before/after this investigation has been waiting for since 2026-09-24.
-
-1. **Transaction-ID-mismatch rate: ~45.7/48h, down from the ~70/48h
-   post-library/pre-settings-change extrapolation, but still above the
-   original ~34/48h pre-library baseline.** `tmodbus.transport.async_tcp`
-   "Received unexpected response with Transaction ID..." warnings:
-   count=45 over a first_occurred-to-latest span of 47.27h, i.e.
-   ~45.7/48h extrapolated. Read as: the settings change looks like it
-   helped versus the small-sample, inconclusive 70/48h figure taken right
-   after the library migration and before the settings change - but the
-   comparison back to the *original* 34/48h baseline (27 "Cancel
-   send"/"Repeating call"/"No response" + 7 transaction_id mismatch) is
-   still not apples-to-apples, per the 2026-09-24 caveats above (different
-   library, different message vocabulary, different detection mechanism).
-   Net read: probably somewhat better than the immediate post-migration
-   state, not clearly better than the original pre-migration baseline -
-   this metric alone can't settle whether the underlying connectivity
-   noise itself improved, only that it didn't get worse from the settings
-   change.
-2. **Connection-cycle rate roughly matches the 5s-interval expectation,
-   confirming the settings took effect.** A structured error_log search
-   for "Async TCP connection established" found 265 occurrences inside a
-   ~32-minute raw-log window (2026-10-02 22:02:42-22:34:44), i.e.
-   ~8.3/min -> ~496/hour. The 2026-09-24 estimate for the new
-   `close_after_polling: true` + `scan_interval: 5s` combination was
-   ~720/hour; actual is about 69% of that naive figure (closer to a ~7.3s
-   effective cycle than a flat 5s), likely just real-world overhead
-   (connect + read + close taking a bit longer than the bare interval)
-   rather than anything wrong - but it does confirm the coordinator really
-   is opening and closing a connection every poll now, not holding one
-   open, so both settings are active and behaving as designed.
-3. **Three real connectivity episodes in the 48h window, not two.** The
-   previous 24h inverter-behavior review (2026-10-01/02) had found two
-   "known, well-handled Modbus blips" (2026-10-01 06:51:58 and 20:43:54).
-   This 48h pull found those same two PLUS a third, new one right at the
-   edge of the window: a hub-level "Connection failed: could not connect
-   to 192.168.10.4:1502" at 2026-10-02 20:45:03 (count=2), alongside the
-   coordinator-level "could not connect" message (count=4 total across
-   all three episodes). Three episodes across 48h is *not* a worse rate
-   than before (2 were already known inside a ~24h sub-window of this same
-   48h span) - it's consistent with the existing ~1/24h occasional-blip
-   pattern continuing, not escalating. A tight history check around the
-   third episode's near-neighbour (18:40-18:55, the closest window with
-   good sensor coverage) showed two brief `modbus_busy` on/off cycles
-   (~4s, ~18s), no stuck lock, and normal SOC/`effective_storage_mode`
-   behaviour throughout - same self-recovering character as the other two
-   known episodes, no sign of escalation or a stuck state.
-4. **Zero "Coordinator has timed out" messages in the 48h system log.**
-   This new-in-v4.0.0 message type (flagged 2026-09-24 as scaled to
-   `request_timeout`) did not appear at all in this window - a point in
-   favour of the settings change, since this was the message type that
-   drove most of the inconclusive 70/48h figure on 2026-09-24.
-5. **One new, unrelated one-off**: "Inverter accumulator went backwards;
-   this is a SolarEdge bug: AC_Energy_WH_Exported 5491356.0 < 5491357.0"
-   (count=1), explicitly flagged by the integration itself as a SolarEdge
-   firmware bug. Not part of the connectivity-noise picture and not
-   consumed by this project's SOC-based control logic; noted for
-   completeness only.
-6. Three slow-entity-update warnings (~3s each, on
-   `switch.solaredge_i1_negative_site_limit`, `sensor.solaredge_m1_imported_a`,
-   `sensor.solaredge_b1_average_temperature`) - minor, consistent with
-   normal polling jitter, not flagged as a concern.
-
-**Working verdict**: the 2026-09-24 `close_after_polling`/`scan_interval`
-change looks like a modest net positive - connection cycling behaves as
-designed, the new timeout-message type has gone quiet, and the
-transaction-ID-mismatch rate is down from the immediate post-migration
-reading - but it is not a clean "noise solved" result, since that same
-metric is still above the original pre-library baseline and the two
-baselines aren't strictly comparable. The connectivity-episode rate
-itself (the thing that actually matters operationally - brief,
-self-recovering "could not connect" events) has not gotten worse; it is
-behaving the same as before, including through the new third episode.
-Given the library/message-vocabulary problem is permanent (there's no
-going back to a like-for-like comparison with the original 34/48h
-number), further chasing a cleaner before/after on this specific metric
-has diminishing returns. Recommend treating this as adequately resolved
-for now - stable, non-escalating, self-recovering - and re-opening only
-if episode frequency or severity visibly increases, rather than
-continuing to sample 48h windows against an unrecoverable baseline.
-
-### Update 2026-10-06 - Further confirming data point, no re-open needed
-
-While investigating an unrelated question, a structured error_log pull
-covering 2026-10-06 20:27-21:07 local showed the same pattern as the
-2026-10-02 sample: ~309 connect/close cycles in ~40 minutes (~463/hour,
-in the same range as the ~496/hour figure already confirmed as expected
-for `close_after_polling: true` + `scan_interval: 5s`), plus exactly one
-real connectivity episode ("could not connect to 192.168.10.4:1502" at
-20:33:58, self-recovered 21s later at 20:34:19, no stuck lock, no
-cascading failure). Consistent with the existing "adequately resolved,
-stable, self-recovering" verdict above - not a new finding, just another
-data point confirming it has held. No change to the working verdict.
-
-### Update 2026-10-07 - Nightly blip is now twice-daily; 6.7-day lock-cycle re-check, still no lockups
-
-Two separate checks, both routine re-verification rather than new
-investigation:
-
-1. **Timing update to the nightly ~22:00 dropout.** Cross-referencing
-   `select.solaredge_i1_storage_command_mode`'s history over a 10-day
-   window found ~15 short (21-33s) "unavailable" blips, but now
-   clustered around two times a day - roughly 06:3x-06:5x local and
-   20:1x-20:5x local - rather than the single ~22:00-only pattern
-   originally documented (known_issues_and_fixes.md - Modbus
-   Connectivity - SOC-Sensor Unavailable False-Trigger). Each blip
-   affects multiple entities simultaneously (command_mode, site_limit,
-   the negative-site-limit switch all drop together, per the Test 3.1
-   evidence from 2026-10-06), consistent with a brief whole-integration
-   reconnect rather than anything entity-specific. Still not root-caused,
-   still harmless (caught by the existing unavailable/unknown guards) -
-   this just updates the "when" rather than the "whether."
-2. **Fresh 6.7-day `modbus_busy` lock-cycle sample** (2026-10-01 to
-   2026-10-07, spanning a live HA update/restart): 1500 on/off cycles,
-   zero over 60s, max 50.4s. Extends the existing "no lockup" evidence
-   (48h as of 2026-08-28, 4.5 days as of 2026-09-24) into October and
-   across a restart with the same clean result - see test_plan.md Test
-   S.4 (upgraded NOT VERIFIED -> PARTIAL PASS on this basis) for the
-   full numbers.
-
-Neither changes the working verdict - the `close_after_polling`/
-`scan_interval` settings remain adequately resolved and stable.
-
----
-
-### Update 2026-10-11 - Retraction: the `sensor.max_active_power_1` MPC-stall episode is NOT a Modbus Connectivity case
-
-An entry was briefly added here claiming a fourth instance of this
-section's unexplained pattern, triggered by `sensor.max_active_power_1`
-going unavailable and stalling MPC. Follow-up investigation (checking
-the user's own suspicion that a SolarEdge Modbus integration update was
-responsible) found that framing wrong and it has been removed:
-`sensor.max_active_power_1` is not part of the `solaredge_modbus_multi`
-local Modbus integration this section tracks at all - it belongs to a
-separate, cloud-API-based custom integration
-(`custom_components.solaredgeoptimizers`, "SolarEdge Optimizers Data"),
-whose config entry has been stuck in `setup_retry` since 11:45:13 local
-with `Login check failed (status: 410)` on every retry - an external
-SolarEdge monitoring-portal API change, not a Modbus issue. The local
-Modbus integration (`solaredge_modbus_multi`, v4.0.6) stayed healthy
-throughout, confirmed via its own entities updating normally the whole
-time. Full corrected root cause now lives entirely in
-`known_issues_and_fixes.md` - EMHASS Rejects Optimisation Requests When
-`sensor.max_active_power_1` Goes Unavailable - rather than here, since it
-isn't one of this section's cases.
+- `sensor.solaredge_b1_state_of_energy` has had three extended, unexplained outages beyond the normal short nightly blip: ~31 hours (2026-09-16 14:29 - 2026-09-17 21:37, only cleared by an unrelated HA restart), ~12 minutes (2026-09-20 21:26-21:38), and ~2h13m (2026-09-22 14:22-16:34, daytime). Root cause unknown in all three cases and not yet correlated with the connectivity findings above. Operational risk is covered by the Layer 4A guard, which correctly freezes outputs during these outages, but the underlying cause itself is still an open item.
+- The short nightly "unavailable" blip (originally seen only around ~22:00, now observed clustering around two times a day - roughly 06:3x-06:5x and 20:1x-20:5x local, 21-33s, affecting multiple entities simultaneously - consistent with a brief whole-integration reconnect) is still not root-caused, though harmless and caught by existing unavailable/unknown guards.
 
 ---
 
@@ -1048,137 +479,13 @@ limited retry / backoff after failure
 
 ## Negative Price Curtailment
 
-### Update 2026-10-06 - Verified against a real overnight event; one real gap found, confirmed currently harmless
+A real overnight negative-price event (2026-10-06, 7 activate/deactivate cycles) gave the first live evidence for this item (see test_plan.md Test 3.1/3.2/S.3 and known_issues_and_fixes.md - Negative Price Curtailment - Site Limit Restore Gap). It confirmed price-sign flips correctly toggle `negative_price_active`/`grid_export_blocked`/the switch (7/7), and that `number.solaredge_i1_site_limit` is correctly written to 0 on first activation each time. It also found a real gap: `negative_site_limit_off` never wrote the site limit back off 0 after deactivation, leaving it stale at 0 for hours - empirically confirmed harmless on the day it was found, since real grid export happened normally during the stale-0 window, proving the switch (not the number) is what actually gates export enforcement on this installation.
 
-A real negative-price event (7 activate/deactivate cycles, 2026-10-06
-00:00-08:00 local) gave the first live evidence for this item. See
-test_plan.md Test 3.1/3.2/S.3 and known_issues_and_fixes.md - Negative
-Price Curtailment - Site Limit Restore Gap for the full write-up.
-Summary:
+Per the user's preferred design, the restore-gap was closed by redesign rather than patch (implemented 2026-10-06): the switch (`switch.solaredge_i1_negative_site_limit`) now stays permanently ON, and `number.solaredge_i1_site_limit` itself is varied between 0 (curtailed) and 1,000,000 W (its own max, normal/indifferent export), written on every transition - so there is nothing to forget to restore. Full implementation write-up: known_issues_and_fixes.md - Negative Price Curtailment - Site Limit Restore Gap (changes to `solaredge_modbusqueue.yaml`, `batterycontrol_scripts.yaml`, `negative_price_curtailment.yaml`).
 
-```text
-negative export price        -> CONFIRMED: price sign flips matched
-                                 by negative_price_active/grid_export_
-                                 blocked/switch toggles within one
-                                 price-sensor update, 7/7 times.
-site limit enabled            -> CONFIRMED: number.solaredge_i1_site_
-                                 limit correctly written to 0 on first
-                                 activation each time it wasn't already.
-site limit value applied      -> STILL NOT DIRECTLY OBSERVED: every
-                                 episode so far was overnight with zero
-                                 PV, so there was no export attempt for
-                                 the limit to actually curtail. Needs a
-                                 negative-price episode that coincides
-                                 with PV surplus.
-export reduced                -> same gap as above - not yet observed.
-normal operation restored     -> PARTIALLY CONFIRMED, with a real find:
-                                 the switch correctly toggles off, but
-                                 negative_site_limit_off
-                                 (solaredge_modbusqueue.yaml) never
-                                 writes number.solaredge_i1_site_limit
-                                 back to anything else - it stays at the
-                                 stale "0" indefinitely (confirmed: still
-                                 0 nearly 6 hours after the switch went
-                                 off and price went positive). Empirically
-                                 confirmed harmless today: real grid
-                                 export (positive meter readings up to
-                                 ~1.1kW, matching PV-surplus-minus-
-                                 battery-charging arithmetic) happened
-                                 normally during this stale-0 window,
-                                 proving the switch - not the number - is
-                                 what actually gates enforcement on this
-                                 installation.
-```
+The new mechanism was confirmed live through a real negative-price episode on 2026-10-13 (price oscillated across zero three times within a ~20-minute window; the switch flipped off -> on on the very first crossing, and the site-limit number tracked all three curtail/restore cycles correctly in lockstep, remaining stable through 6+ days and 12+ subsequent Modbus blips afterward) - this closes both the live-mechanism verification and the switch self-heal question. Minor footnote: rapid price-noise cycling right around exactly zero costs a handful of extra Modbus writes per cycle (1-2); not frequent or large enough to warrant a deadband/hysteresis fix on current evidence, but worth keeping in mind given this project's SD-card-wear sensitivity.
 
-### Update 2026-10-06 (later same day) - Restore-gap item closed via redesign, not the proposed patch
-
-The low-priority cleanup proposed just above (have
-`negative_site_limit_off` restore the number to a chosen "normal" value)
-was explicitly declined by the user in favor of their own, cleaner
-architecture: stop toggling `switch.solaredge_i1_negative_site_limit` per
-price change - leave it permanently ON - and vary
-`number.solaredge_i1_site_limit` itself between 0 (curtailed) and
-1,000,000 W, the number's own max (normal/indifferent export). This
-eliminates the restore-asymmetry structurally rather than patching it: the
-number is now written on every transition, lifetime, so there is nothing
-to forget to restore.
-
-Implemented and deployed to project docs the same day - see
-known_issues_and_fixes.md, Negative Price Curtailment - Site Limit Restore
-Gap, for the full implementation write-up (changes to
-`solaredge_modbusqueue.yaml`, `batterycontrol_scripts.yaml`,
-`negative_price_curtailment.yaml`), and architecture.md / entities.md for
-the updated mechanism description.
-
-Remaining open items, split out:
-
-1. The one still-unobserved scenario: a negative-price window that
-   coincides with real PV surplus, to directly see export actually get
-   suppressed (and then resume) rather than inferring it from command
-   correctness alone. Still applies unchanged under the new mechanism.
-2. The new mechanism itself is not yet observed live through a real
-   negative-price cycle - deployed to project docs only as of 2026-10-06.
-   Needs a live activate/deactivate cycle to confirm the number toggles
-   0 ↔ 1,000,000 correctly and the compare-before-write guard actually
-   suppresses redundant writes on the 30-second periodic trigger.
-3. Operational: the switch was left "off" by the last deactivation of the
-   old design (08:00:16, 2026-10-06) and will only self-heal to "on" the
-   next time a negative-price episode fires the new automation's
-   defensive re-assert, or when turned on manually in the meantime. Not a
-   functional risk on its own (per the empirical finding above), but
-   worth confirming once, deliberately, rather than leaving it to chance.
-
-### Update 2026-10-06 (evening) - Item 2 confirmed live
-
-Price stayed non-negative all day (0.03-1.83 SEK/kWh), so this confirms
-the normal/restore-path half of item 2, not the negative/curtail half:
-the one-time migration write (stale "0" -> 1,000,000 at 15:09:13, the
-moment the new YAML first saw price >= 0 and a non-1,000,000 number),
-then zero further writes over the next ~5h25m of continuous 30s-cycle
-and price-state triggering while the number stayed correctly at
-1,000,000 - directly confirmed at the trace level (a real trace showing
-the `number != 1000000` condition evaluating false and the branch being
-skipped). A ~21s real Modbus outage at 20:33:58 even gave an unplanned
-test of the guard's recovery behaviour: the number was correctly
-rewritten to 1,000,000 once it came back (having read "unavailable" in
-between, which the `| float(-1)` fallback treats as not-yet-1,000,000).
-Full detail in test_plan.md Test 3.2's evening update.
-
-Item 2 is now closed for the restore/guard half. Items 1 and 3 remain
-open - no negative-price window has occurred yet since deployment, and
-the switch is still sitting "off" (confirmed again this evening).
-
-### Update 2026-10-19 - Items 2 and 3 fully closed against a real negative-price episode; item 1 still open
-
-The switch sat "off" for a full week (confirmed via history: zero
-negative-price episodes 2026-10-14 through 2026-10-19). On the night of
-2026-10-13, a user-anticipated negative-price window arrived with
-deliberately zero PV surplus (a safe live test: no export to curtail
-either way). The mechanism worked on the first real tick: price crossed
-negative three times in a ~20-minute window (oscillating in a ~0.0003
-SEK/kWh band around exactly zero), the switch flipped `off -> on` at
-22:34:13 on the very first crossing, and `number.
-solaredge_i1_site_limit` correctly tracked all three curtail/restore
-cycles (0 <-> 1,000,000) in lockstep with `input_boolean.
-negative_price_active`/`grid_export_blocked`. The switch has stayed on
-through 6 days and 12+ of the twice-daily Modbus blips since, confirming
-durability, not just the triggering moment. Full evidence in
-known_issues_and_fixes.md - Negative Price Curtailment - Site Limit
-Restore Gap, Update 2026-10-19.
-
-This closes item 2 (new mechanism observed live through a real
-activate/deactivate cycle - previously only the restore/guard half was
-confirmed) and item 3 (switch self-heal) both. **Item 1 remains open**:
-2026-10-13's episode was deliberately chosen for zero PV, specifically
-to make it a safe test, so the one scenario this item has always been
-waiting on - negative price coinciding with real PV surplus, to
-directly observe export actually get suppressed rather than inferring it
-from command correctness alone - still has not occurred. Minor
-footnote, not a new item: the three rapid cycles driven by price noise
-around exactly zero cost a handful of extra Modbus writes (1-2 per
-cycle) on a night like this; worth keeping in mind given this project's
-SD-card-wear sensitivity, but not frequent or large enough to warrant a
-deadband/hysteresis fix on current evidence.
+**Still open**: no negative-price episode has yet coincided with real PV surplus, so actual export suppression (and resumption) during curtailment has still never been directly observed - only inferred from command correctness. The 2026-10-13 live test was deliberately run during zero PV specifically to make it a safe test, so this one scenario still has not occurred.
 
 ---
 
@@ -1220,8 +527,7 @@ track *how often* it has fired, lifetime and daily.
 
 ## Recommended Diagnostic Sensors
 
-Status as of 2026-10-06: all built. See entities.md - Layer 1 - Modbus
-Port/Write Health Diagnostics and Modbus Write/Queue Diagnostic Helpers.
+Status as of 2026-10-06: all built. See entities.md - Layer 1 - Modbus Port/Write Health Diagnostics and Modbus Write/Queue Diagnostic Helpers.
 
 ```text
 binary_sensor.solaredge_modbus_port_raw      - DONE 2026-10-06
@@ -1230,50 +536,17 @@ binary_sensor.solaredge_modbus_port_stable   - DONE 2026-10-06
 input_text.modbus_last_successful_write      - DONE 2026-10-06
 input_text.modbus_last_failed_write          - DONE 2026-10-06
 input_text.modbus_last_failed_reason         - DONE 2026-10-06
-  (close cousin of "last command reason" above, named for what it is)
 
 sensor.solaredge_i1_ac_power_age_seconds     - already existed (2026-09-25,
-sensor.solaredge_m1_ac_power_age_seconds       predates this list's last
-binary_sensor.solaredge_modbus_data_fresh      edit - correcting a stale
-                                                claim here that these were
-                                                unbuilt)
+sensor.solaredge_m1_ac_power_age_seconds       predates this build-out)
+binary_sensor.solaredge_modbus_data_fresh
 ```
 
-Also added, beyond this original list: `binary_sensor.
-solaredge_modbus_write_unhealthy` (consecutive-write-failure based; its
-unique_id is solaredge_modbus_write_health, but the real entity_id Home
-Assistant assigned is derived from its friendly name, not the
-unique_id - see known_issues_and_fixes.md, Entity ID Documentation
-Mismatches) and `binary_sensor.solaredge_modbus_queue_backlog`
-(pending-count based).
+Also added, beyond this original list: `binary_sensor.solaredge_modbus_write_unhealthy` (consecutive-write-failure based; its entity_id doesn't match its unique_id `solaredge_modbus_write_health` - see known_issues_and_fixes.md, Entity ID Documentation Mismatches) and `binary_sensor.solaredge_modbus_queue_backlog` (pending-count based).
 
-None of the port/write-health sensors are a real TCP probe or new
-integration - all are derived from existing entity availability, the
-pre-existing data-freshness sensor, and the new write/queue counters
-above (user's explicit choice: "derive from existing signals" over
-building a real port probe). See known_issues_and_fixes.md -
-Write-Outcome Telemetry Is Readback-Based for the specific, documented
-limitation this implies (a silently-optimistic entity write could read
-back as "success" even if the underlying Modbus write failed on the
-wire) - these sensors help distinguish the cases below, but with that
-caveat in mind, not as ground truth:
+None of the port/write-health sensors are a real TCP probe or new integration - all are derived from existing entity availability, the pre-existing data-freshness sensor, and the write/queue counters above, per the user's explicit choice to derive from existing signals rather than build a real port probe. See known_issues_and_fixes.md - Write-Outcome Telemetry Is Readback-Based for the documented limitation this implies: a silently-optimistic entity write could read back as "success" even if the underlying Modbus write failed on the wire, so these sensors help distinguish TCP-port-unavailable / stale-session / data-not-updating / queue-overload / transaction-recovery cases, but aren't ground truth.
 
-```text
-TCP port unavailable
-existing Modbus session stale
-SolarEdge data not updating
-write queue overload
-pymodbus transaction recovery issue
-```
-
-Note 2026-09-19: a `binary_sensor.solaredge_modbus_data_fresh`-style
-"age since last update" sensor on `sensor.solaredge_b1_state_of_energy`
-specifically would have made the 31-hour outage above visible immediately
-instead of only being caught by a manual multi-day history review - this
-sensor exists for the inverter/meter AC-power entities (2026-09-25) but
-not yet for the battery state-of-energy sensor specifically; still worth
-doing if another extended SOC-sensor outage like the 2026-09-16/17 or
-2026-09-22 ones recurs.
+Note 2026-09-19: a `binary_sensor.solaredge_modbus_data_fresh`-style "age since last update" sensor exists for the inverter/meter AC-power entities (since 2026-09-25) but not yet for the battery state-of-energy sensor specifically - still worth adding if another extended SOC-sensor outage like the 2026-09-16/17 or 2026-09-22 ones (see Modbus Connectivity above) recurs.
 
 ---
 
@@ -1416,144 +689,75 @@ above (still open) for the underlying addon fragility this doesn't fix.
 
 **Add Queue Telemetry** (implemented 2026-10-02) - `script.modbus_queue`
 (`solaredge_modbusqueue.yaml`) was previously opaque: no visibility into
-how often it ran, how long commands waited for the busy-lock, or what it
-last did. Added: `input_number.modbus_queue_command_count_total`/`_today`
-and `modbus_queue_timeout_count_total`/`_today` (today's counters reset
-at local midnight via `automation.reset_modbus_queue_daily_telemetry_counters`,
-totals are lifetime); `input_number.modbus_queue_last_wait_seconds`
-(time from a command being received to the busy-lock actually clearing,
-measured via a `variables:` timestamp against `now()` before and after
-the existing `wait_template`) and `modbus_queue_last_execution_seconds`
-(lock-acquired to lock-released, i.e. the `choose:` dispatch plus the
-2s pacing delay); and `input_text.modbus_queue_last_queued_command`/
-`last_executed_command` (`"<queue_service>=<queue_value> @ <timestamp>"`,
-stamped on receipt and again just before the lock releases). The timeout
-counters increment only when the 10s `wait_template` actually runs out
-(`wait.completed == false`) rather than resolving normally - i.e. when
-`continue_on_timeout` is what let the run through, not the lock clearing
-on its own. See `entities.md` - Layer 4C - Queue Telemetry / Queue
-Automations for the full entity list, and `solaredge_modbusqueue.yaml`
-for the implementation. Not yet correlated against the Modbus
-Connectivity investigation above - that's a natural next step once a
-real connectivity episode happens with this telemetry live (e.g. does
-`modbus_queue_last_wait_seconds` or the timeout counters spike during a
-"could not connect" episode).
+run frequency, busy-lock wait time, or last action. Added lifetime/daily
+command and timeout counters, last-wait/last-execution-duration sensors,
+and last-queued/last-executed-command text helpers - see entities.md -
+Layer 4C - Queue Telemetry / Queue Automations for the full entity list,
+and `solaredge_modbusqueue.yaml` for the implementation. The timeout
+counters increment only when the 10s `wait_template` genuinely runs out,
+not when the lock clears normally. Not yet correlated against the Modbus
+Connectivity investigation above - a natural next step once a real
+connectivity episode happens with this telemetry live.
 
-**Enhanced Diagnostics - Full Build-Out** (implemented 2026-10-06) - the
-remaining open items from section 4 above (Required Telemetry,
-Recommended Diagnostic Sensors) were built in one pass, per the user's
-explicit request to put the new entities in Layer 1 ("safety and
-watchdog") and to derive port/write health from existing signals rather
-than a new TCP probe or integration. Added to
-`safety_and_watchdog_helpers.yaml` (Layer 1): `input_text.
-modbus_last_successful_write`/`_failed_write`/`_failed_reason`;
-`input_number.modbus_write_success_count_total`/`_today`,
-`_failure_count_total`/`_today`, `_consecutive_failures`,
-`modbus_queue_pending_count`, `modbus_queue_last_command_delta`,
-`mode_command_skipped_count_total`/`_today`. Added to
-`watchdog_sensors.yaml` (Layer 1): `binary_sensor.
-solaredge_modbus_port_raw`/`_port_stable` (entity-availability +
-data-freshness derived, debounced on the "_stable" variant),
-`solaredge_modbus_write_unhealthy` (consecutive-failure based),
-`solaredge_modbus_queue_backlog` (pending-count based). Added to
-`watchdog_automations.yaml`: `automation.watchdog_reset_daily_diagnostic_counters`
-(midnight reset for the new "_today" counters). `solaredge_modbusqueue.yaml`
-(Layer 4C) now classifies every write as success/failure/unmatched_service
-via before/after entity readback and writes into the Layer 1 helpers
-above; `apply_effective_battery_control.yaml` (Layer 4B) now increments
-the mode-skip counters from the Mode Command Guard's existing `else:`
-branch. Two things deliberately NOT built: a real TCP port probe (per
-the user's explicit choice of the derive-from-existing-signals option),
-and any skip/dedup counter for charge/discharge *limit* writes (no such
-skip logic exists yet - see Write Pressure above). Also corrected a
-stale claim in section 4 above: the data-freshness sensors
-(`sensor.solaredge_i1_ac_power_age_seconds` etc.) already existed since
-2026-09-25, predating this build-out - they were mistakenly described as
-unbuilt in an earlier pass over this document.
+**Enhanced Diagnostics - Full Build-Out** (implemented 2026-10-06,
+deployed live and confirmed working 2026-10-07) - the remaining open
+items from section 4 above (Required Telemetry, Recommended Diagnostic
+Sensors) were built in one pass, per the user's explicit request to put
+the new entities in Layer 1 ("safety and watchdog") and to derive
+port/write health from existing signals rather than a new TCP probe or
+integration. Added write-outcome/queue counters and text helpers to
+`safety_and_watchdog_helpers.yaml` (Layer 1); new port/write-health/
+backlog binary sensors to `watchdog_sensors.yaml` (Layer 1); and a daily
+counter-reset automation to `watchdog_automations.yaml`.
+`solaredge_modbusqueue.yaml` (Layer 4C) now classifies every write as
+success/failure/unmatched_service via before/after entity readback;
+`apply_effective_battery_control.yaml` (Layer 4B) increments the
+mode-skip counters from the Mode Command Guard's existing `else:`
+branch. Deliberately not built: a real TCP port probe, and any
+skip/dedup counter for charge/discharge *limit* writes (no such skip
+logic exists - see Write Pressure above). See known_issues_and_fixes.md
+- Write-Outcome Telemetry Is Readback-Based for the full design and its
+documented limitations, and entities.md - Layer 1 for the complete
+entity list.
 
-See known_issues_and_fixes.md - Write-Outcome Telemetry Is
-Readback-Based for the full design and its documented limitations (the
-write-outcome classification is not exception-based and can't fully
-distinguish a real wire-level failure from an optimistic local entity
-update), and entities.md - Layer 1 for the complete entity list.
-
-Status: implemented in project docs 2026-10-06. Not yet confirmed
-against the live file or any real write/outage - no trace or history
-evidence collected yet for any of the new counters or derived binary
-sensors.
-
-### Update 2026-10-07 - Deployed live; verification found a real false-positive problem, fixed same day
-
-The user deployed this live 2026-10-06. Live verification 2026-10-07
-confirmed every new entity actually exists and is being written to -
-but also found the write-outcome classification misfiring on roughly
-half of numeric writes (2s readback firing before the entity, which is
-genuinely poll-confirmed rather than optimistic, had settled - one
-confirmed case took ~10s to settle). `modbus_write_consecutive_failures`
-reached 2 of the 3-failure alarm threshold within minutes from false
-positives alone. Fixed the same day by moving the wait-and-classify step
-out of `script.modbus_queue` (which runs `mode: queued`, so any inline
-wait there would also have delayed the next queued command) into a new,
-independently-queued `script.modbus_write_verify`, started
-fire-and-forget and using `wait_template` (resolves as soon as the real
-value lands, up to ~10s, instead of one fixed-delay check). Full
-write-up: known_issues_and_fixes.md - Write-Outcome Telemetry Is
-Readback-Based, Update 2026-10-07.
-
-Also found and fixed the same day, unrelated to the above: three
-entity_ids documented in this project's docs (two introduced 2026-10-06,
-one dating back to 2026-10-02) didn't match what Home Assistant actually
-assigned, because entity_id is derived from a template entity's `name:`
-or an automation's `alias:`, not from `unique_id`/`id:`. No functional
-impact - see known_issues_and_fixes.md, Entity ID Documentation
-Mismatches.
-
-Status: **confirmed wired in and working live** 2026-10-07. The first
-redeploy left the fix unwired (old inline 2s-delay-then-classify block
-still running, `script.modbus_write_verify` never called - see
-known_issues_and_fixes.md Update 2026-10-07 (second check) for that
-evidence). The user then ran an HA update/restart around 12:00 UTC,
-which reloaded the package again; the next real write afterward
-(12:30:07 UTC, `set_storage_discharge_limit`) shows `script.modbus_queue`
-correctly dispatching via `script.turn_on` to `script.modbus_write_verify`
-with all variables arriving intact, and returning control immediately
-(~13ms) rather than blocking on the child script's wait - see
-known_issues_and_fixes.md Update 2026-10-07 (third check) for the full
-trace evidence. One residual wrinkle from that same verification window:
-that write's classification still timed out at 8s and read `failure`,
-while the entity actually landed ~2s after the timeout (total ~28s from
-dispatch, past the ~10s design budget) - plausibly a one-off tied to
-being the first write right after the restart (Modbus still
-reconnecting), not yet confirmed either way. Worth a further check
-under normal operating conditions to see if this recurs.
+Live verification (2026-10-07) found the write-outcome classification
+initially misfiring on roughly half of numeric writes (a fixed 2s
+readback check firing before some entities, which were genuinely
+poll-confirmed rather than optimistic, had settled) - fixed the same day
+by moving the wait-and-classify step out of `script.modbus_queue` (which
+runs `mode: queued`, so an inline wait there would delay the next queued
+command) into a new, independently-queued `script.modbus_write_verify`
+using `wait_template` instead of a fixed delay. Also found and fixed the
+same day, unrelated: three documented entity_ids didn't match what Home
+Assistant actually assigned, because entity_id is derived from a
+template entity's `name:`/an automation's `alias:`, not from
+`unique_id`/`id:` - see known_issues_and_fixes.md, Entity ID
+Documentation Mismatches. A first redeploy left the fix unwired; a
+subsequent HA update/restart reloaded the package correctly, and the
+next real write confirmed the new dispatch path working end-to-end.
+Status: confirmed wired in and working live 2026-10-07.
 
 **Modbus Queue Pending-Count Leak** (found and fixed 2026-10-19,
-confirmed live 2026-10-20) - a routine behaviour review surfaced
-`input_number.modbus_queue_pending_count`'s resting floor never
-returning to 0 (it reached 67 on 2026-10-17, was reset by what was
-most likely an HA restart on 2026-10-18, then climbed again to 10 by
-2026-10-19), tracking `modbus_queue_timeout_count_total` 1:1 - strong
-evidence every lock-wait timeout left a permanent, uncorrected +1 that
-the normal end-of-run decrement never claws back. Diagnostic-only
-impact: real command throughput stayed normal throughout, but
+confirmed live 2026-10-20) - `input_number.modbus_queue_pending_count`'s
+resting floor never returned to 0 (reached 67 on 2026-10-17, reset by
+what was most likely an HA restart on 2026-10-18, then climbed again to
+10 by 2026-10-19), tracking `modbus_queue_timeout_count_total` 1:1 -
+strong evidence every lock-wait timeout left a permanent, uncorrected +1
+that the normal end-of-run decrement never claws back. Diagnostic-only
+impact (real command throughput stayed normal throughout), but
 `binary_sensor.solaredge_modbus_queue_backlog` had been reporting a
 false "on" (backlog) for 33+ hours. Fixed the same day with a
 compensating decrement inside the lock-wait-timeout branch itself
-(floored at 0, same pattern as the existing end-of-run decrement) -
-self-correcting regardless of which run's own decrement went missing,
-rather than waiting on a live trace to fully prove the internal HA
-concurrency mechanism first. Deployed live 2026-10-20; a real lock-wait
-timeout occurred that same night and the floor returned cleanly to its
-prior resting value instead of climbing further, with the compensating
-decrement firing within 5ms of the timeout counter's own increment -
-about as direct a confirmation as live history can give once the
-script's own trace had already rolled off its 5-run retention. The
-pre-existing floor of 10 itself is unchanged (the fix stops future
-leaks, it doesn't retroactively repay the old debt), so the backlog
-sensor will keep reading a false "on" until that resting value is
-manually cleared or an HA restart resets it - a one-time cleanup, not
-a further code fix. See known_issues_and_fixes.md for full detail.
-`test_plan.md` Test 6.4 upgraded to PASS.
+(floored at 0, same pattern as the existing end-of-run decrement).
+Deployed live 2026-10-20; a real lock-wait timeout occurred that same
+night and the floor returned cleanly to its prior resting value instead
+of climbing further, confirming the fix. The pre-existing resting floor
+of 10 itself is unchanged (the fix stops future leaks, it doesn't
+retroactively repay the old debt), so the backlog sensor will keep
+reading a false "on" until that resting value is manually cleared or an
+HA restart resets it - a one-time cleanup, not a further code fix. See
+known_issues_and_fixes.md for full detail. `test_plan.md` Test 6.4
+upgraded to PASS.
 
 ---
 

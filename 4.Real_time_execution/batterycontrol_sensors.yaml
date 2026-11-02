@@ -39,16 +39,9 @@ template:
           {{ potential_revenue > battery_value }}
 
       # === Dynamic Storage Charge Limit ===
-      # UPDATED 2026-11-02 (see known_issues_and_fixes.md - "Dynamic Discharge
-      # Limit Under-Delivers vs. EMHASS Plan During Sustained Price Spikes"):
-      # target is now a weighted blend of the next THREE future forecast
-      # points (0.5 / 0.3 / 0.2 - identical weights to soc_batt_forecast_smooth
-      # below) instead of only forecast[0]. This widens the lookahead window
-      # so a genuinely sustained multi-step charge/discharge plan produces a
-      # proportionally larger limit, while a single noisy/one-off MPC re-plan
-      # is damped toward the average exactly as soc_batt_forecast_smooth
-      # already damps soc_target - same proven mechanism, reused here instead
-      # of invented fresh. Not yet deployed/verified live - see that doc entry.
+      # 3-point weighted lookahead (0.5/0.3/0.2) - see known_issues_and_fixes.md,
+      # "Dynamic Discharge Limit Under-Delivers vs. EMHASS Plan During
+      # Sustained Price Spikes", and architecture.md Layer 2.
       - name: "Dynamic Storage Charge Limit"
         unique_id: dynamic_storage_charge_limit
         unit_of_measurement: "W"
@@ -82,9 +75,7 @@ template:
           {% endif %}
 
       # === Dynamic Storage Discharge Limit ===
-      # UPDATED 2026-11-02 - same widened-lookahead change as Dynamic Storage
-      # Charge Limit above; see that sensor's comment and
-      # known_issues_and_fixes.md.
+      # Same 3-point weighted lookahead as Dynamic Storage Charge Limit above.
       - name: "Dynamic Storage Discharge Limit"
         unit_of_measurement: "W"
         unique_id: dynamic_storage_discharge_limit

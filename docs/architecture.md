@@ -148,17 +148,51 @@ The controller does not force battery export when the maximum SOC is reached.
 Instead:
 
 ```text
-SOC >= Maximum SOC
+SOC >= Maximum SOC - 1%
 → High SOC Hold enabled
-→ Battery charging blocked
+→ Charge limit set to 0, discharge limit set to 0
+→ Mode switches to Discharge to Minimize Import
 
 SOC <= Maximum SOC - 3%
 → High SOC Hold disabled
 → Normal control restored
 ```
 
-This avoids repeated charge/discharge oscillation caused by SOC
-quantisation near the upper safety limit.
+The entry side uses a `-1%` margin (`soc >= (soc_max - 1)` in
+`battery_high_soc_hold`, `safety_limits_and_override.yaml`) rather than
+exactly Maximum SOC, added as a defensive buffer against overshoot on
+entry. Live evidence (test_plan.md Test 1.2, 2026-11-01) shows the margin
+doesn't actually help prevent overshoot - entries happen at exactly SOC =
+90.00% regardless, most likely sensor quantisation skipping past it - but
+it's kept anyway as a defensive buffer; see known_issues_and_fixes.md for
+the full investigation. The exit side (`soc <= soc_max - 3`) avoids
+oscillation from SOC quantisation near the limit.
+
+**Mode switched 2026-11-02 from Maximize Self Consumption to Discharge to
+Minimize Import.** MSC was confirmed live (11 Hold cycles, 2026-10-22 to
+2026-11-01) to keep charging the battery past `charge_limit = 0` whenever
+PV surplus was available - 10 of 11 cycles climbed all the way to 100%
+SOC regardless, with the charge-limit register directly confirmed held
+at the commanded 0 throughout (not a write failure; MSC's own internal
+self-consumption logic evidently overrides the register while that mode
+stays active). Discharge to Minimize Import was chosen over the
+alternative, Solar Power Only (fully idle, no charge or discharge),
+specifically to keep the battery able to offset house load during Hold
+rather than sitting completely inert - both the charge and discharge
+limits are pinned to 0 while Hold is on, so the battery stays passive by
+default rather than actively discharging to cover load. See README.md
+(Storage Control Modes Explained) for what this mode does on the
+inverter, and known_issues_and_fixes.md (High SOC Hold - Charge Limit = 0
+Does Not Stop Charging While Maximize Self Consumption Stays Active,
+Update 2026-11-02) for the full fix write-up, including the one-line
+fallback to Solar Power Only if this mode turns out not to block
+PV-surplus charging either - **not yet verified live.**
+
+One side effect of the mode switch: Layer 4B's Mode Command Guard (see
+below) only skips the mode-select resend while effective mode is
+Maximize Self Consumption, so every Hold period now resends the full
+command sequence on each 15-minute tick instead of being guarded -
+expected, not a defect.
 
 # Layer 2 - Optimisation
 ## Purpose
@@ -218,6 +252,24 @@ EMHASS is the planning layer. It should not directly write to the inverter.
 EMHASS output is interpreted by lower layers before any SolarEdge command is created.
 
 This allows safety, grid constraints and real-time conditions to override or adjust the optimisation result.
+
+### Dynamic Charge/Discharge Limit Lookahead
+
+`sensor.dynamic_storage_charge_limit`/`_discharge_limit` (`batterycontrol_sensors.yaml`)
+target a weighted blend of the next three *future* EMHASS forecast points
+(`s1*0.5 + s2*0.3 + s3*0.2`) rather than only the single next point -
+reusing `sensor.soc_batt_forecast_smooth`'s proven weighting (see README.md,
+Dynamic Charge/Discharge Limits). Widened 2026-11-02 after a genuine
+price-spike discharge under-delivered against EMHASS's own multi-step
+power plan while using only the single-next-point version - see
+known_issues_and_fixes.md (Dynamic Discharge Limit Under-Delivers vs.
+EMHASS Plan During Sustained Price Spikes) for the full before/after
+evidence. The blend damps a single noisy one-off re-plan toward the
+average, same as `soc_batt_forecast_smooth` already does for `soc_target`,
+while a genuinely sustained multi-step trend pulls the blended target
+further from current SOC than the single-point version would, increasing
+the computed power precisely when the plan is sustained. Not yet
+verified against a real live event.
 ---
 # Layer 3 - Grid Constraints
 ## Purpose
@@ -391,13 +443,12 @@ ceiling - it cannot prevent an initial bad charge decision.
 
 Observed 2026-08-27: `charge_from_solar_and_grid` fired at 11:00 and 14:00
 on exactly this kind of momentary PV-dip/load-spike coincidence (PV
-briefly ~430-480W and ~800-1000W respectively against a load spike to
-~2500-2800W, sampled in the same second as the trigger), while
-`sensor.total_import_price` (~2.2-2.3 SEK/kWh) was more than double
-`sensor.total_export_price` (~0.95-1.05 SEK/kWh) for the whole window.
-Each charge was followed within 15-75 minutes by
-`discharge_to_maximize_export`, selling the same energy back at the same
-depressed export price - a guaranteed loss on the round trip.
+briefly ~430-480W and ~800-1000W against a load spike to ~2500-2800W,
+sampled in the same second as the trigger), while import price
+(~2.2-2.3 SEK/kWh) was more than double export price (~0.95-1.05 SEK/kWh)
+for the whole window. Each charge was sold back within 15-75 minutes via
+`discharge_to_maximize_export` at the same depressed export price - a
+guaranteed round-trip loss.
 
 The Grid Charge Export Cooldown closes this specific failure mode without
 requiring price forecasting: whenever a `charge_from_solar_and_grid`

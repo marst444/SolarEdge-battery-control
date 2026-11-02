@@ -205,7 +205,13 @@ House loads
 NO grid export
 ```
 
-→ Not used in this automation — Maximize Self Consumption covers this use case.
+→ Used when: High SOC Hold is active (SOC at/above the safety ceiling) - see
+SOC Safety Limits below and architecture.md (Layer 1 - High SOC Hold). Added
+2026-11-02 after Maximize Self Consumption was confirmed to keep charging
+the battery past charge limit = 0 whenever PV surplus was available; not
+yet verified whether this mode actually blocks that charging either - see
+known_issues_and_fixes.md for the open verification and the Solar Power
+Only fallback plan if it doesn't.
 
 ## Maximize Self Consumption
 PV covers house load first. Any surplus charges the battery. If PV is insufficient, the battery discharges to cover the gap. Net result: grid import and export are minimized. Requires external meter.
@@ -236,6 +242,17 @@ House load
 
 → Default mode for maintain zone, self-consumption optimization, and fine-grained real-time control.
 
+**Caveat found 2026-11-01** (see known_issues_and_fixes.md - High SOC Hold -
+Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption
+Stays Active): the "Charge limit = 0 → battery will only discharge, not
+charge" line above was confirmed live to NOT hold while meaningful PV
+surplus is available - the battery kept charging to 100% SOC for 6h45m+
+with the charge-limit register confirmed held at 0 throughout. This mode's
+own internal self-consumption logic evidently overrides the charge-limit
+register in that condition. As of 2026-11-02, High SOC Hold no longer
+relies on this mode for that reason - see Discharge to Minimize Import
+above.
+
 # SolarEdge default/backup mode
 
 select.solaredge_i1_storage_default_mode configures the mode SolarEdge falls
@@ -265,8 +282,11 @@ VariableDescriptionsocCurrent battery state of charge (%)targetEMHASS forecasted
 # 1. SOC Safety Limits (Layer 1)
 
 SOC > max (e.g. 90%)
-Battery is full enough — stop charging, allow dynamic discharge.
-→ Mode: Maximize Self Consumption, charge limit = 0, dynamic discharge limit
+Battery is full enough — stop charging, allow limited discharge to offset house load (no export).
+→ Mode: Discharge to Minimize Import, charge limit = 0, discharge limit = 0
+(Changed 2026-11-02 from Maximize Self Consumption, charge limit = 0, dynamic
+discharge limit - see the caveat under Maximize Self Consumption above and
+known_issues_and_fixes.md. Not yet verified live.)
 
 SOC < min (e.g. 20%)
 Battery is too low — stop discharging.
@@ -349,9 +369,9 @@ No clear signal — hold position.
 
 # Dynamic Charge/Discharge Limits
 
-Charge and discharge power limits are calculated from the EMHASS battery SOC forecast. The difference between the forecasted next-interval SOC and the current SOC, converted to watts based on battery capacity (4.6 kWh), gives a proportional power limit. This means the battery charges or discharges faster when far from target and slower as it approaches it — a simple proportional control that works alongside the mode logic.
+Charge and discharge power limits are calculated from the EMHASS battery SOC forecast: a weighted blend of the next three forecasted SOC points (weights 0.5/0.3/0.2, nearest-weighted-heaviest - the same weighting used by `sensor.soc_batt_forecast_smooth` for the SOC target) rather than only the single next forecast point. The difference between that blended target and the current SOC, converted to watts based on battery capacity (4.6 kWh), gives a proportional power limit. This means the battery charges or discharges faster when far from target and slower as it approaches it — a simple proportional control that works alongside the mode logic. Widening the blend from one point to three (2026-11-02) lets a genuinely sustained multi-step plan pull the limit further from the current SOC than a single point would, while still damping a single noisy MPC re-plan toward the average - see known_issues_and_fixes.md (Dynamic Discharge Limit Under-Delivers vs. EMHASS Plan During Sustained Price Spikes). Not yet verified against a real live event.
 
-These limits are updated independently of the 15-minute mode cycle, allowing the system to respond in real time to events like EV charging starting or stopping without waiting for the next automation trigger.
+These limits update independently of the 15-minute mode cycle (see Key design principle above) - e.g. responding immediately to EV charging starting or stopping, without waiting for the next automation trigger.
 
 
 

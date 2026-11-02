@@ -116,39 +116,13 @@ automation:
                   value: "SOC below minimum - dynamic recovery charge"
 
           # HIGH SOC HOLD
-          # Preserve charge without forcing export.
-          #
-          # UPDATED 2026-11-02 (see known_issues_and_fixes.md - High SOC
-          # Hold - Charge Limit = 0 Does Not Stop Charging While Maximize
-          # Self Consumption Stays Active): switched from
-          # maximize_self_consumption to discharge_to_minimize_import,
-          # discharge limit pinned to 0 (not the dynamic requested_discharge
-          # used before). MSC was confirmed live to keep charging the
-          # battery past charge_limit=0 whenever PV surplus was available
-          # (11 Hold cycles, 2026-10-22 to 2026-11-01, 10 of 11 climbed all
-          # the way to 100% SOC regardless) - MSC's own self-consumption
-          # logic evidently overrides the charge-limit register while that
-          # mode stays active. Discharge to Minimize Import never exports
-          # from the battery and, per this project's own README, is a
-          # distinct SolarEdge command mode rather than a cap layered on top
-          # of self-consumption logic - the fix direction the user chose
-          # over switching to Solar Power Only (which would also block
-          # discharge entirely) specifically to keep the battery able to
-          # offset house load during Hold rather than sitting fully idle.
-          # Pinning the discharge limit to 0 here (rather than
-          # requested_discharge) keeps the battery passive by default
-          # while Hold is on, rather than actively discharging to cover
-          # load - matches the user's explicit request ("keep discharge
-          # limit to 0 when hitting the SOC roof").
-          #
-          # NOT YET VERIFIED LIVE: whether this mode actually blocks
-          # charging from PV surplus the way Solar Power Only is
-          # documented to (README only describes its discharge behaviour)
-          # is unconfirmed - if SOC is still observed climbing past the
-          # ceiling under this mode, the documented fallback is to switch
-          # the option below to "solar_power_only" instead (see
-          # known_issues_and_fixes.md for the full fix write-up and the
-          # fallback plan).
+          # Preserve charge without forcing export. Mode switched 2026-11-02
+          # from maximize_self_consumption to discharge_to_minimize_import -
+          # not yet verified live. See architecture.md (Layer 1 - High SOC
+          # Hold) and known_issues_and_fixes.md (High SOC Hold - Charge
+          # Limit = 0 Does Not Stop Charging While Maximize Self Consumption
+          # Stays Active) for the full rationale and the solar_power_only
+          # fallback plan if this doesn't hold live.
 
           - conditions:
               - condition: state
