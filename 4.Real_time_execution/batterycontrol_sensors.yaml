@@ -39,6 +39,16 @@ template:
           {{ potential_revenue > battery_value }}
 
       # === Dynamic Storage Charge Limit ===
+      # UPDATED 2026-11-02 (see known_issues_and_fixes.md - "Dynamic Discharge
+      # Limit Under-Delivers vs. EMHASS Plan During Sustained Price Spikes"):
+      # target is now a weighted blend of the next THREE future forecast
+      # points (0.5 / 0.3 / 0.2 - identical weights to soc_batt_forecast_smooth
+      # below) instead of only forecast[0]. This widens the lookahead window
+      # so a genuinely sustained multi-step charge/discharge plan produces a
+      # proportionally larger limit, while a single noisy/one-off MPC re-plan
+      # is damped toward the average exactly as soc_batt_forecast_smooth
+      # already damps soc_target - same proven mechanism, reused here instead
+      # of invented fresh. Not yet deployed/verified live - see that doc entry.
       - name: "Dynamic Storage Charge Limit"
         unique_id: dynamic_storage_charge_limit
         unit_of_measurement: "W"
@@ -46,22 +56,25 @@ template:
           {% set soc_now = states('sensor.solaredge_b1_state_of_energy') | float(0) %}
           {% set forecast_raw = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') or [] %}
           {% set batt_capacity_wh = 4600 %}
-          {% set now_ts = as_timestamp(now()) %}
-          {% if forecast_raw | length >= 1 %}
-            {% set first_ts = as_timestamp(forecast_raw[0].date) %}
-            {% if first_ts < now_ts %}
-              {% set forecast = forecast_raw[1:] %}
-            {% else %}
-              {% set forecast = forecast_raw %}
-            {% endif %}
+          {% set soc_min = states('input_number.minimum_state_of_charge') | float(20) %}
+          {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}
+
+          {% set forecast = forecast_raw | selectattr('date', 'defined') | list %}
+          {% set forecast_future = forecast | selectattr('date', '>=', now() | string) | list %}
+
+          {% if forecast_future | length >= 3 %}
+            {% set s1 = forecast_future[0].mpc_pv_batt_soc | float %}
+            {% set s2 = forecast_future[1].mpc_pv_batt_soc | float %}
+            {% set s3 = forecast_future[2].mpc_pv_batt_soc | float %}
+            {% set raw_target = s1*0.5 + s2*0.3 + s3*0.2 %}
+          {% elif forecast_future | length >= 1 %}
+            {% set raw_target = forecast_future[0].mpc_pv_batt_soc | float %}
           {% else %}
-            {% set forecast = [] %}
+            {% set raw_target = none %}
           {% endif %}
-          {% if forecast | length >= 1 %}
-            {% set raw_next = forecast[0].mpc_pv_batt_soc | float(0) %}
-            {% set soc_min = states('input_number.minimum_state_of_charge') | float(20) %}
-            {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}
-            {% set next_forecast = [[raw_next, soc_min] | max, soc_max] | min %}
+
+          {% if raw_target is not none %}
+            {% set next_forecast = [[raw_target, soc_min] | max, soc_max] | min %}
             {% set power = ((next_forecast - soc_now) / 100 * batt_capacity_wh) | round(0) %}
             {{ power if power > 0 else 0 }}
           {% else %}
@@ -69,6 +82,9 @@ template:
           {% endif %}
 
       # === Dynamic Storage Discharge Limit ===
+      # UPDATED 2026-11-02 - same widened-lookahead change as Dynamic Storage
+      # Charge Limit above; see that sensor's comment and
+      # known_issues_and_fixes.md.
       - name: "Dynamic Storage Discharge Limit"
         unit_of_measurement: "W"
         unique_id: dynamic_storage_discharge_limit
@@ -76,22 +92,25 @@ template:
           {% set soc_now = states('sensor.solaredge_b1_state_of_energy') | float(0) %}
           {% set forecast_raw = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') or [] %}
           {% set batt_capacity_wh = 4600 %}
-          {% set now_ts = as_timestamp(now()) %}
-          {% if forecast_raw | length >= 1 %}
-            {% set first_ts = as_timestamp(forecast_raw[0].date) %}
-            {% if first_ts < now_ts %}
-              {% set forecast = forecast_raw[1:] %}
-            {% else %}
-              {% set forecast = forecast_raw %}
-            {% endif %}
+          {% set soc_min = states('input_number.minimum_state_of_charge') | float(20) %}
+          {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}
+
+          {% set forecast = forecast_raw | selectattr('date', 'defined') | list %}
+          {% set forecast_future = forecast | selectattr('date', '>=', now() | string) | list %}
+
+          {% if forecast_future | length >= 3 %}
+            {% set s1 = forecast_future[0].mpc_pv_batt_soc | float %}
+            {% set s2 = forecast_future[1].mpc_pv_batt_soc | float %}
+            {% set s3 = forecast_future[2].mpc_pv_batt_soc | float %}
+            {% set raw_target = s1*0.5 + s2*0.3 + s3*0.2 %}
+          {% elif forecast_future | length >= 1 %}
+            {% set raw_target = forecast_future[0].mpc_pv_batt_soc | float %}
           {% else %}
-            {% set forecast = [] %}
+            {% set raw_target = none %}
           {% endif %}
-          {% if forecast | length >= 1 %}
-            {% set raw_next = forecast[0].mpc_pv_batt_soc | float(0) %}
-            {% set soc_min = states('input_number.minimum_state_of_charge') | float(20) %}
-            {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}
-            {% set next_forecast = [[raw_next, soc_min] | max, soc_max] | min %}
+
+          {% if raw_target is not none %}
+            {% set next_forecast = [[raw_target, soc_min] | max, soc_max] | min %}
             {% set power = ((next_forecast - soc_now) / 100 * batt_capacity_wh) | round(0) %}
             {{ (-power) if power < 0 else 0 }}
           {% else %}
