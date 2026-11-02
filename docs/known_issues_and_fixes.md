@@ -12,27 +12,38 @@ these project docs so far.
 
 ---
 
-Four issues are currently open. The newest, found 2026-11-02 while
-reviewing whether Maximize Self Consumption is the right nighttime
-fallback mode - PV Sensor Trickle Readings Bypass the "No PV" Branch
-Logic - is a decision-engine robustness gap, not yet confirmed to have
-caused a real misfire: several `battery_forecast_control.yaml` branches
-test `pv == 0` exactly to mean "no real PV," which a small sensor
-offset/trickle reading can defeat. A noise-floor fix is implemented in
-project docs; see Open Issues below. The next-newest, found 2026-11-01
-from the user's report "the SOC now recurrently goes over 90%" - High SOC
-Hold's Charge Limit = 0 Does Not Stop Charging While Maximize Self
-Consumption Stays Active - is a safety-relevant regression against this
-project's own documented design assumption: the charge-limit register is
-confirmed holding at 0 throughout, yet the battery keeps charging to 100%
-anyway. See Open Issues below. The other two, both found 2026-10-11 while
-verifying a real SOC<10% critical-recovery event against the user's
-request to check it against the stats, are Critical-Recovery Charge Limit
-Write Silently Dropped (the physical charge-limit register never actually
-reached the critical-recovery value, stuck at a stale 5000W for ~28
-minutes) and SOC<10% Critical Recovery Triggered By a Physically-
-Implausible Single-Sample SOC Reading (strong evidence the underlying
-SOC<10% condition itself may never have been real). A fourth issue found
+Five issues are currently open. The newest, found 2026-11-02 in response
+to the user's report that the autumn clock change caused EMHASS to fail
+for a full day (and that the same thing happened at the spring
+transition, where a fix was made that evidently didn't carry over) -
+Winter-Time (DST Fall-Back) Transition Caused a Full-Day EMHASS Failure -
+was initially mis-diagnosed against a legacy mechanism that turned out to
+be dead code (confirmed with the user: superseded by a refactor, not
+live), then re-diagnosed against the actually-running scripts: a
+confirmed, live bug in how `emhass_sensors.yaml`/`emhass_scripts.yaml`
+round-trip forecast timestamps through bare local-time strings, which is
+provably lossy on the fall-back day specifically. See Open Issues below.
+The next-newest, found 2026-11-02 while reviewing whether
+Maximize Self Consumption is the right nighttime fallback mode - PV
+Sensor Trickle Readings Bypass the "No PV" Branch Logic - is a
+decision-engine robustness gap, not yet confirmed to have caused a real
+misfire: several `battery_forecast_control.yaml` branches test `pv == 0`
+exactly to mean "no real PV," which a small sensor offset/trickle
+reading can defeat. A noise-floor fix is implemented in project docs;
+see Open Issues below. The next, found 2026-11-01 from the user's report
+"the SOC now recurrently goes over 90%" - High SOC Hold's Charge Limit =
+0 Does Not Stop Charging While Maximize Self Consumption Stays Active -
+is a safety-relevant regression against this project's own documented
+design assumption: the charge-limit register is confirmed holding at 0
+throughout, yet the battery keeps charging to 100% anyway. See Open
+Issues below. The other two, both found 2026-10-11 while verifying a
+real SOC<10% critical-recovery event against the user's request to check
+it against the stats, are Critical-Recovery Charge Limit Write Silently
+Dropped (the physical charge-limit register never actually reached the
+critical-recovery value, stuck at a stale 5000W for ~28 minutes) and
+SOC<10% Critical Recovery Triggered By a Physically-Implausible
+Single-Sample SOC Reading (strong evidence the underlying SOC<10%
+condition itself may never have been real). A sixth-order item found
 2026-10-19 during a routine behaviour review - Modbus Queue Pending-Count
 Counter Leaks On Lock-Wait Timeout, a telemetry-only bug where
 `binary_sensor.solaredge_modbus_queue_backlog` had been reporting a false
@@ -92,6 +103,131 @@ see Entity ID Documentation Mismatches below.)
 ---
 
 # Open Issues
+
+## Winter-Time (DST Fall-Back) Transition Caused a Full-Day EMHASS Failure
+
+Found 2026-11-02, from the user's report: "the change from summer to
+wintertime caused the EMHASS to fail a whole day. It was the same in the
+spring, we analyzed and made a fix, but obviously didn't work." Sweden
+(`Europe/Stockholm`, confirmed live) observes the EU rule - clocks went
+back 2026-10-25 03:00 CEST -> 02:00 CET.
+
+**First root-cause pass was wrong - diagnosed dead code.** The initial
+write-up here centered on `script.emhass_update_sliding_window` and
+`input_datetime.day_ahead_forecast_end`. Checked live: that entity's
+value is frozen at `2026-07-10 21:00:00` and hasn't moved since;
+`automation.emhass_day_ahead_optimization`, `automation.emhass_update_
+sliding_window`, `automation.emhass_mpc`, and `script.run_mpc_
+optimization` are all in state `unavailable` right now, with no config
+resolvable for the first two via `ha_config_get_automation`. Confirmed
+with the user: these were intentionally replaced by `generate_emhass_
+energy_plan_mpc_pv`/`dh_pv`, which are the actually-running automations
+(confirmed firing every 15 minutes / once daily in the live log). The
+entire sliding-window/`day_ahead_forecast_end` mechanism is orphaned
+leftover from before that refactor, not live code - the search that
+found no writer for `day_ahead_forecast_end` anywhere in this project
+wasn't a documentation gap, it's dead because nothing needs to write it
+any more.
+
+**Confirmed, live bug in the scripts that actually run: a lossy
+local-time string round-trip.** `emhass_sensors.yaml`'s `forecast_merged`
+attributes (on `nordpool_se3_total_costs_import`, `..._total_revenue_
+export`, `epex_total_costs_import_forecast`, `epex_total_revenue_export_
+forecast`, the merged costs/revenue sensors, the Solcast interval
+sensors, and `p_load_dayahead_forecast`) all build their `ts` field the
+same way:
+
+```text
+ts = as_timestamp(start) | timestamp_custom('%Y-%m-%d %H:%M')   # bare, no UTC offset
+```
+
+`emhass_scripts.yaml`'s `generate_emhass_energy_plan_mpc_pv` and
+`generate_emhass_energy_plan_dh_pv` - both confirmed live and running -
+then re-parse that bare string back into a dict key for every one of
+`load_cost_forecast`, `prod_price_forecast`, and (via `period_start`
+directly) `pv_power_forecast`:
+
+```text
+key = (ts.split(' - ')[0] | as_datetime | as_local).isoformat()
+```
+
+`as_datetime` on a bare "YYYY-MM-DD HH:MM" string with no offset produces
+a *naive* datetime; `as_local()` then has to guess which UTC offset it
+meant. On 2026-10-25, the local hour 02:00-02:59 happened twice in
+reality (once at CEST/+02:00, once at CET/+01:00) - two genuinely
+different real instants, each a real Nordpool/EPEX quarter-hour with its
+own price. Both format to the identical bare string "2026-10-25 02:1X".
+Python's `as_local()` resolves an ambiguous naive time using `fold=0` by
+default, which always picks the *first* (CEST) interpretation - so both
+real instants' bare strings decode back to the same key. When the
+script's `combine()` builds the output dict, the second occurrence
+silently overwrites the first under an identical key: one of the two
+real quarter-hours' price (or PV) data for that hour is discarded
+outright, every single day this code runs on 2026-10-25's data, for as
+long as that date stays inside the `num_prediction_days: 2` window feeding
+both the MPC (every 15 min) and day-ahead (daily) scripts - i.e. this
+wasn't a single-moment failure, it was wrong for roughly two days'
+worth of runs bracketing the transition. The exact downstream failure
+mode inside the EMHASS add-on's solver (length mismatch vs. its own
+internally-generated, correctly-DST-aware time index; a `NaN`/missing
+value the solver rejects; something else) could not be confirmed from
+this project's docs alone - the add-on's Python source isn't in this
+project - but a silently wrong or missing price/PV value for part of a
+day feeding a profit-optimizing MPC solver is a plausible, concrete path
+to the solver failing or returning a degenerate plan for that day.
+
+**Historical confirmation was attempted and could not be completed.**
+Home Assistant's automation-trace store only retains 5 runs per
+automation (all from 2026-11-02 when checked), and `ha_get_history`
+against `sensor.mpc_pv_optim_status`/`sensor.dh_pv_optim_status` for
+2026-10-24 through 10-26 returned zero rows - outside this recorder's
+retained window. The live-code bug above is confirmed by reading the
+actual running templates, not by observing the failure directly on the
+day it happened.
+
+**Why a spring fix wouldn't carry over to this:** spring-forward
+(2026-03-29 this year) *removes* an hour from the local day - Nordpool/
+EPEX's raw data for that day genuinely has fewer quarter-hours, so
+`today_raw`/`today_ts` in `emhass_sensors.yaml` are legitimately short
+that day. A fix aimed at that shape of problem (a short list, a missing
+local time, a resulting out-of-range index) would not address fall-back's
+shape of problem at all: fall-back doesn't produce a short list, it
+produces a full-length list with a silently *duplicated* key that
+overwrites real data - a bare string collision, not a missing entry.
+Same underlying design choice (format forecast timestamps as bare local
+strings, no UTC offset) breaks in two different, unrelated-looking ways
+depending on which direction the clock moves - consistent with the
+user's report that the spring fix "obviously didn't work" here: it's not
+that the fix regressed, it's that fall-back is a different failure
+shape the spring fix never touched.
+
+**Fix candidates, not yet implemented:** the root problem is that
+`timestamp_custom('%Y-%m-%d %H:%M')` throws away the UTC offset that
+`as_timestamp()` already had. Two options: (a) in `emhass_sensors.yaml`,
+format `ts` to include the offset (e.g. an ISO 8601 string with
+`%z`/`+00:00`, or keep it as a UTC epoch/ISO string instead of a local
+string) so `emhass_scripts.yaml` can parse an already-unambiguous,
+offset-aware value and never needs `as_local()`'s fold guess at all; or
+(b) narrower, leave the producer as-is and have the consumer deduplicate
+by real timestamp before building the dict (e.g. carry the epoch
+alongside the display string and key on that instead). Option (a) is the
+more complete fix - it removes the ambiguity at the source instead of
+working around it on the read side - but touches every `forecast_merged`
+producer in `emhass_sensors.yaml` plus both consumer scripts in
+`emhass_scripts.yaml`, so it needs a deliberate pass across all of them
+together, not a one-line patch. Not done yet this session.
+
+Status: **root cause confirmed in currently-live code (the bare
+local-time round-trip in `forecast_merged`/`load_cost_forecast`/
+`prod_price_forecast`/`pv_power_forecast`); not yet fixed.** The original
+theory centered on `emhass_update_sliding_window` is retired - confirmed
+dead code, superseded by a refactor the user confirmed was intentional.
+Direct historical confirmation of the exact 2026-10-25 EMHASS failure
+(e.g. a non-"Optimal" solver status recorded that day) was not possible
+from this recorder's ~10-day retention; the fix above should be treated
+as confirmed-by-mechanism, not confirmed-by-observed-incident.
+
+---
 
 ## PV Sensor Trickle Readings Bypass the "No PV" Branch Logic
 
@@ -688,6 +824,228 @@ Status: **implemented in project docs, not yet deployed to the live HA
 instance or verified against a real Hold cycle.** This session has no
 live write access - the user needs to push these three files and watch
 the next time SOC reaches the ceiling.
+
+### Update 2026-11-02 (next day) - fix WAS deployed and the decision layer worked correctly; the inverter's mode silently reverted 15 minutes later, letting the already-documented MSC bug take back over
+
+The user reported "today we again ran above the SOC limit and ran at
+100% despite our last fix." Checked live, read-only. An earlier draft of
+this update wrongly concluded `apply_effective_battery_control_to_
+solaredge_inverter` never ran after 10:43 - that was a timestamp-reading
+error on this session's part (Home Assistant's trace API returns UTC;
+`10:42:03 UTC` is `11:42:03` local, the same instant as everything else
+below, not three hours earlier). Corrected using a full trace the user
+pasted directly from the live UI.
+
+**The mode-switch fix is confirmed deployed and the decision layer is
+confirmed correct.** `input_select.effective_storage_mode` changed
+`maximize_self_consumption -> discharge_to_minimize_import` at exactly
+11:42:03.337 local, the same instant Hold engaged (SOC crossed 90.0%).
+`effective_charge_limit`/`effective_discharge_limit` both went to `0.0`
+in the same instant, and the reason text updated correctly. Not in
+question.
+
+**The apply automation also ran correctly and did get the inverter into
+the new mode - briefly.** `automation.apply_effective_battery_control_
+to_solaredge_inverter` triggered at 11:42:03, queued all three writes
+(command-timeout refresh, mode -> Discharge to Minimize Import, then
+charge/discharge limit -> 0), and its own write-verify step logged all
+three as **failed** 10 seconds after each queue (`input_text.modbus_
+last_failed_reason`, e.g. "Entity select.solaredge_i1_storage_command_
+mode expected Discharge to Minimize Import but reads Maximize Self
+Consumption (after ~10s)"). Checking the actual entity history shows
+this was a **false failure**: `select.solaredge_i1_storage_command_mode`
+shows "Discharge to Minimize Import" at **11:43:35** - about 10 seconds
+*after* the verify check already gave up. The Modbus queue was running
+slow that minute (`modbus_queue_last_execution_seconds` logged 21.95s,
+18.02s, 8.05s, 18.01s for the four queued commands in this one
+automation run - each command taking far longer than the verify step's
+fixed ~10s wait), so the fixed-delay verify is checking before a
+backlogged queue has actually gotten to the command. This tripped
+`input_number.modbus_write_consecutive_failures` 1 -> 2 -> 3 and set
+`binary_sensor.solaredge_modbus_write_unhealthy` to `on` - both still
+`on`/`4` as of this writing, since nothing has run a fresh write to
+clear them. This false-failure/premature-verify issue is real but
+separate from what actually caused the SOC excursion, see below.
+
+**What actually caused SOC to reach 100%: the inverter's live command
+mode reverted to Maximize Self Consumption on its own, 15 minutes after
+the fix applied, with no project-side trigger.** `select.solaredge_i1_
+storage_command_mode` history: `Maximize Self Consumption` (pre-Hold) ->
+`Discharge to Minimize Import` at 11:43:35 (the fix landing, confirmed
+above) -> back to **`Maximize Self Consumption` at 11:58:00.197** -
+fifteen minutes later, with `input_select.effective_storage_mode`
+(this project's own intended-mode helper) confirmed unchanged at
+`discharge_to_minimize_import` throughout, and no automation of this
+project's own touching `select.solaredge_i1_storage_command_mode`
+directly (it's only ever set by the apply scripts, and nothing re-ran
+until much later). Once back on Maximize Self Consumption, the
+already-documented root mechanism of this same issue - MSC's own
+self-consumption logic overriding `charge_limit=0` (see this issue's
+main entry above) - took back over uncontested for the next ~2 hours,
+and SOC climbed from there to 100.0% at 14:02:23.
+
+This 11:58:00 mode-revert is the same shape of event this issue's
+2026-11-01 Update already documented and attributed to a Modbus
+disturbance resetting inverter registers to non-project defaults
+(`inverter_default_mode`, confirmed elsewhere as Maximize Self
+Consumption) - not a new mechanism, but a second live occurrence of it,
+this time undoing the High SOC Hold fix specifically rather than just
+the limit registers. (Separately, another clear instance of the same
+family happened later today: `select.solaredge_i1_storage_command_mode`
+and both limit registers went `unavailable` at 18:07:55 and came back at
+18:08:18 reading Maximize Self Consumption / 5000 / 5000 - the same
+5000/5000 non-project-default pattern as 2026-11-01's documented case.)
+
+**The real gap, confirmed now by a second occurrence: nothing re-asserts
+or monitors the live inverter mode after the one-shot apply.**
+`apply_effective_battery_control_to_solaredge_inverter` only fires on a
+state *change* of `effective_storage_mode`/`effective_charge_limit`/
+`effective_discharge_limit` - once those are set and applied, nothing
+checks that `select.solaredge_i1_storage_command_mode` still agrees with
+`effective_storage_mode` afterward. A silent revert like the one at
+11:58 - from whatever causes it - goes completely undetected until the
+next time an `effective_*` helper happens to change for an unrelated
+reason (here, that didn't happen again until well after SOC had already
+hit 100%).
+
+Separately, a confirmed, reproducible crash bug was found in this same
+automation from the night before (2026-11-01 22:01:11 local): a Modbus
+transaction logged taking 69.7 seconds, and `input_number.modbus_queue_
+last_execution_seconds`'s own 0-60 range rejected the write, raising an
+uncaught exception that killed that run outright. Not tied to today's
+SOC excursion (a separate successful run happened this morning after
+that crash), but a real vulnerability given this system's Modbus
+reliability today (`modbus_write_failure_count_today` 43+,
+`modbus_queue_timeout_count_today` 7+).
+
+Not yet proposed as a fix: nothing changed in any YAML file for this.
+Three independent things worth doing, none implemented: (1) a watchdog
+that compares `effective_storage_mode` against `select.solaredge_i1_
+storage_command_mode` (and the limit registers against `effective_
+charge_limit`/`effective_discharge_limit`) on a short interval, and
+re-applies if they've drifted - this project already has the watchdog
+pattern (`emhass_watchdog_day_ahead_missing_or_failed`, `emhass_
+watchdog_mpc_stalled`); this is the same idea applied to the
+decision-to-inverter path, and it's the fix that would have caught the
+11:58 revert within minutes instead of hours; (2) make the write-verify
+step's wait adaptive to queue backlog (or just re-check once more before
+declaring failure) instead of a fixed ~10s, to stop generating false
+failure/unhealthy signals when the queue is simply slow; (3) loosen or
+clamp `input_number.modbus_queue_last_execution_seconds`'s 0-60 range so
+a slow transaction logs a fact rather than crashing the logging
+automation.
+
+Status: **open, not fixed.** The mode-switch fix (this issue's main
+entry) is deployed and confirmed correct at both the decision layer and
+the initial apply; the newly-confirmed gap is that nothing defends
+against - or even notices - the live inverter silently reverting away
+from the commanded mode afterward, which is what actually let SOC reach
+100% today.
+
+### Update 2026-11-02 (later same day) - day/night mode split replaces the single-mode Hold fix, plus a new Battery Control Drift Watchdog to catch future silent reverts
+
+Per the user's explicit direction ("lets create the watchdog, and lets
+change the mode of working to 'solar power only' when SOC >90% and PV
+>0 (above floor), and keep discharge to maximize export during night
+when PV=0 (minus floor)"), two further changes, both addressing gaps
+confirmed by the two Updates above:
+
+**1. High SOC Hold no longer uses one mode for the whole Hold period -
+it now splits by whether PV is actually present.** The previous fix (the
+first Update above) moved Hold from Maximize Self Consumption to
+Discharge to Minimize Import, but whether that mode's *charge* behavior
+under PV surplus is actually any safer than MSC's was explicitly flagged
+there as unconfirmed - and the very next Hold cycle's SOC excursion (the
+second Update above) was caused by a different mechanism entirely (a
+silent mode revert), so that question was never actually tested either
+way. Rather than deploy and wait again, `safety_limits_and_override.yaml`
+now decides between two already-existing, already-wired modes based on
+live PV:
+
+- **Daytime (PV > the noise floor):** `solar_power_only` - charge AND
+  discharge both pinned to 0. This is README.md's strongest documented
+  guarantee ("No battery charging or discharging... Battery is idle"),
+  closing off the MSC-style charge-limit-override vulnerability
+  entirely rather than trusting any mode's charge behavior under PV
+  surplus to be safely assumable.
+- **Nighttime (PV at/below the noise floor):** `discharge_to_maximize_
+  export` - charge pinned to 0, discharge set to `input_number.
+  dynamic_discharge_limit` (not pinned to 0, unlike the daytime branch).
+  With no PV, there's no recharge risk, so instead of sitting idle the
+  battery actively discharges toward export to bring SOC down ahead of
+  the next day's solar - a deliberate behavior change from the previous
+  single-mode fix, which left the battery passive (discharge pinned to
+  0) during Hold regardless of time of day.
+
+The PV reading used is `sensor.solar_panel_production_w` floored to 0
+below `input_number.pv_noise_floor_w` (default 20W) - the same noise-
+floor pattern already proven in `battery_forecast_control.yaml`'s own
+`pv`/`pv_now` variables (see PV Sensor Trickle Readings Bypass the "No
+PV" Branch Logic, above), replicated here since Layer 1 didn't
+previously look at PV at all. Both `solar_power_only` and `discharge_
+to_maximize_export` were already selectable in `input_select.
+effective_storage_mode` and already had working `apply_effective_
+battery_control.yaml` → script wiring before today (unlike `discharge_
+to_minimize_import`, which needed new plumbing in the first Update
+above) - no changes needed to `batterycontrol_helpers.yaml`,
+`apply_effective_battery_control.yaml`, or `batterycontrol_scripts.
+yaml` for this part.
+
+**2. A new watchdog closes the "nothing notices a silent revert" gap
+identified in the Update directly above.** `watchdog_automations.yaml`
+gains `battery_control_drift_watchdog`: every 5 minutes, while the
+killswitch (`input_boolean.effective_battery_control_enabled`) is on and
+the inverter is in Remote Control (the same precondition
+`apply_effective_battery_control_to_solaredge_inverter` itself requires
+- no point flagging or trying to fix drift the project has no authority
+to correct anyway), it compares:
+
+- `select.solaredge_i1_storage_command_mode` (live) against `input_
+  select.effective_storage_mode` (intended), translated through the same
+  mode-string mapping `script.modbus_queue` itself uses in `solaredge_
+  modbusqueue.yaml` (kept as a literal copy here, not a shared helper -
+  the two need to be kept in sync by hand if either changes);
+- `number.solaredge_i1_storage_charge_limit`/`_discharge_limit` (live)
+  against `input_number.effective_charge_limit`/`_discharge_limit`
+  (intended), with a 50W tolerance to avoid flagging register-rounding
+  noise.
+
+On any mismatch, it increments two new diagnostic counters (`input_
+number.battery_control_drift_count_total`/`_today`, added to `safety_
+and_watchdog_helpers.yaml`, the `_today` one reset at midnight by
+`reset_watchdog_daily_counters` alongside the existing Modbus counters),
+records what disagreed in a new `input_text.battery_control_last_drift_
+reason`, sends a persistent notification plus a mobile push, and then
+force-re-applies by calling `automation.trigger` on `apply_effective_
+battery_control_to_solaredge_inverter` directly (`skip_condition:
+false`, so that automation's own guard conditions still apply) rather
+than duplicating its script-dispatch logic here. This specifically would
+have caught the 11:58:00 silent revert documented in the Update above
+within 5 minutes, instead of the ~2 hours it actually took to reach
+100% SOC undetected.
+
+Not addressed by this watchdog, deliberately: it treats a mismatch as
+something to re-apply, not diagnose - it doesn't distinguish a genuine
+external revert (the mechanism seen today) from, say, a write genuinely
+still in flight, though the 5-minute interval (versus the ~15-55s normal
+write lag seen elsewhere in this project) makes a false-positive from
+ordinary lag unlikely. It also doesn't address the two separately-
+flagged, still-open telemetry bugs from the Update above (the fixed-
+~10s write-verify window producing false failures under a backlogged
+queue; the 0-60s range crash in `modbus_queue_last_execution_seconds`) -
+neither is fixed here.
+
+All three files (`safety_limits_and_override.yaml`, `watchdog_
+automations.yaml`, `safety_and_watchdog_helpers.yaml`) YAML-validated
+(`yaml.safe_load`) before push.
+
+Status: **implemented in project docs, not yet deployed to the live HA
+instance or verified against a real Hold cycle (either the daytime or
+nighttime branch) or a real drift event.** This session has no live
+write access - the user needs to push these three files and watch the
+next time SOC reaches the ceiling, ideally once during the day (PV
+present) and once at night, plus watch for the drift watchdog firing
+`persistent_notification`/mobile push if the inverter ever reverts again.
 
 ---
 

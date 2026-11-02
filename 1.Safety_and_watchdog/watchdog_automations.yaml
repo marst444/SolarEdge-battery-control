@@ -1,8 +1,8 @@
 # ── watchdog_automations.yaml ──
-# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); resets daily diagnostic counters at midnight.
-# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today, input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge_limit/_discharge_limit (fallback only)
-# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status  →  hassio.addon_restart, notify.mobile_app_fp3_ms, battery_forecast_control.yaml (Layer 4A output entities, fallback only)
-# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
+# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); detects live inverter drift from the intended effective battery control state and force-re-applies it; resets daily diagnostic counters at midnight.
+# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today/battery_control_drift_count_total/_today, input_text.battery_control_last_drift_reason, input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge_limit/_discharge_limit (fallback only)
+# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status, input_select.effective_storage_mode, input_number.effective_charge_limit/_discharge_limit, select.solaredge_i1_storage_command_mode/_control_mode, number.solaredge_i1_storage_charge_limit/_discharge_limit  →  hassio.addon_restart, notify.mobile_app_fp3_ms, battery_forecast_control.yaml (Layer 4A output entities, fallback only), apply_effective_battery_control.yaml (automation.trigger, drift re-apply only)
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard; High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Update 2026-11-02 - Battery Control Drift Watchdog); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
 
 automation:
 
@@ -169,12 +169,132 @@ automation:
             MPC stalled >90min - EMHASS addon was just auto-restarted.
             Will retry at most once/hour if it keeps failing.
 
+  # Added 2026-11-02 - closes the gap identified the same day: the apply
+  # automation (apply_effective_battery_control.yaml) only runs when one of
+  # the effective_* entities CHANGES STATE, so nothing previously noticed or
+  # corrected the live inverter silently drifting away afterwards (observed:
+  # select.solaredge_i1_storage_command_mode reverted from "Discharge to
+  # Minimize Import" to "Maximize Self Consumption" 15 minutes after a
+  # correct apply, with no project-side trigger - see
+  # known_issues_and_fixes.md - High SOC Hold - Charge Limit = 0 Does Not
+  # Stop Charging While Maximize Self Consumption Stays Active, Update
+  # 2026-11-02). This automation periodically compares the live inverter
+  # registers against the intended effective_* values and, on a mismatch,
+  # counts/logs/notifies and force-re-applies via automation.trigger rather
+  # than duplicating apply_effective_battery_control.yaml's script-dispatch
+  # logic here. Not yet verified live against a real drift event.
+  - id: battery_control_drift_watchdog
+    alias: "Watchdog – Battery Control Drift"
+    description: >
+      Detects drift between the intended effective battery control state
+      (input_select.effective_storage_mode, input_number.effective_charge_limit,
+      input_number.effective_discharge_limit) and the live SolarEdge
+      inverter registers, and force-re-applies
+      apply_effective_battery_control_to_solaredge_inverter when they
+      disagree. Runs every 5 minutes; only acts while the killswitch is on
+      and the inverter is in Remote Control, mirroring that automation's
+      own condition (no point flagging - or trying to fix - drift it has
+      no authority to correct anyway).
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: input_boolean.effective_battery_control_enabled
+        state: "on"
+      - condition: state
+        entity_id: select.solaredge_i1_storage_control_mode
+        state: "Remote Control"
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.solaredge_b1_state_of_energy
+            state:
+              - "unavailable"
+              - "unknown"
+    variables:
+      expected_mode: "{{ states('input_select.effective_storage_mode') }}"
+      # Same mapping as script.modbus_queue's write_expected_value in
+      # solaredge_modbusqueue.yaml - keep these two in sync if either
+      # one changes.
+      expected_mode_text: >-
+        {% set map = {
+          'solar_power_only': 'Solar Power Only (Off)',
+          'charge_from_clipped_solar': 'Charge from Clipped Solar Power',
+          'charge_from_solar_and_grid': 'Charge from Solar Power and Grid',
+          'discharge_to_maximize_export': 'Discharge to Maximize Export',
+          'discharge_to_minimize_import': 'Discharge to Minimize Import',
+          'maximize_self_consumption': 'Maximize Self Consumption'
+        } %}
+        {{ map.get(expected_mode, 'unknown') }}
+      live_mode_text: "{{ states('select.solaredge_i1_storage_command_mode') }}"
+      expected_charge: "{{ states('input_number.effective_charge_limit') | float(0) }}"
+      expected_discharge: "{{ states('input_number.effective_discharge_limit') | float(0) }}"
+      live_charge: "{{ states('number.solaredge_i1_storage_charge_limit') | float(0) }}"
+      live_discharge: "{{ states('number.solaredge_i1_storage_discharge_limit') | float(0) }}"
+      # Tolerance in watts - avoids flagging cosmetic rounding differences
+      # the Modbus register's own resolution can introduce.
+      tolerance: 50
+      mode_drift: "{{ live_mode_text != expected_mode_text and expected_mode_text != 'unknown' }}"
+      charge_drift: "{{ (live_charge - expected_charge) | abs > tolerance }}"
+      discharge_drift: "{{ (live_discharge - expected_discharge) | abs > tolerance }}"
+      drift_reason: >-
+        {% if mode_drift %}
+          mode: expected '{{ expected_mode_text }}', live '{{ live_mode_text }}'
+        {% elif charge_drift %}
+          charge limit: expected {{ expected_charge }}W, live {{ live_charge }}W
+        {% elif discharge_drift %}
+          discharge limit: expected {{ expected_discharge }}W, live {{ live_discharge }}W
+        {% else %}
+          none
+        {% endif %}
+
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ mode_drift or charge_drift or discharge_drift }}"
+            sequence:
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.battery_control_drift_count_total
+                data:
+                  value: "{{ (states('input_number.battery_control_drift_count_total') | float(0)) + 1 }}"
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.battery_control_drift_count_today
+                data:
+                  value: "{{ (states('input_number.battery_control_drift_count_today') | float(0)) + 1 }}"
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.battery_control_last_drift_reason
+                data:
+                  value: "{{ now().isoformat() }} - {{ drift_reason | trim }}"
+              - service: persistent_notification.create
+                data:
+                  title: "⚠️ Battery Control Drift Watchdog"
+                  message: >
+                    Live inverter state doesn't match the intended effective
+                    battery control state - re-applying.
+                    {{ drift_reason | trim }}
+              - service: notify.mobile_app_fp3_ms
+                data:
+                  title: "⚠️ Battery control drift - re-applying"
+                  message: "{{ drift_reason | trim }}"
+              - service: automation.trigger
+                target:
+                  entity_id: automation.apply_effective_battery_control_to_solaredge_inverter
+                data:
+                  skip_condition: false
+
   - id: reset_watchdog_daily_counters
     alias: "Watchdog – Reset Daily Diagnostic Counters"
     description: >
-      Enhanced Diagnostics: resets the "_today" Modbus write and mode-command
-      skip counters at midnight, mirroring reset_modbus_queue_daily_counters
-      in solaredge_modbusqueue.yaml. The "_total" counters are never reset.
+      Enhanced Diagnostics: resets the "_today" Modbus write, mode-command
+      skip, and battery control drift counters at midnight, mirroring
+      reset_modbus_queue_daily_counters in solaredge_modbusqueue.yaml. The
+      "_total" counters are never reset.
     trigger:
       - platform: time
         at: "00:00:00"
@@ -185,5 +305,6 @@ automation:
             - input_number.modbus_write_success_count_today
             - input_number.modbus_write_failure_count_today
             - input_number.mode_command_skipped_count_today
+            - input_number.battery_control_drift_count_today
         data:
           value: 0

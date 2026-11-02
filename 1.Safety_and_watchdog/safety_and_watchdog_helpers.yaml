@@ -1,6 +1,6 @@
 # ── safety_and_watchdog_helpers.yaml ──
-# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, battery safety/override input_booleans, and Modbus write/queue diagnostic helpers.
-# Sets: (definitions only - runtime values written by emhass_automations.yaml, safety_limits_and_override.yaml, solaredge_modbusqueue.yaml, apply_effective_battery_control.yaml)
+# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, battery safety/override input_booleans, and Modbus write/queue/drift diagnostic helpers.
+# Sets: (definitions only - runtime values written by emhass_automations.yaml, safety_limits_and_override.yaml, solaredge_modbusqueue.yaml, apply_effective_battery_control.yaml, watchdog_automations.yaml)
 # Deps: none (static)  →  safety_limits_and_override.yaml, watchdog_sensors.yaml, apply_effective_battery_control.yaml, solaredge_modbusqueue.yaml, watchdog_automations.yaml
 # Fixes: known_issues_and_fixes.md; several safety-override booleans possibly unused - see roadmap.md
 
@@ -123,6 +123,27 @@ input_number:
     mode: box
     initial: 0
 
+  # Enhanced Diagnostics (live inverter vs. intended-state drift) - written
+  # by watchdog_automations.yaml's battery_control_drift_watchdog, added
+  # 2026-11-02. See known_issues_and_fixes.md - High SOC Hold - Charge
+  # Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays
+  # Active (Update 2026-11-02 - Battery Control Drift Watchdog).
+  battery_control_drift_count_total:
+    name: Battery Control Drift Count Total
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
+  battery_control_drift_count_today:
+    name: Battery Control Drift Count Today
+    min: 0
+    max: 1000000
+    step: 1
+    mode: box
+    initial: 0
+
 input_datetime:
 
   emhass_last_dayahead_run:
@@ -173,6 +194,13 @@ input_text:
 
   modbus_last_failed_reason:
     name: Modbus Last Failed Reason
+    max: 255
+
+  # Enhanced Diagnostics (live inverter vs. intended-state drift) - written
+  # by watchdog_automations.yaml's battery_control_drift_watchdog, added
+  # 2026-11-02.
+  battery_control_last_drift_reason:
+    name: Battery Control Last Drift Reason
     max: 255
 
 input_boolean:
