@@ -12,13 +12,20 @@ these project docs so far.
 
 ---
 
-Three issues are currently open. The newest, found 2026-11-01 from the
-user's report "the SOC now recurrently goes over 90%" - High SOC Hold's
-Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption
-Stays Active - is a safety-relevant regression against this project's own
-documented design assumption: the charge-limit register is confirmed
-holding at 0 throughout, yet the battery keeps charging to 100% anyway.
-See Open Issues below. The other two, both found 2026-10-11 while
+Four issues are currently open. The newest, found 2026-11-02 while
+reviewing whether Maximize Self Consumption is the right nighttime
+fallback mode - PV Sensor Trickle Readings Bypass the "No PV" Branch
+Logic - is a decision-engine robustness gap, not yet confirmed to have
+caused a real misfire: several `battery_forecast_control.yaml` branches
+test `pv == 0` exactly to mean "no real PV," which a small sensor
+offset/trickle reading can defeat. A noise-floor fix is implemented in
+project docs; see Open Issues below. The next-newest, found 2026-11-01
+from the user's report "the SOC now recurrently goes over 90%" - High SOC
+Hold's Charge Limit = 0 Does Not Stop Charging While Maximize Self
+Consumption Stays Active - is a safety-relevant regression against this
+project's own documented design assumption: the charge-limit register is
+confirmed holding at 0 throughout, yet the battery keeps charging to 100%
+anyway. See Open Issues below. The other two, both found 2026-10-11 while
 verifying a real SOC<10% critical-recovery event against the user's
 request to check it against the stats, are Critical-Recovery Charge Limit
 Write Silently Dropped (the physical charge-limit register never actually
@@ -85,6 +92,64 @@ see Entity ID Documentation Mismatches below.)
 ---
 
 # Open Issues
+
+## PV Sensor Trickle Readings Bypass the "No PV" Branch Logic
+
+Found 2026-11-02, prompted by the user's question of whether Maximize
+Self Consumption is really the right fallback mode at night, given the
+PV sensor sometimes shows a small trickle reading instead of a clean 0
+when it's dark. Investigating that question (by reading the live
+`battery_forecast_control.yaml` directly rather than relying on
+README.md's description, which turned out to be stale - see the note
+under the Fix below) surfaced a more concrete issue than the one
+originally asked about.
+
+Several of the "Below SOC Target" branches test `pv == 0` *exactly* to
+mean "no real PV, it's night" - e.g. the branches that route to
+`solar_power_only` or the price-based grid-charge fallback. The 4-minute
+trailing-mean smoothing already in place (see Midday Charge/Discharge
+Oscillation - PV/Load Sampling Smoothing, and architecture.md - Layer 4A)
+damps momentary spikes/dips, but does nothing for a steady sensor offset
+or trickle reading - averaging a small constant noise floor still
+produces a small constant nonzero result, not 0. A trickle reading of
+even a few watts breaks the exact-equality test and falls through into
+the `pv > 0` branches instead, which assume real daytime partial PV and
+include real grid-charging logic (`charge_from_solar_and_grid`). This
+means a sensor artifact at night could in principle trigger an actual
+unwanted grid-charge decision, not merely a cosmetic mode mismatch - a
+more significant risk than the Maximize-Self-Consumption-specific
+concern that prompted the investigation, though not yet confirmed to
+have actually caused a live misfire (no specific incident traced to this
+mechanism so far - found by code review, not by observed symptom).
+
+**Fix implemented 2026-11-02**: a new helper, `input_number.
+pv_noise_floor_w` (`batterycontrol_helpers.yaml`, default 20W), is now
+applied to both `pv` and `pv_now` in `battery_forecast_control.yaml` -
+any reading below the floor is treated as exactly 0 before any branch
+condition sees it, restoring the `pv == 0` comparisons' intended meaning
+regardless of smoothing. YAML-validated (`yaml.safe_load`) before push.
+
+**Separately, while investigating this: Maximize Self Consumption is
+*not* actually used for the "no PV, price too high, hold" case** -
+README.md's Decision Logic section describes that case as landing on
+Maximize Self Consumption, but the live YAML's actual final branch for
+`pv == 0 and batt_fc == 0` sets `solar_power_only` instead (charge and
+discharge both pinned to 0), which is the *stronger* of the two
+guarantees - the documentation was stale, not the code. None of the
+"Below SOC Target" no-PV branches use Maximize Self Consumption at all;
+the one place that still pairs Maximize Self Consumption with a
+hardcoded `charge_limit: 0` (the same pattern that broke High SOC Hold -
+see below) is the Discharge Max Export section's cooldown fallback,
+which is not night-specific and was left as-is per the user's decision,
+pending the High SOC Hold mode-switch fix's own live verification first
+rather than spreading the same unverified substitution further before
+that's confirmed. README.md's stale line was corrected to match the live
+code.
+
+Status: **implemented in project docs, not yet deployed to the live HA
+instance or verified against a real low-PV/trickle-reading night.**
+
+---
 
 ## High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active
 

@@ -333,9 +333,10 @@ No PV AND batt_fc = 0 AND price ≤ 120% of average charge price
 No EMHASS forecast signal, but current import price is acceptable. Opportunistic grid charging.
 → Mode: Charge from Solar Power and Grid, dynamic charge limit
 
-No PV AND batt_fc = 0 AND price > 120% of average charge price
-Price has risen significantly — don't charge at a premium. Hold.
-→ Mode: Maximize Self Consumption, dynamic limits (effectively idle without PV)
+No PV AND batt_fc = 0 AND price > 120% of average charge price (or the price sensor is unavailable)
+Price has risen significantly, or price data is missing — don't charge at a premium. Hold.
+→ Mode: Solar Power Only, charge limit = 0, discharge limit = 0
+(Corrected 2026-11-02 - this branch does not use Maximize Self Consumption live; see known_issues_and_fixes.md, PV Sensor Trickle Readings Bypass the "No PV" Branch Logic.)
 
 
 # 4. Discharge to Maximize Export (Layers 2 + 3 + 4)

@@ -517,6 +517,17 @@ the decision engine's `| float(0)` fallback treats that as `pv = 0` /
 `house_load = 0` in the interim, same as any other missing-sensor
 fallback already in this file.
 
+**PV Noise Floor (added 2026-11-02).** Averaging damps momentary spikes
+and dips, but not a steady sensor offset or trickle reading - several
+branches below test `pv == 0` exactly to mean "no real PV," and a small
+constant nonzero reading breaks that test regardless of how long it's
+averaged over. `input_number.pv_noise_floor_w` (default 20W,
+`batterycontrol_helpers.yaml`) is applied to both `pv` and `pv_now`
+before any branch sees them: any reading below the floor is treated as
+exactly 0. See known_issues_and_fixes.md - PV Sensor Trickle Readings
+Bypass the "No PV" Branch Logic. Not yet verified against a real
+low-PV/trickle-reading night.
+
 Smoothing is applied selectively, not to every `pv`/`house_load`
 comparison in the file. `battery_forecast_control.yaml` defines two pairs
 of variables:

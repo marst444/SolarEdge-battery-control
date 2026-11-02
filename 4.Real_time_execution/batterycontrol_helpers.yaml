@@ -2,7 +2,7 @@
 # Layer 4A: helper definitions for dynamic limits, grid-charge price accounting, SOC target/deadband, cooldown timer, effective_* entities.
 # Sets: (definitions only)
 # Deps: none (static)  →  battery_forecast_control.yaml, batterycontrol_automations.yaml, safety_limits_and_override.yaml
-# Fixes: known_issues_and_fixes.md; effective_* helpers defined here but written by Layer 1 - see roadmap.md
+# Fixes: known_issues_and_fixes.md; effective_* helpers defined here but written by Layer 1 - see roadmap.md; PV Noise Floor 2026-11-02
 
 input_number:
   effective_charge_limit:
@@ -89,6 +89,15 @@ input_number:
     max: 240
     step: 5
     unit_of_measurement: min
+
+  pv_noise_floor_w:
+    name: PV Noise Floor
+    icon: mdi:solar-power-variant-outline
+    initial: 20
+    min: 0
+    max: 200
+    step: 5
+    unit_of_measurement: W
 
 
 input_datetime:

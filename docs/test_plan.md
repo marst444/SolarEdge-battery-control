@@ -221,7 +221,7 @@ Layer 3 = PARTIAL PASS 🟡 (strong) — Verified: 3.1. Outstanding: 3.2.
 
 # Layer 4A - Decision Engine
 
-Layer 4A = STRONG PARTIAL PASS 🟡 (upgraded 2026-10-07) — Verified: 4A.1, 4A.2, 4A.3 (base case). Outstanding: 4A.3 (additional deadband scenarios), 4A.4 (cases b/c).
+Layer 4A = STRONG PARTIAL PASS 🟡 (upgraded 2026-10-07) — Verified: 4A.1, 4A.2, 4A.3 (base case). Outstanding: 4A.3 (additional deadband scenarios), 4A.4 (cases b/c), 4A.5 (new, not yet verified).
 
 ## Test 4A.1 Charge Decision
 
@@ -265,6 +265,18 @@ Layer 4A = STRONG PARTIAL PASS 🟡 (upgraded 2026-10-07) — Verified: 4A.1, 4A
 - Deployed 2026-08-28; case (d) (no recent grid charge → unchanged normal behaviour) confirmed immediately via trace (soc=51.11, target=40.01, `cooldown_elapsed=true` → `discharge_to_maximize_export`, 643W - correct, unregressed).
 - Case (a) (stamping) confirmed 2026-10-07 across a 10-day window: every `charge_from_solar_and_grid` tick stamps `last_grid_charge_command_time`, including on every re-selection tick of a multi-hour charge, not just the first - a rolling cooldown window, not a one-shot.
 - Cases (b)/(c) (the actual hold-back substitution, and resumption after cooldown elapses): never observed. Across the full 10-day window, every grid-charge episode either kept re-selecting `charge_from_solar_and_grid` the whole time, or moved to `maximize_self_consumption` for unrelated maintain-zone reasons before the cooldown had even elapsed - the DISCHARGE MAX EXPORT conditions never happened to become true *while* a cooldown was still active. With only 5 stored traces per automation, this can only be caught live, not dug up retroactively.
+
+---
+
+## Test 4A.5 PV Noise Floor
+
+**Status:** NOT VERIFIED (new 2026-11-02)
+
+**Purpose:** verify that a small sensor offset/trickle PV reading at night no longer causes the "Below SOC Target" branches' `pv == 0` comparisons to misfire into the `pv > 0` (real daytime PV) branches - specifically that `charge_from_solar_and_grid` is not triggered by sensor noise alone.
+
+**Background:** found during a review of whether Maximize Self Consumption is the right nighttime fallback mode (prompted by the user) - see known_issues_and_fixes.md, PV Sensor Trickle Readings Bypass the "No PV" Branch Logic. `input_number.pv_noise_floor_w` (default 20W) is now applied to `pv`/`pv_now` in `battery_forecast_control.yaml` before any branch condition sees them.
+
+**Result:** not yet verified - needs a real night with a known trickle/offset reading (or a deliberate test value) to confirm the floored `pv` reads exactly 0 and the correct `solar_power_only`/no-PV branch fires instead of a `pv > 0` branch.
 
 ---
 
