@@ -2,7 +2,7 @@
 # Layer 1: applies SOC safety limits, high-SOC hold, grid-export/negative-price blocks, and EV constraints to Layer 4A's requested values.
 # Sets: input_select.effective_storage_mode, input_number.effective_charge/discharge_limit, input_boolean.battery_high_soc_hold
 # Deps: input_select/number.emhass_requested_*, sensor.solaredge_b1_state_of_energy  →  apply_effective_battery_control.yaml
-# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger, EV Charging Sensor Swap)
+# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger, EV Charging Sensor Swap, High SOC Hold mode-switch fix 2026-11-02)
 
 automation:
 
@@ -116,7 +116,39 @@ automation:
                   value: "SOC below minimum - dynamic recovery charge"
 
           # HIGH SOC HOLD
-          # Preserve charge without forcing export
+          # Preserve charge without forcing export.
+          #
+          # UPDATED 2026-11-02 (see known_issues_and_fixes.md - High SOC
+          # Hold - Charge Limit = 0 Does Not Stop Charging While Maximize
+          # Self Consumption Stays Active): switched from
+          # maximize_self_consumption to discharge_to_minimize_import,
+          # discharge limit pinned to 0 (not the dynamic requested_discharge
+          # used before). MSC was confirmed live to keep charging the
+          # battery past charge_limit=0 whenever PV surplus was available
+          # (11 Hold cycles, 2026-10-22 to 2026-11-01, 10 of 11 climbed all
+          # the way to 100% SOC regardless) - MSC's own self-consumption
+          # logic evidently overrides the charge-limit register while that
+          # mode stays active. Discharge to Minimize Import never exports
+          # from the battery and, per this project's own README, is a
+          # distinct SolarEdge command mode rather than a cap layered on top
+          # of self-consumption logic - the fix direction the user chose
+          # over switching to Solar Power Only (which would also block
+          # discharge entirely) specifically to keep the battery able to
+          # offset house load during Hold rather than sitting fully idle.
+          # Pinning the discharge limit to 0 here (rather than
+          # requested_discharge) keeps the battery passive by default
+          # while Hold is on, rather than actively discharging to cover
+          # load - matches the user's explicit request ("keep discharge
+          # limit to 0 when hitting the SOC roof").
+          #
+          # NOT YET VERIFIED LIVE: whether this mode actually blocks
+          # charging from PV surplus the way Solar Power Only is
+          # documented to (README only describes its discharge behaviour)
+          # is unconfirmed - if SOC is still observed climbing past the
+          # ceiling under this mode, the documented fallback is to switch
+          # the option below to "solar_power_only" instead (see
+          # known_issues_and_fixes.md for the full fix write-up and the
+          # fallback plan).
 
           - conditions:
               - condition: state
@@ -129,7 +161,7 @@ automation:
                 target:
                   entity_id: input_select.effective_storage_mode
                 data:
-                  option: "maximize_self_consumption"
+                  option: "discharge_to_minimize_import"
 
               - service: input_number.set_value
                 target:
@@ -141,13 +173,13 @@ automation:
                 target:
                   entity_id: input_number.effective_discharge_limit
                 data:
-                  value: "{{ requested_discharge }}"
+                  value: 0
 
               - service: input_text.set_value
                 target:
                   entity_id: input_text.effective_battery_reason
                 data:
-                  value: "High SOC hold - charge blocked with hysteresis"
+                  value: "High SOC hold - discharge to minimize import, charge blocked"
 
 
           # 3. GRID EXPORT BLOCKED / NEGATIVE PRICE

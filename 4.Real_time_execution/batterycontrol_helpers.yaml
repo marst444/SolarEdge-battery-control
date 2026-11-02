@@ -106,5 +106,6 @@ input_select:
       - charge_from_clipped_solar
       - charge_from_solar_and_grid
       - discharge_to_maximize_export
+      - discharge_to_minimize_import
       - maximize_self_consumption
     icon: mdi:battery-cog

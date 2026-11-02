@@ -442,6 +442,188 @@ fully characterized (two isolated 2026-08-10/11 spikes, nine clean weeks
 2026-10-14 shift specifically is a new, separate open question, not
 answered by either of the two register-level mechanisms above.
 
+### Update 2026-11-02 (later same day) - a fourth candidate, found via EMHASS's own GitHub/PyPI release history: a new, unset terminal-SOC reward parameter, bracketing the onset almost exactly - strong lead, not confirmed
+
+Per the user's request to check GitHub. The EMHASS *add-on* itself (not
+the SolarEdge integration already ruled out above) was confirmed v0.18.4
+and "up to date" as of 2026-10-08 (per the EMHASS Outage Fallback Guard
+review that day). It is now v0.18.8 (`ha_get_app`, 2026-11-02). Something
+between those updated it at least once - how many times, and exactly
+when, could not be pinned down: `update.emhass_update`'s own logbook
+only retains the same ~10 days as every other entity history checked in
+this project, so it only shows two install cycles (2026-10-23 13:23:50 ->
+2026-10-25 02:40:14, and 2026-11-01 18:00:49 -> 18:12:14) and nothing
+from the 10-08 to 10-23 gap that actually covers the 10-14 onset - the
+same retention wall hit on the SolarEdge firmware check above, now hit a
+second time on a different entity.
+
+PyPI's own release history for the `emhass` package (checked directly,
+not through GitHub's release page, which this session could not reach
+live) gives exact dates for the versions that gap could span:
+
+```text
+v0.18.4   2026-09-27   (confirmed installed + up to date 10-08)
+v0.18.5   2026-10-09   feat: add battery_soc_final_reward_factor
+                       (also fixes the web UI multi-battery SOC chart)
+v0.18.6   2026-10-16   fix: reject a state of charge above 1 before it
+                       reaches the solver
+                       fix: scale the soc_final penalty by the
+                       self-consumption big-M
+v0.18.7   2026-10-23
+v0.18.8   current (date not confirmed)
+```
+
+Why v0.18.5/0.18.6 specifically stand out: this project's own EMHASS
+payload (`emhass_scripts.yaml`, both the MPC and day-ahead scripts)
+explicitly sets `soc_final: '{{ battery_minimum_percent / 100 }}'` -
+i.e. it deliberately targets ending every optimization horizon back down
+near the battery's configured *minimum* SOC (20%), the opposite of the
+100% ceiling now seen daily. It does **not** set the new
+`battery_soc_final_reward_factor` key v0.18.5 introduced - that knob has
+been running on whatever the `emhass` library's own internal default is,
+silently, since whenever this install first crossed from v0.18.4 to
+v0.18.5+. `v0.18.6`'s own changelog line - "scale the soc_final penalty
+by the self-consumption big-M" - was confirmed against the live
+`emhass` source (`src/emhass/optimization.py`, `SELF_CONSUMPTION_BIGM =
+1e3`, with a comment stating the terminal-SOC deviation penalty is
+scaled by that same factor) - i.e. a real, upstream change to exactly
+the constraint this project depends on to pull SOC back down to
+`soc_final` at the end of each run, landing 5-9 days after the 2026-10-14
+onset in terms of raw release date, with no way from this project's own
+data to confirm whether the installed add-on had already picked it up
+by then.
+
+**This is not confirmed - flagged as a strong lead, not a finding,**
+for two honest reasons: (1) the exact install timing is unrecoverable
+from HA's own ~10-day-retained data, same limitation as the firmware
+check above, and (2) if the add-on's actual update to something >=
+v0.18.6 happened anywhere close to its *release* date (10-16) rather
+than lagging to the first retained logbook entry (10-23), the fix it
+shipped should have started pulling the SOC ceiling back down again soon
+after - but the 79/121-day survey above shows the 100% pattern
+continuing unbroken all the way through 2026-11-01, past both the 0.18.6
+and 0.18.7 release dates. That tension is real and unresolved: either
+the fix didn't fully correct this project's specific case, or the
+install lagged its release by more than a week either way, or this
+mechanism isn't actually the right one. Not ruled in or out.
+
+Recommended next steps, independent of whether this exact mechanism
+turns out to be the cause:
+
+1. Check Home Assistant's own Add-on Store page for EMHASS directly
+   (Settings > Add-ons > EMHASS > the changelog/info tab) - Supervisor's
+   own UI may retain a longer version-history record than the recorder's
+   ~10-day window this project keeps hitting.
+2. Regardless of root cause, explicitly set
+   `battery_soc_final_reward_factor` in the `payload:` block of both
+   `generate_emhass_energy_plan_mpc_pv` and
+   `generate_emhass_energy_plan_dh_pv` (`emhass_scripts.yaml`) to a
+   chosen, known value instead of leaving it on the library's internal
+   default - this is a defensive fix either way, since the add-on will
+   keep auto-updating and this key's default is not something this
+   project controls or has verified. Not yet implemented - needs a
+   decision on what value to set (and ideally upstream confirmation of
+   what the current default actually is, which could not be confirmed
+   from the source excerpts fetched this session).
+
+Status: **strong candidate, not confirmed; EMHASS's internal
+`battery_soc_final_reward_factor` default (introduced v0.18.5, scaling
+fixed v0.18.6) is currently unset and unverified in this project's own
+payload - defensive fix recommended above, not yet applied.**
+
+### Update 2026-11-02 (later same day) - mode-switch fix implemented for the underlying Hold bug itself: High SOC Hold now uses Discharge to Minimize Import instead of Maximize Self Consumption
+
+Separately from the search for what caused the 2026-10-14 onset (still
+open, see above), the user redirected toward fixing the underlying
+mechanism directly: MSC's own self-consumption logic evidently overrides
+`charge_limit=0` whenever PV surplus is available (confirmed live, 10 of
+11 Hold cycles 2026-10-22 to 11-01 - see this issue's main entry above),
+so no value of `charge_limit` alone can make MSC actually stop charging.
+The user's proposal: stop relying on MSC during Hold at all, and switch
+`effective_storage_mode` itself to a different native SolarEdge command
+mode instead - weighing two options, "Discharge to Minimize Import"
+(battery can still cover house load, no export, discharge pinned to 0 by
+default) versus "Solar Power Only" (battery fully idle - no charge, no
+discharge, the stronger documented guarantee per README.md but at the
+cost of losing any discharge during Hold). User chose **Discharge to
+Minimize Import**, discharge limit pinned to 0.
+
+Implemented across three files (all previously only read via
+`project_search` snippets, now fully read and edited):
+
+1. **`batterycontrol_helpers.yaml`** - added `discharge_to_minimize_import`
+   to `input_select.effective_storage_mode`'s `options:` list. It was not
+   previously selectable there (`solar_power_only`,
+   `charge_from_clipped_solar`, `charge_from_solar_and_grid`,
+   `discharge_to_maximize_export`, `maximize_self_consumption` only) -
+   writing an option outside this list would have failed silently
+   (HA input_select rejects it). `input_select.emhass_requested_storage_
+   mode` (`emhass_helpers.yaml`) was deliberately left unchanged - the
+   High SOC Hold branch writes `effective_storage_mode` directly, never
+   through the "requested" side, so only one of the two input_selects
+   needed the new option for this fix.
+2. **`apply_effective_battery_control.yaml`** - added a new `choose:`
+   branch, `effective_mode == 'discharge_to_minimize_import'` ->
+   `script.discharge_to_minimize_import_script`. This script and its
+   `script.modbus_queue` wiring (`queue_service: discharge_to_minimize_
+   import`, which already maps to the real SolarEdge "Discharge to
+   Minimize Import" command mode in `solaredge_modbusqueue.yaml`) already
+   existed in `batterycontrol_scripts.yaml` - built but never called by
+   anything, since README.md had always documented this mode as "Not
+   used in this automation - Maximize Self Consumption covers this use
+   case." That README line is now stale; not yet updated there.
+3. **`safety_limits_and_override.yaml`** - the HIGH SOC HOLD branch
+   (`calculate_effective_battery_control`) changed from setting
+   `effective_storage_mode` to `maximize_self_consumption` (charge=0,
+   discharge=dynamic `requested_discharge`) to setting it to
+   `discharge_to_minimize_import` (charge=0, discharge=**0**, not the
+   dynamic value - per the user's explicit "keep discharge limit to 0",
+   so the battery stays passive by default during Hold rather than
+   actively discharging to cover load). Reason string updated to "High
+   SOC hold - discharge to minimize import, charge blocked".
+
+Side effect, expected and not a bug: Layer 4B's Mode Command Guard
+(`apply_effective_battery_control.yaml`'s `mode_guard_active`) only
+skips the mode-select command when `effective_mode ==
+'maximize_self_consumption'` - since Hold no longer sets that mode, the
+guard will correctly stay inactive (`active`, not `guarded`) for the
+entire duration of every future Hold period, resending the full command
+sequence (timeout reset + mode-select) every 15-minute tick instead of
+being skipped as it was before. This increases Modbus write volume
+during Hold (which has run 6h45m+ at a stretch) - a real, acceptable
+trade-off of this fix, not investigated further here. No guard logic was
+changed; this is just a consequence of Hold now setting a different
+mode.
+
+YAML-validated (`yaml.safe_load`) on all three files before push.
+
+**Not yet verified live - this is the key open risk.** Whether SolarEdge's
+"Discharge to Minimize Import" firmware mode actually blocks charging
+from PV surplus the way "Solar Power Only" is explicitly documented to
+("No battery charging or discharging... Battery is idle") was not
+confirmed before this change - README.md only describes this mode's
+*discharge* behavior ("Battery discharges only to cover house load...
+no grid export from battery"), not whether it shares MSC's internal
+self-consumption logic that was just confirmed to override charge-limit
+registers. If the next live Hold cycle still shows SOC climbing past the
+ceiling under this mode, the documented, one-line fallback is to change
+`safety_limits_and_override.yaml`'s HIGH SOC HOLD branch option from
+`"discharge_to_minimize_import"` to `"solar_power_only"` (no other file
+needs to change - that option and its apply-script wiring already
+exist).
+
+Also not yet done: `test_plan.md` Test 1.2 (currently FAIL, downgraded
+2026-11-01) should be re-run against this change once deployed live, and
+README.md's "Discharge to Minimize Import... Not used in this
+automation" line and its SOC Safety Limits table ("SOC > max -> Mode:
+Maximize Self Consumption, charge limit = 0, dynamic discharge limit")
+both need updating to match - not done in this update.
+
+Status: **implemented in project docs, not yet deployed to the live HA
+instance or verified against a real Hold cycle.** This session has no
+live write access - the user needs to push these three files and watch
+the next time SOC reaches the ceiling.
+
 ---
 
 ## Critical-Recovery Charge Limit Write Silently Dropped

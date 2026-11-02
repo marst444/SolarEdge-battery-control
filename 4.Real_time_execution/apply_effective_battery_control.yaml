@@ -76,6 +76,19 @@ automation:
                 sequence:
                   - service: script.discharge_to_maximize_export_script
 
+              # Added 2026-11-02 - see known_issues_and_fixes.md, High SOC
+              # Hold - Charge Limit = 0 Does Not Stop Charging While
+              # Maximize Self Consumption Stays Active (Update 2026-11-02,
+              # mode-switch fix). Used by the HIGH SOC HOLD branch in
+              # safety_limits_and_override.yaml instead of
+              # maximize_self_consumption, since MSC was confirmed not to
+              # honor charge_limit=0 while PV surplus is available.
+              - conditions:
+                  - condition: template
+                    value_template: "{{ effective_mode == 'discharge_to_minimize_import' }}"
+                sequence:
+                  - service: script.discharge_to_minimize_import_script
+
               - conditions:
                   - condition: template
                     value_template: "{{ effective_mode == 'maximize_self_consumption' }}"
