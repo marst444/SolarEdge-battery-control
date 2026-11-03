@@ -9,7 +9,7 @@ This document verifies the SolarEdge Battery Control package layer by layer. A l
 ```text
 Layer 1   PARTIAL PASS 🟡
     ✅ 1.1 Minimum SOC Protection
-    ❌ 1.2 Maximum SOC Protection (downgraded 2026-11-01 - charge-stop doesn't function under live PV; mode-switch fix implemented 2026-11-02, not yet verified live)
+    ❌ 1.2 Maximum SOC Protection (downgraded 2026-11-01 - charge-stop doesn't function under live PV; two mode-switch fixes since then (2026-11-02, 2026-11-03) each found unsafe before the next, latest not yet verified live)
     🟡 1.3 Recovery Mode
 
 Layer 2   PARTIAL PASS 🟡 (strong)
@@ -84,7 +84,7 @@ Layer 1 = PARTIAL PASS 🟡 — Verified: 1.1. Partial: 1.3. Failed: 1.2 (charge
 
 ## Test 1.2 Maximum SOC Protection
 
-**Status:** FAIL ❌ (downgraded 2026-11-01, from PASS 2026-08-06 - see Updates below; mode-switch fix implemented 2026-11-02, not yet verified live)
+**Status:** FAIL ❌ (downgraded 2026-11-01, from PASS 2026-08-06 - see Updates below; two mode-switch fixes since (2026-11-02, 2026-11-03), the first found unsafe before the second; neither yet verified live)
 
 **Purpose:** verify charging is blocked when SOC exceeds configured maximum SOC (High SOC Hold with hysteresis: enters at SOC ≥ Max - 1%, exits at SOC ≤ Max - 3%).
 
@@ -114,6 +114,16 @@ Three files changed: `batterycontrol_helpers.yaml` (added `discharge_to_minimize
 **Key open risk, carried into this test rather than resolved by it:** whether SolarEdge's "Discharge to Minimize Import" mode actually blocks charging from PV surplus the way "Solar Power Only" is explicitly documented to (README.md only describes this mode's discharge behaviour, not its charging behaviour) is unconfirmed. If the next live Hold cycle still shows SOC climbing past the ceiling under this mode, the documented one-line fallback is to switch to `solar_power_only` instead in the same branch - see known_issues_and_fixes.md for the fallback plan. This test should be re-run against the next live Hold cycle after deployment, checking specifically: (a) SOC stops climbing once Hold engages (not just that the registers read 0), and (b) the battery still discharges to offset house load without exporting, confirming the mode is behaving as documented rather than as idle.
 
 **Result:** still FAIL pending live re-verification - the fix is implemented in project docs only. Not upgraded to PARTIAL PASS or PASS until a real Hold cycle is observed live under the new mode.
+
+### Update 2026-11-03 - Discharge to Minimize Import was swapped out the same day for an unrelated reason before this risk was ever tested; its replacement, Solar Power Only, then found unsafe too; now on a third mode
+
+Before the open risk above could be tested, Discharge to Minimize Import was replaced the same day (2026-11-02) by a day/night split (Solar Power Only by day, Discharge to Maximize Export by night) in response to a different, separately-confirmed gap (a silent mode revert - see known_issues_and_fixes.md). So this test never actually observed a live Hold cycle under Discharge to Minimize Import at all - that mode's charge-blocking behavior under PV surplus remains untested, not disconfirmed.
+
+The day branch of that split, Solar Power Only, was then itself checked live 2026-11-03 (prompted by the user's report of another 90%+ excursion) and found to charge from PV surplus at ~350-430W despite a confirmed-correct mode command and charge_limit held at 0 throughout - the same failure shape as the original Maximize Self Consumption finding above. A possible device/entity mixup was specifically checked for and ruled out. Discharge to Maximize Export, checked under the same conditions, correctly stayed at 0W.
+
+**Fix implemented 2026-11-03**: High SOC Hold now uses Discharge to Maximize Export for both day and night (previously only at night), with the day/night distinction moved to the discharge limit (0 by day, dynamic by night) instead of the mode. This is the third mode choice for this test in three days. Full write-up: known_issues_and_fixes.md, High SOC Hold..., Updates 2026-11-03.
+
+**Result:** still FAIL pending live re-verification. Not upgraded until a real Hold cycle is observed live under this design - the two previous fixes both looked sound on paper and both failed their first real test, so this one should be held to the same bar before any upgrade.
 
 ---
 

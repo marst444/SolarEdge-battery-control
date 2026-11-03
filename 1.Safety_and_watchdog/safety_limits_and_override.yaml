@@ -1,8 +1,8 @@
 # ── safety_limits_and_override.yaml ──
 # Layer 1: applies SOC safety limits, high-SOC hold, grid-export/negative-price blocks, and EV constraints to Layer 4A's requested values.
 # Sets: input_select.effective_storage_mode, input_number.effective_charge/discharge_limit, input_boolean.battery_high_soc_hold
-# Deps: input_select/number.emhass_requested_*, sensor.solaredge_b1_state_of_energy  →  apply_effective_battery_control.yaml
-# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger, EV Charging Sensor Swap, High SOC Hold mode-switch fix 2026-11-02, High SOC Hold day/night split 2026-11-02)
+# Deps: input_select/number.emhass_requested_*, sensor.solaredge_b1_state_of_energy, sensor.pv_production_smoothed  →  apply_effective_battery_control.yaml
+# Fixes: known_issues_and_fixes.md (SOC-Sensor False-Trigger, EV Charging Sensor Swap, High SOC Hold mode-switch fix 2026-11-02, High SOC Hold day/night split 2026-11-02, Update 2026-11-03 - Day/Night Split Mode-Flapping on Raw PV, Update 2026-11-03 - Solar Power Only Replaced With Discharge to Maximize Export)
 
 automation:
 
@@ -24,7 +24,12 @@ automation:
           - sensor.solaredge_b1_state_of_energy
           - input_number.maximum_state_of_charge
           - input_number.minimum_state_of_charge
-          - sensor.solar_panel_production_w
+          # Smoothed, not raw - see pv_now comment below and
+          # known_issues_and_fixes.md, Update 2026-11-03. Triggering on the
+          # raw sensor re-evaluated (and could flip) the Hold day/night
+          # branch on every momentary PV blip, far more often than the mode
+          # it selects could actually be applied.
+          - sensor.pv_production_smoothed
 
     condition:
       # SOC sensor unavailable/unknown guard - freezes effective_* at last
@@ -55,14 +60,25 @@ automation:
           grid_export_limited: "{{ is_state('input_boolean.grid_export_limited', 'on') }}"
           negative_price_active: "{{ is_state('input_boolean.negative_price_active', 'on') }}"
 
-          # Day/night split for High SOC Hold below - same raw sensor and
-          # noise floor as battery_forecast_control.yaml's pv_now (Layer
-          # 4A), re-applied here since Layer 1 doesn't otherwise see PV at
-          # all. See known_issues_and_fixes.md - PV Sensor Trickle
-          # Readings Bypass the "No PV" Branch Logic.
-          pv_now: >-
-            {% set raw_now = states('sensor.solar_panel_production_w') | float(0) %}
-            {{ 0 if raw_now < (states('input_number.pv_noise_floor_w') | float(20)) else raw_now }}
+          # Day/night split for High SOC Hold below. Updated 2026-11-03:
+          # uses the same 4-minute trailing-mean sensor
+          # (sensor.pv_production_smoothed, batterycontrol_sensors.yaml) and
+          # noise floor as battery_forecast_control.yaml's mode-selecting
+          # `pv` variable (Layer 4A) - NOT that automation's raw/instantaneous
+          # `pv_now` variable, despite this variable's old name here. The
+          # original 2026-11-02 version of this branch used the raw,
+          # instantaneous sensor.solar_panel_production_w for this exact
+          # purpose, which is the one thing Layer 4A's own PV/Load Sampling
+          # Smoothing design (architecture.md) explicitly says never to do
+          # for a mode-selecting decision - see known_issues_and_fixes.md,
+          # Update 2026-11-03 - Day/Night Split Mode-Flapping on Raw PV, for
+          # the live incident (effective_storage_mode flipping every ~90s
+          # for hours on a variable-cloud day, 40+ drift-watchdog corrections
+          # in one morning) that this fixes. Named `pv` (not `pv_now`) to
+          # avoid exactly that naming confusion going forward.
+          pv: >-
+            {% set smoothed = states('sensor.pv_production_smoothed') | float(0) %}
+            {{ 0 if smoothed < (states('input_number.pv_noise_floor_w') | float(20)) else smoothed }}
 
 
       - choose:
@@ -126,26 +142,24 @@ automation:
                   value: "SOC below minimum - dynamic recovery charge"
 
           # HIGH SOC HOLD
-          # Updated 2026-11-02 (second time today): split by PV presence
-          # instead of a single mode for the whole Hold period. Day (PV
-          # above the noise floor): solar_power_only - the battery is
-          # fully idle, no charge AND no discharge path at all, closing
-          # off the MSC-overrides-charge-limit-0 vulnerability entirely
-          # rather than relying on a mode whose charge behavior under PV
-          # surplus turned out not to be safely assumable (see
-          # known_issues_and_fixes.md - High SOC Hold - Charge Limit = 0
-          # Does Not Stop Charging While Maximize Self Consumption Stays
-          # Active, and its two 2026-11-02 Updates). Night (PV at/below
-          # the floor): discharge_to_maximize_export - no PV means no risk
-          # of it recharging the battery, so instead of sitting idle,
-          # proactively discharge toward export to bring SOC down before
-          # the next day's solar. Both modes were already selectable in
-          # input_select.effective_storage_mode and already wired through
-          # apply_effective_battery_control.yaml's choose: block before
-          # today - no new plumbing needed for either one. Not yet
-          # verified live against a real Hold cycle in either branch.
+          # Updated 2026-11-03: Solar Power Only (Off) - the day branch's
+          # mode as of the 2026-11-02 day/night split below it - was found
+          # live to NOT actually idle the battery: it charged at ~350-430W
+          # (tracking PV almost exactly) despite a correctly-dispatched
+          # mode command and charge_limit confirmed held at 0 throughout.
+          # Discharge to Maximize Export (the night branch's mode) was
+          # checked against the same live conditions and DID correctly
+          # stay at 0W/Standby - see known_issues_and_fixes.md, High SOC
+          # Hold..., Update 2026-11-03 (later same day) and its "ruling
+          # out a mixup" follow-up. Both branches now use Discharge to
+          # Maximize Export - the only mode confirmed so far to honor
+          # charge_limit=0 under real PV surplus - differing only in the
+          # discharge ceiling: 0 by day (closest available equivalent to
+          # "fully idle" now that Solar Power Only can't be trusted for
+          # that), the dynamic value by night (unchanged - proactively
+          # discharge toward export since there's no recharge risk).
           # Whatever happens inside this branch, the Battery Control
-          # Drift Watchdog (watchdog_automations.yaml) now re-applies and
+          # Drift Watchdog (watchdog_automations.yaml) re-applies and
           # flags it if the live inverter doesn't actually end up
           # matching what's set here - see known_issues_and_fixes.md.
 
@@ -155,64 +169,34 @@ automation:
                 state: "on"
 
             sequence:
-              - choose:
-                  # Day: PV present above the noise floor - idle the
-                  # battery entirely rather than trust any mode's charge
-                  # behavior under PV surplus.
-                  - conditions:
-                      - condition: template
-                        value_template: "{{ pv_now > 0 }}"
-                    sequence:
-                      - service: input_select.select_option
-                        target:
-                          entity_id: input_select.effective_storage_mode
-                        data:
-                          option: "solar_power_only"
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.effective_storage_mode
+                data:
+                  option: "discharge_to_maximize_export"
 
-                      - service: input_number.set_value
-                        target:
-                          entity_id: input_number.effective_charge_limit
-                        data:
-                          value: 0
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_charge_limit
+                data:
+                  value: 0
 
-                      - service: input_number.set_value
-                        target:
-                          entity_id: input_number.effective_discharge_limit
-                        data:
-                          value: 0
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.effective_discharge_limit
+                data:
+                  value: >-
+                    {{ (states('input_number.dynamic_discharge_limit') | float(0))
+                       if pv == 0 else 0 }}
 
-                      - service: input_text.set_value
-                        target:
-                          entity_id: input_text.effective_battery_reason
-                        data:
-                          value: "High SOC hold - daytime (PV present), solar power only, battery idle"
-
-                # Night: PV at/below the noise floor - no recharge risk,
-                # so discharge toward export instead of sitting idle.
-                default:
-                  - service: input_select.select_option
-                    target:
-                      entity_id: input_select.effective_storage_mode
-                    data:
-                      option: "discharge_to_maximize_export"
-
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.effective_charge_limit
-                    data:
-                      value: 0
-
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.effective_discharge_limit
-                    data:
-                      value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
-
-                  - service: input_text.set_value
-                    target:
-                      entity_id: input_text.effective_battery_reason
-                    data:
-                      value: "High SOC hold - nighttime (no PV), discharge to maximize export"
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.effective_battery_reason
+                data:
+                  value: >-
+                    {{ "High SOC hold - daytime (PV present), discharge to maximize export, discharge capped 0"
+                       if pv > 0 else
+                       "High SOC hold - nighttime (no PV), discharge to maximize export" }}
 
 
           # 3. GRID EXPORT BLOCKED / NEGATIVE PRICE

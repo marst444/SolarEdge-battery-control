@@ -1142,6 +1142,333 @@ to Minimize Import actually blocks PV-surplus charging any better than
 MSC did remains unconfirmed and now has one more data point (a revert at
 11:58:00) muddying it rather than clarifying it.
 
+### Update 2026-11-03 - Day/Night Split Mode-Flapping on Raw PV, found via the user reporting "constant" drift-watchdog notifications
+
+Found 2026-11-03, in response to the user reporting they were getting
+constant Battery Control Drift Watchdog notifications and asking
+whether the basic flow was broken or the watchdog too aggressive. Live
+data confirmed the watchdog itself was working correctly - it was
+faithfully reporting a real, continuous mismatch, not misfiring - and
+the mismatch traced back to the Day/Night High SOC Hold split added in
+the first Update above.
+
+`input_boolean.battery_high_soc_hold` had been "on" continuously since
+at least mid-morning (SOC pinned 97-99%, never dropping to the 87% exit
+threshold). The day/night branch's PV-presence test used raw,
+instantaneous `sensor.solar_panel_production_w` against the 20W noise
+floor. Today was overcast/variable enough that this raw sensor swung
+between 0W and 500-1000W+ within the same minute (confirmed via direct
+history pull - real intermittent cloud, not sensor noise). Every
+crossing of the 20W floor flipped `input_select.effective_storage_mode`
+between `solar_power_only` and `discharge_to_maximize_export`, and
+every flip re-triggered `apply_effective_battery_control_to_solaredge_
+inverter` (`mode: restart`). History showed `effective_storage_mode`
+toggling every ~90-100 seconds continuously from ~08:57 through at
+least 12:08 - and because the apply automation's full sequence (mode
+write + two 2s delays + two limit-write scripts, serialized through the
+Modbus queue) routinely took longer than that ~90s gap, each run was
+cancelled and restarted by the next flip before the live inverter ever
+caught up. The live `select.solaredge_i1_storage_command_mode` was
+confirmed always one full cycle behind the current target - exactly
+matching the watchdog's 40 drift detections that morning (44 lifetime).
+A secondary cost: most of those 40 corrections were themselves likely
+stale by the time the next PV flip happened a minute or two later,
+adding Modbus write pressure without durable benefit.
+
+This is the same anti-pattern this project already diagnosed and fixed
+once before, for Layer 4A's mode-selecting decisions - see roadmap.md
+Resolved, "Midday Oscillation - PV/Load Sampling Smoothing" (fixed
+2026-08-28): raw instantaneous PV must not be used to pick between
+distinct storage *modes*, because a momentary spike/dip flips the mode.
+That fix built `sensor.pv_production_smoothed` (a 4-minute trailing
+mean, `batterycontrol_sensors.yaml`) specifically so Layer 4A's own
+mode-selecting `pv` variable never sees raw noise. The Day/Night Hold
+branch added yesterday didn't reuse it, reintroducing the raw sensor for
+exactly the kind of decision the smoothing was built to protect against
+- confirmed by its own variable name, `pv_now`, which in Layer 4A's own
+file specifically denotes the *raw* value used only for a non-mode-
+flipping charge-limit ceiling choice within the Maintain Zone, not for
+mode selection.
+
+Fixed in `safety_limits_and_override.yaml`: the Hold day/night branch's
+PV test now reads `sensor.pv_production_smoothed` instead of raw
+`sensor.solar_panel_production_w`, renamed from `pv_now` to `pv` to
+match Layer 4A's own naming convention and avoid the same confusion
+recurring. `calculate_effective_battery_control`'s trigger list was
+also updated to watch the smoothed sensor instead of the raw one, so a
+momentary PV blip no longer even re-evaluates the branch. Confirmed via
+live history that the smoothed sensor is a materially different signal
+during today's conditions: where the raw sensor crossed the 20W floor
+roughly every 90 seconds, the smoothed sensor only touched the floor
+twice in the same hour (both during sustained multi-minute lulls, not
+brief blips) and otherwise varied gradually rather than jumping - this
+should cut the flip rate by roughly an order of magnitude or more
+whenever Hold coincides with variable cloud cover.
+
+Status: **implemented in project docs only, not yet deployed to the
+live HA instance or verified against a real variable-cloud Hold cycle.**
+Deploying this does not retroactively fix today's already-elevated
+drift counters (`input_number.battery_control_drift_count_today/
+_total`) - those will keep climbing at the old rate until the fix is
+live, and the `_today` counter resets at midnight regardless.
+
+### Update 2026-11-03 (later same day) - major reversal: live data shows Solar Power Only (Off), not Discharge to Maximize Export, is the mode that's actually letting the battery charge through the ceiling - found in response to the user asking "is battery charging despite these modes active??"
+
+Found while investigating the user's direct question after SOC again
+crossed 90% today despite Hold's day/night split (the Update above)
+supposedly keeping the battery on `solar_power_only` by day and
+`discharge_to_maximize_export` by night. Checked live, read-only,
+against today's 08:30-12:25 window - the same stretch documented above
+as still mode-flapping (the smoothed-PV fix for that is written but not
+yet deployed).
+
+**First, the scale of the problem: over this ~3h55m window, the
+inverter spent more than half its time actually charging.**
+`sensor.solaredge_b1_status_text` summary (`ha_get_history`,
+`summary=True`): `Charging` 7441s (~2h4m, 53%), `Standby` 5150s (~1h26m,
+37%), `Preserve Charge` 1468s (~24m, 10%), `Discharging` only 37s. That
+alone is more than enough real charging time to explain the renewed
+climb past 90% - this isn't a brief edge-case blip.
+
+**Pairing each mode transition against the live inverter state reveals
+which mode is actually responsible, and it is the opposite of what was
+suspected going into this.** Across ~25 consecutive flap cycles between
+09:01 and 11:24 local, `select.solaredge_i1_storage_command_mode`
+confirmed the mode dispatch itself is correct and prompt - no
+mapping/script bug: it flips to "Solar Power Only (Off)" and "Discharge
+to Maximize Export" in lockstep with `input_select.effective_
+storage_mode`, same instant, every single cycle. `number.solaredge_i1_
+storage_charge_limit` held at a flat, unmoving `0` across the entire
+09:00-09:10 sample (matching the already-established 06:30:59-onward
+flat-0 finding higher up this issue). Yet `sensor.solaredge_b1_dc_power`/
+`status_text` show an immediate (<300ms lag - essentially the next poll
+after each write), repeatable, 1:1 correlation, confirmed pair by pair:
+
+```text
+effective_storage_mode -> solar_power_only          -> Charging, +350 to +430W
+effective_storage_mode -> discharge_to_maximize_export -> Standby, 0.0W
+```
+
+One sample pins this precisely: at 09:01:37, raw PV
+(`sensor.solar_panel_production_w`) read exactly 396.0W and
+`sensor.solaredge_b1_dc_power` read exactly 396.0W at the same instant -
+charging tracks PV almost exactly, not some fixed or grid-sourced rate.
+House load (`sensor.power_myhouse_load_no_var_loads`) was ~397-405W at
+the same moment, and the single `sensor.solaredge_i1_ac_power` sample
+available read `0` - consistent with (not yet fully confirmed, one
+low-confidence sample) PV being diverted DC-side straight into the
+battery instead of reaching the house/grid, the opposite of what "Solar
+Power Only (Off)" is documented to do.
+
+**This is not a flap/polling artifact - re-tested against a clean,
+non-flapping stretch and the pattern held.** Later the same morning,
+11:53:05-12:05:12 (12 minutes), PV stayed at the noise floor the whole
+time with no flapping (confirmed via the mode-transition history:
+`effective_storage_mode` sat on `discharge_to_maximize_export`
+continuously for the full 12 minutes, unlike every other dwell that
+morning). `dc_power` stayed in the 0-15W range throughout - genuinely
+near-zero, not charging. So `discharge_to_maximize_export` does not
+charge when stably dwelt in, PV or no PV; the earlier correlation isn't
+an artifact of the rapid flapping or of inverter polling lag, it is
+reproducible, real, and mode-specific.
+
+**Secondary, smaller anomaly found along the way, not the explanation
+for the charging itself:** `number.solaredge_i1_storage_discharge_limit`
+appeared to lag one full flap-cycle behind during the 09:00-09:10
+sample - reading ~82-111W (the "night" branch's dynamic value) during
+`solar_power_only` dwells, when it should read 0, and reading 0 during
+`discharge_to_maximize_export` dwells, when it should read the dynamic
+value. This is consistent with the write-starvation mechanism already
+diagnosed in the Update above (`mode: restart` cancelling a run before
+its final discharge-limit-write step completes under rapid
+re-triggering) - a plausible secondary consequence of the same flapping
+bug, not a new mechanism. It does not explain the charging on its own:
+`charge_limit` (the register that should matter for charging) stayed
+flat at 0 throughout with no equivalent lag, and `solar_power_only` is
+documented to idle the battery regardless of any limit register, not
+just cap it.
+
+**Net conclusion, reversing the standing assumption going into this
+investigation:** the mode this project has been treating as the one
+fully-safe, reliably-idle fallback - "Solar Power Only (Off)," the
+*daytime* half of the current Hold split, and README.md's strongest
+documented guarantee ("No battery charging or discharging... Battery is
+idle") - appears, on today's live evidence, to share the same
+"charge_limit=0 ignored under PV surplus" defect already confirmed for
+Maximize Self Consumption (see this issue's main entry above).
+Meanwhile "Discharge to Maximize Export" - the *nighttime* half of the
+split, and the mode the user's question specifically asked about -
+correctly honored charge_limit=0 in every sample checked, including the
+clean 12-minute stable dwell. This project's own earlier characterization
+of Solar Power Only as "confirmed live... genuinely, reliably idles the
+battery" (recorded earlier in this project's investigation history) was
+evidently based on dwells sampled while PV was weak or absent, where 0W
+is the expected reading regardless of whether this defect is present -
+it was never actually tested against a dwell with real PV surplus until
+today's data.
+
+**Also found along the way, not yet corrected:** README.md's "Discharge
+to Minimize Import" section still documents that mode as the one "Used
+when: High SOC Hold is active" (written 2026-11-02, during the
+single-mode `discharge_to_minimize_import` fix that was itself replaced
+by the day/night split later the same day - see the Updates above). That
+line is now stale regardless of how this finding is resolved - the live
+Hold branch uses `solar_power_only`/`discharge_to_maximize_export`, not
+`discharge_to_minimize_import` at all. Not corrected in this update,
+pending the user's decision on how to actually fix the underlying
+charging problem, since the README edit should describe whatever the
+Hold branch ends up doing after that decision, not what it does right
+now.
+
+**Caveat on confidence:** this is one variable-cloud morning's data
+(~25 flap-cycle pairs plus one clean 12-minute stable dwell), not a
+multi-day survey. The pattern itself is immediate (sub-300ms), highly
+consistent (every single cycle checked agreed), and physically coherent
+(charge rate tracked PV almost exactly) - high confidence in the
+pattern as observed today - but it has not been cross-checked against a
+second day or a non-flapping Solar-Power-Only dwell with substantial PV
+(today's data never produced one, since Solar Power Only only ever got
+~90s dwells during the active flapping stretch).
+
+**Follow-up the same day - user asked to rule out a reference/entity
+mixup before accepting this as real inverter behavior. Checked three
+specific ways, none found a mixup:**
+
+1. *Wrong device/entity instance.* `ha_search`/`ha_get_entity` confirm
+   this installation has exactly one inverter (`i1`) and one battery
+   (`b1`) sub-device, both under the same `solaredge_modbus_multi`
+   config entry. `select.solaredge_i1_storage_command_mode`/`number.
+   solaredge_i1_storage_charge_limit`/`_discharge_limit` live on the
+   inverter sub-device (`309492d6...`); `sensor.solaredge_b1_status`/
+   `_dc_power` live on the battery sub-device (`ad04e235...`) - this is
+   the integration's normal inverter/battery split for one physical
+   site, not two different sites or a stale second instance. No
+   cross-wiring found.
+2. *Template mislabeling.* `sensor.solaredge_b1_status_text` turned out
+   to be `platform: template` (not part of the native integration, and
+   not defined in any of this project's 27 tracked docs either - an
+   undocumented template this project should probably adopt into its
+   own files at some point, separately from this issue). Checked it
+   against the native, non-template enum register directly
+   (`sensor.solaredge_b1_status`, `platform: solaredge_modbus_multi`):
+   it read `B_STATUS_CHARGE`/`B_STATUS_STANDBY` in exact lockstep with
+   `status_text`'s `Charging`/`Standby` at every transition sampled -
+   the template is a faithful 1:1 mirror of the real register, not a
+   mislabeling. `sensor.solaredge_i1_b1_dc_power_inverted` is likewise
+   confirmed as a plain sign-flipped duplicate of `b1_dc_power` (e.g.
+   `396.0` alongside `-396.0` at the same instant) - a convenience
+   sensor for the opposite sign convention, not a different
+   measurement.
+3. *Optimistic/assumed state instead of a real Modbus read-back.* This
+   was the most important one to rule out - if `select.solaredge_i1_
+   storage_command_mode` only echoed what HA last *commanded* rather
+   than reading the live register, "it shows Solar Power Only (Off)"
+   wouldn't actually prove the inverter is in that mode. This project's
+   own prior history already settles it, independent of today's data:
+   this same entity was caught reverting from `Discharge to Minimize
+   Import` back to `Maximize Self Consumption` on its own, with no
+   project-side write, at 11:58:00 on 2026-11-02 (see this issue's
+   Update above, "fix WAS deployed... inverter's mode silently reverted
+   15 minutes later"). An optimistic/assumed-state entity cannot change
+   value without HA writing it - the fact that it changed on its own
+   proves this entity genuinely reads the live register back from the
+   inverter, not just a local echo.
+
+So: correct single device, a confirmed-accurate status label, and a
+confirmed-genuine register read-back, all agreeing with each other -
+no mixup found in how this project's own entities are wired or named.
+Separately, searched the `solaredge-modbus-multi` integration's own
+GitHub discussions for any known report of this exact behavior: no
+one has reported testing "Solar Power Only (Off)" against real PV
+surplus and documented the result either way (one user called it an
+unverified claim that it pauses charge/export; the maintainer said
+pausing isn't otherwise exposed over Modbus) - so this isn't a
+previously-documented public bug in the integration either, just not
+yet tested by anyone who posted about it. That leaves the live
+evidence gathered today as the best available answer, not a confirmed
+upstream defect report.
+
+Status: **finding confirmed against today's live data, and now also
+checked for (and not explained by) a device/entity mixup, a template
+labeling bug, or an optimistic-state artifact; no fix selected or
+implemented yet - awaiting the user's direction on how to address it.**
+Not yet proposed as a blind fix here, consistent with how the original
+Maximize-Self-Consumption version of this same defect was handled
+above.
+
+### Update 2026-11-03 (same day, continued) - fixed: High SOC Hold now uses Discharge to Maximize Export for both day and night; three other Solar Power Only branches reviewed, one changed, three left as-is
+
+Per the user's direction after the mixup check above found nothing:
+"switch to discharge to maximize export when passing the upper soc
+limit," plus a request to check every other place this project sets
+`solar_power_only` and decide how to treat each one.
+
+**High SOC Hold (`safety_limits_and_override.yaml`).** The day/night
+split's *mode* distinction is removed - both branches now set
+`effective_storage_mode` to `discharge_to_maximize_export`, the only
+mode confirmed live (see the Updates above) to actually honor
+`charge_limit=0` under real PV surplus. The day/night distinction is
+kept, but moved onto the *discharge limit* instead of the mode: `0` by
+day (the closest available equivalent to "fully idle" now that Solar
+Power Only can't be trusted for that - charge is pinned to 0 either
+way, and this mode's own behavior when no deficit exists was already
+observed firsthand in the clean, non-flapping 11:53-12:05 dwell
+documented above, which sat at 0-15W/noise the whole time with
+discharge capped), and the existing dynamic value by night (unchanged -
+proactively discharge toward export). `input_text.effective_battery_
+reason` now derives its text from the same day/night PV test instead of
+being hardcoded per branch, so the two cases still say which is active.
+This is a real behavior change versus the 2026-11-02 day/night split:
+previously the battery was guaranteed (on paper) to do absolutely
+nothing during the day; now it is capped at 0 discharge through the
+same mode that's supposed to prevent charging, which is a strictly
+better guarantee given today's evidence but relies on that mode's
+charge-blocking behavior holding up generally, not just in the specific
+PV-surplus conditions sampled today.
+
+**The other four `solar_power_only` branches, all in `battery_
+forecast_control.yaml` (Layer 4A), reviewed one by one:**
+
+- Three BELOW-SOC branches ("no PV, discharging forecast"; "no PV,
+  charging forecast but no grid import"; "no PV, flat forecast, reached
+  only after the price-fallback branch") are all gated on `pv == 0` -
+  and `pv` here is the same noise-floored, smoothed variable used
+  throughout this file, so this is a genuine "no real PV" condition, not
+  just a momentary dip. The defect found today is PV-surplus-driven -
+  every charging sample observed tracked PV's own magnitude almost
+  exactly (e.g. 396W PV, 396W charge, at the same instant) - so with no
+  real PV present, there is no surplus for that mechanism to divert into
+  the battery regardless of which mode is commanded. **Left unchanged.**
+  This is reasoned from today's evidence, not separately tested - it
+  assumes the leak is specifically a PV-DC-surplus path and not, say, a
+  grid-AC-charging path that could occur even without PV; worth
+  revisiting if a future Hold-style excursion is ever traced back to one
+  of these three branches specifically.
+- The Maintain Zone's final catch-all (`conditions: []`, reached only
+  when `pv_now > house_load_now` - real surplus - and `batt_fc >= 0` and
+  SOC sits exactly at the deadband's upper edge) is the one other branch
+  where real PV surplus is actually present when `solar_power_only`
+  fires - the same trigger condition as the Hold bug. **Changed** to
+  `discharge_to_maximize_export` with discharge pinned to 0, matching
+  the Hold fix's reasoning exactly. This is a narrow, rare corner case
+  (requires SOC to land precisely on the deadband boundary at the same
+  15-minute tick PV exceeds load) - not separately live-tested, but the
+  same fix as above for the same reason.
+
+Both files (`safety_limits_and_override.yaml`, `battery_forecast_
+control.yaml`) YAML-validated (`yaml.safe_load`) before push.
+
+Status: **implemented in project docs only, not yet deployed to the
+live HA instance or verified against a real Hold cycle under the new
+single-mode day/night split, or against the narrow Maintain Zone corner
+case (which may not occur again soon given how specific its trigger
+condition is).** `architecture.md`'s High SOC Hold description and
+`README.md`'s "Discharge to Minimize Import... Used when: High SOC Hold
+is active" line are both now further stale (they still describe the
+2026-11-02 single-mode and day/night-split-by-mode designs, neither of
+which matches the current code) - not corrected in this update, flagged
+to do next.
+
 ---
 
 ## Critical-Recovery Charge Limit Write Silently Dropped

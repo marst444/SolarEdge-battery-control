@@ -2,7 +2,7 @@
 # Layer 4A: converts EMHASS forecast + live SOC/PV/load into requested battery mode/limits every 15 min. See architecture.md (Layer 4A).
 # Sets: input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge/discharge_limit
 # Deps: sensor.mpc_pv_batt/grid_power, sensor.emhass_health, sensor.solaredge_b1_state_of_energy  →  safety_limits_and_override.yaml
-# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard, SOC-Unavailable Guard, PV Noise Floor 2026-11-02); unused `ev` var - see roadmap.md
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard, SOC-Unavailable Guard, PV Noise Floor 2026-11-02, Update 2026-11-03 - Solar Power Only Replaced With Discharge to Maximize Export in the Maintain Zone fallback); unused `ev` var - see roadmap.md
 
 automation:
 
@@ -517,7 +517,27 @@ automation:
                           value: "{{ states('input_number.dynamic_discharge_limit') | float(0) }}"
 
 
-                  # Fallback: solar power only
+                  # Fallback: only reached when pv_now > house_load_now
+                  # (real PV surplus exists) AND batt_fc >= 0 AND soc is
+                  # exactly at the deadband's upper edge - see the two
+                  # preceding branches' conditions. Was solar_power_only
+                  # until 2026-11-03: that mode was found live to charge
+                  # from PV surplus despite charge_limit=0 (see
+                  # known_issues_and_fixes.md, High SOC Hold..., Update
+                  # 2026-11-03), and this is the one Maintain Zone branch
+                  # where real PV surplus (pv_now > house_load_now) is
+                  # actually present when it fires - exactly the condition
+                  # that defect needs. Switched to discharge_to_maximize_
+                  # export with discharge pinned to 0 (the closest
+                  # available equivalent to "stay flat, do nothing" now
+                  # that Solar Power Only can't be trusted for that), since
+                  # that mode was separately confirmed to honor
+                  # charge_limit=0 under the same live PV-surplus
+                  # conditions. The other three solar_power_only branches
+                  # in this file (BELOW-SOC, all gated on pv == 0) were
+                  # left unchanged - with no real PV surplus present when
+                  # they fire, this defect's trigger condition doesn't
+                  # apply; see that Update for the full reasoning.
                   - conditions: []
                     sequence:
             # Shadow/requested state
@@ -525,7 +545,7 @@ automation:
                         target:
                           entity_id: input_select.emhass_requested_storage_mode
                         data:
-                          option: "solar_power_only"
+                          option: "discharge_to_maximize_export"
 
                       - service: input_number.set_value
                         target:

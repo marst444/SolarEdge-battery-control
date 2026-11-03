@@ -150,8 +150,9 @@ Instead:
 ```text
 SOC >= Maximum SOC - 1%
 → High SOC Hold enabled
-→ Charge limit set to 0, discharge limit set to 0
-→ Mode switches to Discharge to Minimize Import
+→ Charge limit set to 0
+→ Mode switches to Discharge to Maximize Export
+→ Discharge limit: 0 by day (PV present), dynamic value by night (no PV)
 
 SOC <= Maximum SOC - 3%
 → High SOC Hold disabled
@@ -168,31 +169,50 @@ it's kept anyway as a defensive buffer; see known_issues_and_fixes.md for
 the full investigation. The exit side (`soc <= soc_max - 3`) avoids
 oscillation from SOC quantisation near the limit.
 
-**Mode switched 2026-11-02 from Maximize Self Consumption to Discharge to
-Minimize Import.** MSC was confirmed live (11 Hold cycles, 2026-10-22 to
-2026-11-01) to keep charging the battery past `charge_limit = 0` whenever
-PV surplus was available - 10 of 11 cycles climbed all the way to 100%
-SOC regardless, with the charge-limit register directly confirmed held
-at the commanded 0 throughout (not a write failure; MSC's own internal
-self-consumption logic evidently overrides the register while that mode
-stays active). Discharge to Minimize Import was chosen over the
-alternative, Solar Power Only (fully idle, no charge or discharge),
-specifically to keep the battery able to offset house load during Hold
-rather than sitting completely inert - both the charge and discharge
-limits are pinned to 0 while Hold is on, so the battery stays passive by
-default rather than actively discharging to cover load. See README.md
-(Storage Control Modes Explained) for what this mode does on the
-inverter, and known_issues_and_fixes.md (High SOC Hold - Charge Limit = 0
-Does Not Stop Charging While Maximize Self Consumption Stays Active,
-Update 2026-11-02) for the full fix write-up, including the one-line
-fallback to Solar Power Only if this mode turns out not to block
-PV-surplus charging either - **not yet verified live.**
+**Mode history, three changes in three days, each one found unsafe by
+live testing of the one before it.** Originally Maximize Self
+Consumption: confirmed live (11 Hold cycles, 2026-10-22 to 2026-11-01) to
+keep charging the battery past `charge_limit = 0` whenever PV surplus was
+available - 10 of 11 cycles climbed all the way to 100% SOC regardless,
+charge-limit register confirmed held at 0 throughout (MSC's own internal
+self-consumption logic evidently overrides the register). Switched
+2026-11-02 to Discharge to Minimize Import (never separately verified
+against real PV surplus before being swapped out again the same day for
+an unrelated reason - a silent mode revert, not this question). Switched
+again 2026-11-02 (later) to a day/night split: Solar Power Only by day
+(PV present - chosen then as the strongest documented "fully idle"
+guarantee), Discharge to Maximize Export by night (no PV - no recharge
+risk, so discharge toward export instead of sitting idle).
 
-One side effect of the mode switch: Layer 4B's Mode Command Guard (see
-below) only skips the mode-select resend while effective mode is
-Maximize Self Consumption, so every Hold period now resends the full
-command sequence on each 15-minute tick instead of being guarded -
-expected, not a defect.
+**Solar Power Only was then itself found live, 2026-11-03, to charge the
+battery from PV surplus just like Maximize Self Consumption did** -
+~350-430W, tracking PV almost exactly, with a confirmed-correct mode
+command and charge_limit held at 0 throughout the whole time. Discharge to
+Maximize Export, checked against the same live conditions, correctly
+stayed at 0W. The mixup this might suggest (wrong device, a mislabeled
+status sensor, an optimistic mode entity echoing a command rather than
+reading the register) was specifically checked for and ruled out - see
+known_issues_and_fixes.md, High SOC Hold - Charge Limit = 0 Does Not Stop
+Charging..., the two 2026-11-03 Updates, for the full evidence trail.
+
+**Current design (2026-11-03): Discharge to Maximize Export for both day
+and night**, the only mode confirmed so far to honor `charge_limit = 0`
+under real PV surplus. The day/night distinction moved from the *mode* to
+the *discharge limit*: 0 by day (closest available equivalent to "fully
+idle" now that Solar Power Only can't be trusted for that), the dynamic
+value by night (unchanged). See README.md (Storage Control Modes
+Explained) for what this mode does on the inverter, and
+known_issues_and_fixes.md for the full fix write-up. **Not yet verified
+live against a real Hold cycle under this design** - this is now the
+third mode choice to need that verification, following two that didn't
+survive their first real test.
+
+One side effect worth noting: Layer 4B's Mode Command Guard (see below)
+only skips the mode-select resend while effective mode is Maximize Self
+Consumption, so every Hold period resends the full command sequence on
+each trigger instead of being guarded - expected, not a defect, and
+unchanged by any of the mode switches above (none of them were Maximize
+Self Consumption).
 
 # Layer 2 - Optimisation
 ## Purpose

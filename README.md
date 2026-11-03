@@ -142,6 +142,20 @@ PV → Export
 ```
 → Used when: Battery use is disabled, any PV is used for self-consumption and surplus for export.
 
+**Caveat found 2026-11-03** (see known_issues_and_fixes.md - High SOC
+Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self
+Consumption Stays Active, the 2026-11-03 Updates): the "No battery
+charging or discharging... Battery is idle" claim above was confirmed
+live to NOT hold while meaningful PV surplus is available - the battery
+charged at ~350-430W (tracking PV almost exactly) with a confirmed-
+correct mode command and the charge-limit register held at 0
+throughout. This is the same failure shape already documented under
+Maximize Self Consumption below - this mode's internal logic appears to
+also divert PV surplus into the battery regardless of the charge-limit
+register. A possible device/entity mixup was specifically checked for
+and ruled out. High SOC Hold no longer uses this mode for that reason -
+see Discharge to Maximize Export below.
+
 ## Charge from Clipped Solar Power (Charge Excess PV power only)
 Only when PV production exceeds the inverter's maximum AC output (house load + grid export) (site limit? Är inte site limit export limit??), the PV surplus is redirected to charge the battery. Battery does not compete with self-consumption or grid export.
 ```
@@ -193,7 +207,14 @@ PV+ Battery
 Houseload + Export (as set by inverter power limit)
 ```
 
-→ Used when: EMHASS forecasts export (grid_fc < 0) AND battery discharge (batt_fc > 0) AND SOC > min.
+→ Used when: EMHASS forecasts export (grid_fc < 0) AND battery discharge (batt_fc > 0) AND SOC > min; also used during High SOC Hold as of 2026-11-03 (see SOC Safety Limits below).
+
+**Confirmed 2026-11-03**: unlike Solar Power Only and Maximize Self
+Consumption (see their caveats above), this mode was checked live under
+real PV surplus with charge limit = 0 and correctly stayed at 0W/Standby
+- it does not charge from PV surplus. See known_issues_and_fixes.md,
+High SOC Hold - Charge Limit = 0 Does Not Stop Charging..., for the
+evidence.
 
 ## Discharge to Minimize Import
 Battery discharges only to cover house load when PV is insufficient — no grid export from battery. Requires external meter.
@@ -205,13 +226,15 @@ House loads
 NO grid export
 ```
 
-→ Used when: High SOC Hold is active (SOC at/above the safety ceiling) - see
-SOC Safety Limits below and architecture.md (Layer 1 - High SOC Hold). Added
-2026-11-02 after Maximize Self Consumption was confirmed to keep charging
-the battery past charge limit = 0 whenever PV surplus was available; not
-yet verified whether this mode actually blocks that charging either - see
-known_issues_and_fixes.md for the open verification and the Solar Power
-Only fallback plan if it doesn't.
+→ Not currently used by this automation. Briefly used for High SOC Hold
+for part of 2026-11-02 (added after Maximize Self Consumption was
+confirmed to keep charging past charge limit = 0 under PV surplus), but
+replaced the same day by a day/night Solar-Power-Only/Discharge-to-
+Maximize-Export split before this mode's own charge-blocking behavior
+under PV surplus was ever actually tested - see known_issues_and_fixes.md,
+High SOC Hold - Charge Limit = 0 Does Not Stop Charging..., for the full
+history. Whether it would have blocked that charging remains unconfirmed
+either way.
 
 ## Maximize Self Consumption
 PV covers house load first. Any surplus charges the battery. If PV is insufficient, the battery discharges to cover the gap. Net result: grid import and export are minimized. Requires external meter.
@@ -249,9 +272,11 @@ charge" line above was confirmed live to NOT hold while meaningful PV
 surplus is available - the battery kept charging to 100% SOC for 6h45m+
 with the charge-limit register confirmed held at 0 throughout. This mode's
 own internal self-consumption logic evidently overrides the charge-limit
-register in that condition. As of 2026-11-02, High SOC Hold no longer
-relies on this mode for that reason - see Discharge to Minimize Import
-above.
+register in that condition. As of 2026-11-03, High SOC Hold uses
+Discharge to Maximize Export instead, the only mode confirmed so far to
+honor charge_limit = 0 under real PV surplus (Solar Power Only was tried
+in between and found to have the same defect - see the caveat under
+Solar Power Only above) - see Discharge to Maximize Export below.
 
 # SolarEdge default/backup mode
 
@@ -282,11 +307,18 @@ VariableDescriptionsocCurrent battery state of charge (%)targetEMHASS forecasted
 # 1. SOC Safety Limits (Layer 1)
 
 SOC > max (e.g. 90%)
-Battery is full enough — stop charging, allow limited discharge to offset house load (no export).
-→ Mode: Discharge to Minimize Import, charge limit = 0, discharge limit = 0
-(Changed 2026-11-02 from Maximize Self Consumption, charge limit = 0, dynamic
-discharge limit - see the caveat under Maximize Self Consumption above and
-known_issues_and_fixes.md. Not yet verified live.)
+Battery is full enough — stop charging. High SOC Hold then splits by whether
+PV is actually present:
+→ Mode: Discharge to Maximize Export, charge limit = 0, always
+→ Discharge limit: 0 W by day (PV present - stay as close to idle as this
+mode allows), dynamic value by night (no PV, no recharge risk - discharge
+toward export instead of sitting idle)
+(Changed 2026-11-03, after Solar Power Only - itself a replacement for
+Maximize Self Consumption, changed 2026-11-02 - was confirmed to also charge
+from PV surplus despite charge limit = 0. See the caveats under Solar Power
+Only and Maximize Self Consumption above, and known_issues_and_fixes.md for
+the full history. Not yet verified live against a real Hold cycle under
+this latest design.)
 
 SOC < min (e.g. 20%)
 Battery is too low — stop discharging.
@@ -363,9 +395,15 @@ PV ≤ house_load OR batt_fc < 0
 Normal maintain — balance dynamically.
 → Mode: Maximize Self Consumption, dynamic charge and discharge limits
 
-Fallback
-No clear signal — hold position.
-→ Mode: Maximize Self Consumption, charge limit = 0
+Fallback (reached only when PV > house_load AND batt_fc >= 0 AND SOC sits
+exactly at the deadband's upper edge)
+No clear signal, but real PV surplus is present — stay as close to flat as
+possible without trusting Solar Power Only's charge-blocking under PV
+surplus (see its caveat above).
+→ Mode: Discharge to Maximize Export, charge limit = 0, discharge limit = 0
+(Changed 2026-11-03 from Solar Power Only - this was the one other place in
+the automation besides High SOC Hold where that mode's now-confirmed defect
+could actually be triggered by real PV surplus. See known_issues_and_fixes.md.)
 
 
 # Dynamic Charge/Discharge Limits
