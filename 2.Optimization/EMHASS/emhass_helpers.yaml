@@ -1,41 +1,15 @@
 # ── emhass_helpers.yaml ──
-# Layer 2/4A: input_number/datetime/select definitions for MPC window, SOC target, EMHASS requested mode/limits.
+# Layer 2/4A: input_number/select definitions for EMHASS max inverter power, requested mode/limits.
 # Sets: (definitions only - written at runtime by emhass_scripts.yaml, battery_forecast_control.yaml)
 # Deps: none (static)  →  emhass_scripts.yaml, battery_forecast_control.yaml, apply_effective_battery_control.yaml
-# Fixes: known_issues_and_fixes.md
+# Fixes: known_issues_and_fixes.md. 2026-11-02: removed dead pre-refactor
+# sliding-window/SOC-target helpers (input_number.mpc_window_start/_end/
+# _prediction_horizon/_soc_final_target, input_datetime.day_ahead_forecast_end)
+# - only ever written by the dead scripts removed from emhass_scripts.yaml
+# in the same cleanup, all frozen at their initial values. See
+# known_issues_and_fixes.md and roadmap.md Cleanup/Technical Debt.
 
 input_number:
-  mpc_window_start:
-    name: MPC Window Start
-    initial: 0
-    min: 0
-    max: 96
-    step: 1
-    mode: box
-
-  mpc_window_end:
-    name: MPC Window End
-    initial: 96
-    min: 0
-    max: 96
-    step: 1
-    mode: box
-
-  mpc_prediction_horizon:
-    name: MPC Prediction Horizon
-    initial: 96
-    min: 0
-    max: 96
-    step: 1
-    mode: box
-
-  mpc_soc_final_target:
-    name: MPC SOC Final Target
-    initial: 30
-    min: 0
-    max: 90
-    step: 1
-    mode: box
 
 # Static nameplate/rated AC power of the hybrid inverter (SE10K-RWB48BFN4),
 # fed into EMHASS as inverter_ac_output_max/inverter_ac_input_max
@@ -90,13 +64,6 @@ input_number:
     max: 1
     step: 1
     mode: box
-
-input_datetime:
-
-  day_ahead_forecast_end:
-    name: Day-ahead Forecast End
-    has_date: true
-    has_time: true
 
 input_select:
   emhass_requested_storage_mode:

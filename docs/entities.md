@@ -150,6 +150,25 @@ input_number.mode_command_skipped_count_total / _today
 
 ---
 
+```text
+input_number.battery_control_drift_count_total / _today
+-> Lifetime / since-midnight count of times
+   automation.watchdog_battery_control_drift (added 2026-11-02) found
+   live inverter state mismatched from the intended effective_* state
+   and force-re-applied it. Written by watchdog_automations.yaml;
+   _today zeroed daily by automation.watchdog_reset_daily_diagnostic_counters.
+```
+
+---
+
+```text
+input_text.battery_control_last_drift_reason
+-> Human-readable description of the most recent drift the watchdog
+   above caught and corrected. Written by watchdog_automations.yaml.
+```
+
+---
+
 ```
 input_boolean.battery_high_soc_hold
 -> Upper SOC protection state with hysteresis
@@ -209,46 +228,19 @@ input_text.effective_battery_reason
 ---
 
 ```text
-input_boolean.battery_safety_override_active
--> Enables or indicates battery safety override state.
-```
-
----
-
-```text
-input_boolean.battery_force_discharge
--> Manual battery force-discharge control.
-```
-
----
-
-```text
-input_boolean.battery_force_charge
--> Manual battery force-charge control.
-```
-
----
-
-```text
-input_boolean.battery_discharge_blocked
--> Indicates that battery discharge is blocked.
-```
-
----
-
-```text
-input_boolean.battery_charge_blocked
--> Indicates that battery charging is blocked.
-```
-
----
-
-```text
 input_boolean.effective_battery_control_enabled
 -> Main kill switch for battery control.
 ```
 
 ---
+
+Note (2026-11-02): the 5 manual-override input_booleans previously
+listed here (`battery_safety_override_active`, `battery_force_discharge`,
+`battery_force_charge`, `battery_discharge_blocked`,
+`battery_charge_blocked`) were removed from
+`safety_and_watchdog_helpers.yaml` - confirmed unused (no read/write
+anywhere in the project, no dashboard reference) during the 2026-11-02 HA
+cleanup audit. See known_issues_and_fixes.md and roadmap.md Resolved.
 
 ## Effective Battery Control Outputs
 
@@ -408,16 +400,39 @@ automation.EMHASS_addon_watchdog_auto_restart
 
 ```text
 automation.watchdog_reset_daily_diagnostic_counters
--> Zeroes the "_today" Modbus write and mode-command-skip counters
-   (modbus_write_success_count_today, modbus_write_failure_count_today,
-   mode_command_skipped_count_today) at local midnight. Added 2026-10-06
-   alongside the Enhanced Diagnostics helpers above; mirrors
+-> Zeroes the "_today" Modbus write, mode-command-skip, and
+   battery-control-drift counters (modbus_write_success_count_today,
+   modbus_write_failure_count_today, mode_command_skipped_count_today,
+   battery_control_drift_count_today) at local midnight. Added
+   2026-10-06 alongside the Enhanced Diagnostics helpers above, extended
+   2026-11-02 for the new drift counter; mirrors
    automation.reset_modbus_queue_daily_telemetry_counters in Layer 4C.
    NOTE: its YAML id: is reset_watchdog_daily_counters - that field only
    sets the internal automation id, not the entity_id, which Home
    Assistant derives from alias: instead. See
    known_issues_and_fixes.md, Entity ID Documentation Mismatches.
 ```
+
+---
+
+```text
+automation.watchdog_battery_control_drift
+-> Added 2026-11-02. Polls every 5 minutes; compares live inverter state
+   (select.solaredge_i1_storage_command_mode,
+   number.solaredge_i1_storage_charge_limit/_discharge_limit) against the
+   intended effective_* state. On mismatch, logs the reason to
+   input_text.battery_control_last_drift_reason, increments the drift
+   counters above, notifies, and force-re-applies via
+   automation.trigger(skip_condition: false) on
+   apply_effective_battery_control_to_solaredge_inverter. Catches cases
+   like a Modbus reconnect silently resetting the inverter's registers to
+   non-project defaults. NOTE: its YAML id: is
+   battery_control_drift_watchdog - the real entity_id is derived from
+   alias: instead, same mismatch class as above. Confirmed working live
+   on its first real trigger 2026-11-02 (drift detected and corrected in
+   ~10.5s). See known_issues_and_fixes.md.
+```
+
 ---
 
 # Layer 2 - Optimisation
@@ -444,34 +459,6 @@ input_number.emhass_max_inverter_power
 ---
 
 ```text
-input_number.mpc_window_start
--> Start timestep for MPC sliding window.
-```
-
----
-
-```text
-input_number.mpc_window_end
--> End timestep for MPC sliding window.
-```
-
----
-
-```text
-input_number.mpc_prediction_horizon
--> Prediction horizon used by MPC optimisation.
-```
-
----
-
-```text
-input_number.mpc_soc_final_target
--> Final battery SOC target used by MPC.
-```
-
----
-
-```text
 input_number.emhass_requested_charge_limit
 -> Charge power limit requested by EMHASS.
 ```
@@ -493,18 +480,22 @@ input_number.emhass_active_deferrable_loads
 ---
 
 ```text
-input_datetime.day_ahead_forecast_end
--> End timestamp of the day-ahead forecast window.
-```
-
----
-
-```text
 input_select.emhass_requested_storage_mode
 -> Storage mode requested by EMHASS optimisation.
 ```
 
 ---
+
+Note (2026-11-02): `input_number.mpc_window_start`, `mpc_window_end`,
+`mpc_prediction_horizon`, `mpc_soc_final_target`, and `input_datetime.
+day_ahead_forecast_end` - previously listed here - were removed from
+`emhass_helpers.yaml` as part of the dead sliding-window subsystem
+cleanup (confirmed unused since the MPC/day-ahead redesign, frozen at
+their initial values). See known_issues_and_fixes.md and roadmap.md
+Resolved. A dashboard row on the "EMHASS - Status" entities card still
+references the removed `mpc_prediction_horizon` helper and needs manual
+removal in the HA UI - this session has no live write access to Home
+Assistant dashboards.
 
 ## EMHASS Automations
 
@@ -536,6 +527,16 @@ automation.generate_EMHASS_energy_plan_dh_pv
 
 ---
 
+Note (2026-11-02): 4 purely-registry "ghost" entities with no YAML
+backing anywhere in this project - `automation.
+emhass_day_ahead_optimization`, `automation.emhass_update_sliding_window`,
+`automation.emhass_mpc`, `script.run_mpc_optimization` (all
+`unavailable`, `restored: true`) - were found during the 2026-11-02 HA
+cleanup audit. These predate this project's docs entirely (never listed
+here) and cannot be removed by a doc edit; they need manual deletion via
+the HA UI (Settings -> Devices & Services -> Entities, filter
+"unavailable").
+
 ## EMHASS Scripts
 
 ```text
@@ -566,19 +567,11 @@ script.run_mlforecast_predict_load
 
 ---
 
-```text
-script.emhass_update_sliding_window
--> Updates MPC sliding window helper values.
-```
-
----
-
-```text
-script.set_mpc_soc_final_target
--> Updates final MPC SOC target from the day-ahead battery SOC forecast.
-```
-
----
+Note (2026-11-02): `script.emhass_update_sliding_window` and `script.
+set_mpc_soc_final_target` - previously listed here - were removed from
+`emhass_scripts.yaml` as dead code (last_triggered 2026-07-09, no call
+site, one referenced a since-removed helper and a sensor that returns
+ENTITY_NOT_FOUND). See known_issues_and_fixes.md and roadmap.md Resolved.
 
 ## EMHASS REST Commands
 
@@ -605,7 +598,9 @@ rest_command.emhass_publish_data
 
 ```text
 rest_command.publish_data
--> Calls EMHASS publish-data endpoint on remote EMHASS host.
+-> Calls EMHASS publish-data endpoint on remote EMHASS host. Possibly
+   dead/legacy - see roadmap.md Cleanup/Technical Debt (not removed in
+   the 2026-11-02 cleanup pass; the user did not select this item).
 ```
 
 ---
@@ -628,7 +623,10 @@ rest_command.mlforecast_predict_load
 
 ```text
 shell_command.trigger_nordpool_forecast
--> Sends Nordpool price forecast payload to EMHASS day-ahead optimisation endpoint.
+-> Sends Nordpool price forecast payload to EMHASS day-ahead optimisation
+   endpoint. Possibly dead/duplicate - see roadmap.md Cleanup/Technical
+   Debt (not removed in the 2026-11-02 cleanup pass; the user did not
+   select this item).
 ```
 
 ---
@@ -737,7 +735,9 @@ input_boolean.grid_export_blocked
 
 ```text
 input_boolean.grid_export_limited
--> Grid export is limited.
+-> Grid export is limited. Possibly unused/dead - see roadmap.md
+   Cleanup/Technical Debt (not removed in the 2026-11-02 cleanup pass;
+   the user did not select this item).
 ```
 
 ---
@@ -1091,7 +1091,13 @@ automation.apply_effective_battery_control_to_solaredge_inverter
    unconfirmed live mode, or a default mode other than Maximize Self
    Consumption, still sends the full command sequence. Each skip also
    increments input_number.mode_command_skipped_count_total/_today (see
-   Layer 1 - Modbus Write/Queue Diagnostic Helpers above).
+   Layer 1 - Modbus Write/Queue Diagnostic Helpers above). Only fires on an
+   actual state change of effective_storage_mode/effective_charge_limit/
+   effective_discharge_limit - not periodically and not threshold-based
+   (confirmed live 2026-11-02). As of 2026-11-02, also force-retriggered by
+   automation.watchdog_battery_control_drift (Layer 1) via
+   automation.trigger(skip_condition: false) whenever live inverter state
+   drifts from the intended effective_* state.
 ```
 
 ---

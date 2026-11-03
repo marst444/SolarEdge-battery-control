@@ -183,6 +183,12 @@ automation:
   # counts/logs/notifies and force-re-applies via automation.trigger rather
   # than duplicating apply_effective_battery_control.yaml's script-dispatch
   # logic here. Not yet verified live against a real drift event.
+  # NOTE: Home Assistant derives this automation's entity_id by slugifying
+  # `alias:` below, NOT this `id:` key - the real entity_id is
+  # automation.watchdog_battery_control_drift, not
+  # automation.battery_control_drift_watchdog. Confirmed live 2026-11-02,
+  # the same class of mismatch as Entity ID Documentation Mismatches
+  # (Derived From Name/Alias, Not unique_id/id) in known_issues_and_fixes.md.
   - id: battery_control_drift_watchdog
     alias: "Watchdog – Battery Control Drift"
     description: >

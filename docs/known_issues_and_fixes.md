@@ -1047,6 +1047,101 @@ next time SOC reaches the ceiling, ideally once during the day (PV
 present) and once at night, plus watch for the drift watchdog firing
 `persistent_notification`/mobile push if the inverter ever reverts again.
 
+### Update 2026-11-02 (same evening) - deployed; watchdog's first live trigger confirms it works, but it went live 7h41m after today's 100% excursion and missed a second, separate reset incident that happened before deployment; one entity_id documentation mismatch found and fixed
+
+User deployed the three files and asked, separately, why `apply_
+effective_battery_control_to_solaredge_inverter` hadn't run at all since
+11:43 despite SOC staying well above 90% all day. Checked live, read-only.
+
+**Confirms the trigger-on-change design exactly as documented, not a new
+bug.** `input_select.effective_storage_mode`/`input_number.effective_
+charge_limit`/`_discharge_limit` only changed state twice between 11:30
+and 21:30 local: 11:42:03 (Hold engaging, mode -> `discharge_to_minimize_
+import`, both limits -> 0 - the first mode-switch fix, still the only
+code live at that instant) and 21:23:40 (PV crossing the noise floor at
+dusk, mode -> `discharge_to_maximize_export` - this Update's own new
+night branch, by then deployed). `input_boolean.battery_high_soc_hold`
+stayed `on`, unchanged, for the entire 9h41m between those two events.
+Since the automation only triggers on a state *change* of those three
+helpers, and Hold's daytime branch kept recomputing the identical
+mode/0/0 output every cycle the whole time, there was nothing to trigger
+on - exactly Key Design Principle #5 (architecture.md), not a 90%-
+threshold mechanism and not a bug.
+
+**Confirmed from `automation.watchdog_battery_control_drift`'s own
+`last_changed`: the three files actually went live at 21:23:35 local
+today** - 5 seconds before the PV-floor crossing above, and **7 hours 41
+minutes after** today's High SOC Hold mode-revert and 100% SOC excursion
+(the Update directly above - `select.solaredge_i1_storage_command_mode`
+confirmed reverting `Discharge to Minimize Import -> Maximize Self
+Consumption` at 11:58:00.197, SOC confirmed reaching exactly 100.0% at
+14:02:23.79, matching that Update's own numbers exactly). The watchdog
+did not exist yet when that happened; it neither confirms nor refutes
+whether Discharge to Minimize Import can block PV-surplus charging any
+better than MSC could - that question is still open, now further muddied
+by evidence that same mode reverted at the exact same time-of-day
+(11:58:00) as the incident that prompted this whole fix, which may be
+worth keeping an eye on in case it isn't coincidental (e.g. some
+scheduled check-in on the inverter/cloud side near :58 past the hour) -
+not investigated further here, flagged only as a pattern worth noticing.
+
+**First live firing confirms the watchdog mechanism itself works.** At
+the 21:23:40 mode switch, the apply automation fired but the live
+inverter still read "Maximize Self Consumption" two minutes later. The
+watchdog's very first scheduled tick after deployment (21:25:00, a `/5`
+boundary) caught the mismatch, logged it to `input_text.battery_control_
+last_drift_reason` ("mode: expected 'Discharge to Maximize Export', live
+'Maximize Self Consumption'"), incremented `input_number.battery_control_
+drift_count_today` to 1, and force-re-applied via `automation.trigger` -
+the live inverter reached "Discharge to Maximize Export" 10 seconds
+later (21:25:10.52). Drift detected to corrected: under 90 seconds, end
+to end, on the very first real-world drift it ever saw.
+
+**A second, separate Modbus-reconnect-reset incident happened today,
+also before the watchdog existed, and also went uncaught - this time
+with no visible consequence, due to lucky timing rather than any
+safeguard.** `number.solaredge_i1_storage_discharge_limit`/`_charge_
+limit` both went `unavailable` at 18:07:55.70 and came back at
+18:08:18.24 reading **5000/5000** - the same non-project-default pattern
+already documented in this issue's first 2026-11-01 Update. Confirmed via
+register history: both sat at exactly 5000 continuously for **3 hours 18
+minutes**, from 18:08:18 until the night-branch's first legitimate write
+at 21:26:33 (153W) - Hold's intended value was 0 throughout, but since
+`effective_discharge_limit`'s own HA-side value never changed (still
+"0"), the apply automation had nothing to re-trigger on either, same
+mechanism as the main gap above. Nothing caught this only because the
+watchdog hadn't been deployed yet. No harm resulted this time: SOC was
+already past its peak and gently declining as evening PV dropped off
+(96.67% at 18:08 -> 92.22% by 21:28), so an uncapped discharge limit
+simply had nothing to over-discharge against; had this same reset landed
+during the mid-afternoon PV surplus instead, it's the same shape of gap
+that produced today's 100% excursion, just via the limit registers
+instead of the mode register. Once the watchdog is live through a full
+day, this class of incident should self-correct within 5 minutes instead
+of hours - not yet confirmed against one of these specifically, only
+against the mode-drift case above.
+
+**One real entity_id documentation mismatch found and fixed**, the same
+class as Entity ID Documentation Mismatches (Derived From Name/Alias,
+Not unique_id/id) below: Home Assistant slugifies the automation's
+`alias:` ("Watchdog – Battery Control Drift") to produce its entity_id,
+not the YAML `id:` key (`battery_control_drift_watchdog`) this project's
+own docs had assumed. The real entity_id is `automation.watchdog_
+battery_control_drift`. Corrected with a comment directly above the
+automation in `watchdog_automations.yaml`; no functional change, the
+automation itself was never broken, only the assumed name for querying
+it.
+
+Status: **deployed; the watchdog mechanism is confirmed working live on
+its first real trigger (drift detected and corrected in <90 seconds).**
+Today's 100% SOC excursion and the second (18:08) limit-register reset
+both happened before deployment, so neither is evidence for or against
+whether the watchdog would have caught them - that still needs a future
+incident with the watchdog already running beforehand. Whether Discharge
+to Minimize Import actually blocks PV-surplus charging any better than
+MSC did remains unconfirmed and now has one more data point (a revert at
+11:58:00) muddying it rather than clarifying it.
+
 ---
 
 ## Critical-Recovery Charge Limit Write Silently Dropped
@@ -1218,6 +1313,112 @@ accordingly (see below).
 ---
 
 # Fixed Issues
+
+## HA Cleanup - Dead Sliding-Window Subsystem and Unused Override Booleans Removed
+
+Found and removed 2026-11-02, in response to the user's request to
+"clean up from unvalid entities and unused things in HA." This session
+has read-only access to the live HA instance (state/history/logs/
+traces/search/dashboard-config-read), so the audit was done entirely
+against live data and both dashboard configs before any project-doc
+edit was made.
+
+**Audit findings** (full tiered report given to the user; they chose a
+narrow scope - see below):
+
+- 4 purely-registry "ghost" entities with no YAML backing anywhere in
+  this project at all: `automation.emhass_day_ahead_optimization`,
+  `automation.emhass_update_sliding_window`, `automation.emhass_mpc`,
+  `script.run_mpc_optimization` - all `unavailable`, `restored: true`.
+  These predate this project's docs; they were never defined here and
+  can't be removed by a doc edit at all.
+- A still-YAML-defined but confirmed-dead pre-refactor subsystem that
+  those ghosts used to call: `script.emhass_update_sliding_window` and
+  `script.set_mpc_soc_final_target` (`emhass_scripts.yaml`, both
+  `last_triggered: 2026-07-09`, no call site found anywhere in
+  `emhass_automations.yaml`/`emhass_scripts.yaml`), plus the 5 helpers
+  only they ever wrote: `input_number.mpc_window_start`/`mpc_window_end`/
+  `mpc_prediction_horizon`/`mpc_soc_final_target` and `input_datetime.
+  day_ahead_forecast_end` (`emhass_helpers.yaml`), all frozen at their
+  initial values the entire time (confirmed via live state). One of the
+  dead scripts (`set_mpc_soc_final_target`) also referenced
+  `sensor.soc_batt_forecast`, which live `ha_get_state` returns as
+  `ENTITY_NOT_FOUND` (404) - a second, independent confirmation of
+  staleness.
+- 5 manual-override `input_boolean`s in `safety_and_watchdog_helpers.yaml`
+  (`battery_safety_override_active`, `battery_force_discharge`,
+  `battery_force_charge`, `battery_discharge_blocked`,
+  `battery_charge_blocked`) - flagged as possibly unused back in the
+  2026-09-24 YAML header/hygiene audit (see roadmap.md), reconfirmed
+  2026-11-02 with a wider check than the original pass (this time
+  including `batterycontrol_automations.yaml` and both live dashboards)
+  and still no read or write anywhere in the project, and no dashboard
+  card reference.
+- A dead dashboard row on the "EMHASS - Status" entities card
+  referencing `input_number.mpc_prediction_horizon` (view_index 3,
+  `cards[0].cards[1]` on the `lovelace`/`default` dashboard).
+- Several already-known possibly-dead items reconfirmed but out of
+  scope for this round (not selected by the user): `rest_command.
+  publish_data`, `shell_command.trigger_nordpool_forecast`,
+  `input_boolean.grid_export_limited`, the unused `ev` variable in
+  `battery_forecast_control.yaml`, and 7 of 22 published EMHASS forecast
+  sensors confirmed unreferenced on either dashboard (`mpc_pv_
+  inverter_power`/`cost_fun`/`export_price`, `dh_pv_inverter_power`/
+  `cost_fun`/`import_price`/`export_price`) - narrowed down from an
+  initial overestimate (~15) once a dashboard `query` text search (which
+  catches references inside `custom:apexcharts-card` that a plain
+  `entity_id` wildcard search misses) was used instead. All left
+  untouched; see roadmap.md Cleanup/Technical Debt for each.
+
+**User's scope decision**: only the dead sliding-window subsystem and
+the 5 override booleans, removed this pass. Everything else above is
+carried forward in roadmap.md for a future round.
+
+**What was changed** (project docs only - see Status below):
+
+- `emhass_scripts.yaml`: removed `script.emhass_update_sliding_window`
+  and `script.set_mpc_soc_final_target` in full.
+- `emhass_helpers.yaml`: removed `input_number.mpc_window_start`/
+  `mpc_window_end`/`mpc_prediction_horizon`/`mpc_soc_final_target` and
+  `input_datetime.day_ahead_forecast_end`.
+- `safety_and_watchdog_helpers.yaml`: removed the 5 override
+  `input_boolean`s listed above.
+- `roadmap.md`: moved the former "Possibly Unused Safety-Override Input
+  Booleans" Cleanup/Technical Debt item to Resolved; added a Resolved
+  entry for the sliding-window removal; updated the "Audit Published
+  EMHASS Forecast Sensors" item with the confirmed 7-sensor list; added
+  a Documentation Housekeeping entry for this audit.
+- `entities.md`: removed the sliding-window helpers/scripts and the 5
+  override booleans from their respective layer listings, with a short
+  note at each removal point; added the 4 ghost entities and the dead
+  dashboard row as explicit notes (they were never listed here before,
+  so there was nothing to remove, but future readers should know they
+  exist and need manual HA-UI handling); documented the new drift
+  watchdog's counters/automation that were missing from this doc.
+
+**Not done, and why**: the 4 ghost registry entities cannot be removed
+by any doc edit - they have no YAML backing in this project at all - and
+must be deleted manually via the HA UI (Settings -> Devices & Services
+-> Entities, filter "unavailable"). The dead dashboard row
+(`mpc_prediction_horizon`) was also left untouched: this session has
+read-only access to the live HA instance, dashboard config included
+(only `ha_config_get_dashboard`/`ha_config_list_dashboard_resources`
+have been used, both read-only; a `ha_config_set_dashboard` tool is
+referenced in passing in the former's own docstring but was deliberately
+not loaded or used here, consistent with this session's "no live write
+access" constraint applying to dashboards as much as to automations) -
+so removing that row needs manual action in the HA UI/dashboard editor
+too.
+
+Status: **implemented in project docs only, not yet deployed to the
+live HA instance.** The 3 edited YAML files validate cleanly
+(`yaml.safe_load`) but have not been confirmed loaded/reloaded by HA
+itself. Three manual follow-ups remain for the user regardless of
+deployment: deleting the 4 ghost entities, removing the dead dashboard
+row, and deciding on the other reconfirmed-but-out-of-scope items in
+roadmap.md whenever a future cleanup round is wanted.
+
+---
 
 ## Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout
 

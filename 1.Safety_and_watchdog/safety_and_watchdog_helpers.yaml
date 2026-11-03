@@ -1,8 +1,12 @@
 # ── safety_and_watchdog_helpers.yaml ──
-# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, battery safety/override input_booleans, and Modbus write/queue/drift diagnostic helpers.
+# Layer 1: SOC/power safety limit definitions, EMHASS run-tracking timestamps, battery high-SOC-hold/killswitch input_booleans, and Modbus write/queue/drift diagnostic helpers.
 # Sets: (definitions only - runtime values written by emhass_automations.yaml, safety_limits_and_override.yaml, solaredge_modbusqueue.yaml, apply_effective_battery_control.yaml, watchdog_automations.yaml)
 # Deps: none (static)  →  safety_limits_and_override.yaml, watchdog_sensors.yaml, apply_effective_battery_control.yaml, solaredge_modbusqueue.yaml, watchdog_automations.yaml
-# Fixes: known_issues_and_fixes.md; several safety-override booleans possibly unused - see roadmap.md
+# Fixes: known_issues_and_fixes.md. 2026-11-02: removed 5 unused manual-override
+# input_booleans (battery_safety_override_active, battery_force_discharge,
+# battery_force_charge, battery_discharge_blocked, battery_charge_blocked) -
+# defined with no logic anywhere referencing them; see known_issues_and_fixes.md
+# and roadmap.md Cleanup/Technical Debt.
 
 input_number:
 
@@ -204,26 +208,6 @@ input_text:
     max: 255
 
 input_boolean:
-  battery_safety_override_active:
-    name: Battery Safety Override Active
-    icon: mdi:shield-alert
-
-  battery_force_discharge:
-    name: Battery Force Discharge
-    icon: mdi:battery-arrow-down
-
-  battery_force_charge:
-    name: Battery Force Charge
-    icon: mdi:battery-arrow-up
-
-  battery_discharge_blocked:
-    name: Battery Discharge Blocked
-    icon: mdi:battery-off
-
-  battery_charge_blocked:
-    name: Battery Charge Blocked
-    icon: mdi:battery-off-outline
-
   battery_high_soc_hold:
     name: Battery High SOC Hold
     icon: mdi:battery-off-outline

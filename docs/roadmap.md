@@ -148,22 +148,23 @@ Review impact on Home Assistant entity registry before making any change.
 
 ### Audit Published EMHASS Forecast Sensors
 
-Review all published:
-
-```text
-mpc_pv_* sensors
-dh_pv_* sensors
-```
-
-Identify:
-
-```text
-unused sensors
-duplicated sensors
-legacy entities
-```
-
-Update entities.md after cleanup.
+Found during the 2026-11-02 HA cleanup audit (confirmed via targeted
+dashboard `query` text searches, which catch references inside
+`custom:apexcharts-card` that a plain `entity_id` wildcard search
+misses): 7 of the 22 published `mpc_pv_*`/`dh_pv_*` forecast sensors are
+not referenced on either dashboard (`url_path: lovelace`/`default`) -
+`sensor.mpc_pv_inverter_power`, `mpc_pv_cost_fun`, `mpc_pv_export_price`,
+`dh_pv_inverter_power`, `dh_pv_cost_fun`, `dh_pv_import_price`,
+`dh_pv_export_price`. The other 15 (including `batt_power`, `batt_soc`,
+`pv_power`, `load_power`, `grid_power`, `ev_power`, `import_price` for
+MPC, and the full DH_PV set used by the "DH PV Energy plan" chart) are
+confirmed in active use. Not removed in the 2026-11-02 cleanup pass -
+the user scoped that pass to the dead sliding-window subsystem and the
+5 override booleans only (see Resolved below); this 7-sensor list is
+carried forward here for a future round, pending the user's decision on
+whether "unused on the dashboard" should mean "safe to remove" for
+these (they may still be useful for ad-hoc inspection even if no card
+currently plots them).
 
 ---
 
@@ -187,39 +188,45 @@ grid_export_limited should be removed
 grid_export_limited should be expanded
 ```
 
-(Reconfirmed during the 2026-09-24 YAML header/hygiene audit:
-`negative_price_curtailment.yaml` and `gridconstrain_helpers.yaml` -
-the only two files that define/could plausibly use it - still show no
-read or write of `grid_export_limited` anywhere in either file.)
+(Reconfirmed during the 2026-09-24 YAML header/hygiene audit and again
+during the 2026-11-02 HA cleanup audit: `negative_price_curtailment.yaml`
+and `gridconstrain_helpers.yaml` - the only two files that define/could
+plausibly use it - still show no read or write of `grid_export_limited`
+anywhere in either file, and it appears on no dashboard card either.
+Not removed in the 2026-11-02 pass - the user did not select this item
+for that round.)
 
 ---
 
 ### Possibly Dead: `rest_command.publish_data`
 
-Found during the 2026-09-24 YAML header/hygiene audit:
-`rest_command.publish_data` (`emhass_restcommand.yaml`) targets a
-different host (`192.168.10.3`) than the other three `emhass_*`
-rest_commands in the same file (all `127.0.0.1`), and no automation or
-script in `emhass_scripts.yaml`/`emhass_automations.yaml` was found
-calling it (they call `rest_command.emhass_publish_data` instead, a
-distinct entity). It's listed in `entities.md`. Possibly legacy/dead
-config from an earlier setup - confirm whether it's still needed before
-removing it.
+Found during the 2026-09-24 YAML header/hygiene audit, reconfirmed
+2026-11-02: `rest_command.publish_data` (`emhass_restcommand.yaml`)
+targets a different host (`192.168.10.3`) than the other three
+`emhass_*` rest_commands in the same file (all `127.0.0.1`), and no
+automation or script in `emhass_scripts.yaml`/`emhass_automations.yaml`
+was found calling it (they call `rest_command.emhass_publish_data`
+instead, a distinct entity). It's listed in `entities.md`. Possibly
+legacy/dead config from an earlier setup - confirm whether it's still
+needed before removing it. Not removed in the 2026-11-02 pass - the
+user did not select this item for that round.
 
 ---
 
 ### Possibly Dead/Duplicate: `shell_command.trigger_nordpool_forecast`
 
-Found during the 2026-09-24 YAML header/hygiene audit:
-`shell_command.trigger_nordpool_forecast` (`emhass_shellcommand.yaml`)
-posts raw 24h Nordpool-only data directly to EMHASS's `dayahead-optim`
-endpoint via curl. This appears to duplicate/be superseded by
-`emhass_scripts.yaml`'s `load_cost_forecast`/`prod_price_forecast`
-Jinja blocks feeding `rest_command.emhass_dayahead_optim` (merged
-Nordpool+EPEX, 2-day/15-min horizon) - a more complete forecast path.
-No trigger or call site for the shell_command was found anywhere in
-`emhass_automations.yaml` or `emhass_scripts.yaml`. Possibly legacy;
-confirm before removing.
+Found during the 2026-09-24 YAML header/hygiene audit, reconfirmed
+2026-11-02: `shell_command.trigger_nordpool_forecast`
+(`emhass_shellcommand.yaml`) posts raw 24h Nordpool-only data directly
+to EMHASS's `dayahead-optim` endpoint via curl. This appears to
+duplicate/be superseded by `emhass_scripts.yaml`'s
+`load_cost_forecast`/`prod_price_forecast` Jinja blocks feeding
+`rest_command.emhass_dayahead_optim` (merged Nordpool+EPEX, 2-day/15-min
+horizon) - a more complete forecast path. No trigger or call site for
+the shell_command was found anywhere in `emhass_automations.yaml` or
+`emhass_scripts.yaml`. Possibly legacy; confirm before removing. Not
+removed in the 2026-11-02 pass - the user did not select this item for
+that round.
 
 ---
 
@@ -232,7 +239,8 @@ automation's current `choose:` logic references it - EV-aware discharge
 limiting is actually owned by `automation.ev_charging_discharge_control`
 in `batterycontrol_automations.yaml`. Confirm whether `ev` is
 intentionally reserved for future use in this automation or should be
-removed as dead config.
+removed as dead config. Not removed in the 2026-11-02 pass - the user
+did not select this item for that round.
 
 ---
 
@@ -249,23 +257,6 @@ organisational, no functional impact. Consider moving the definitions
 to match ownership, or documenting the split as intentional (e.g. if
 Layer 4A files were meant to own the "effective" output helpers as
 their primary consumer).
-
----
-
-### Possibly Unused Safety-Override Input Booleans
-
-Found during the 2026-09-24 YAML header/hygiene audit: `input_boolean.
-battery_safety_override_active`, `battery_force_discharge`,
-`battery_force_charge`, `battery_discharge_blocked`, and
-`battery_charge_blocked` are defined in `safety_and_watchdog_helpers.yaml`
-but were not found to be read or written by any of
-`safety_limits_and_override.yaml`, `safety_and_watchdog_helpers.yaml`,
-`watchdog_sensors.yaml`, `watchdog_automations.yaml`,
-`apply_effective_battery_control.yaml`, or `solaredge_modbusqueue.yaml`
-during the audit (`batterycontrol_automations.yaml` and the other
-battery-control-layer files weren't confirmed either way for these
-specific entities). Confirm whether these are wired up as manual-override
-controls somewhere, or are vestigial/planned-but-unimplemented.
 
 ---
 
@@ -618,6 +609,43 @@ Everything below is already fixed - kept here only as background for the
 open items above that reference it. Deployment/verification status for
 each lives in `known_issues_and_fixes.md`; this is not a duplicate log.
 
+**HA Cleanup - Dead Sliding-Window Subsystem Removed** (found and removed
+2026-11-02) - a pre-refactor EMHASS day-ahead/MPC mechanism was confirmed
+fully dead during a project-wide unused-entity audit: `script.
+emhass_update_sliding_window` and `script.set_mpc_soc_final_target`
+(`emhass_scripts.yaml`, both last_triggered 2026-07-09, no call site
+anywhere), and the 5 helpers only they ever wrote - `input_number.
+mpc_window_start`/`mpc_window_end`/`mpc_prediction_horizon`/
+`mpc_soc_final_target` and `input_datetime.day_ahead_forecast_end`
+(`emhass_helpers.yaml`), all frozen at their initial values. One of the
+dead scripts also referenced `sensor.soc_batt_forecast`, which returns
+`ENTITY_NOT_FOUND` - further confirming staleness. Removed from both
+files; see known_issues_and_fixes.md for the full write-up. Separately,
+4 purely-registry "ghost" automations/script that used to call this
+subsystem (`automation.emhass_day_ahead_optimization`, `automation.
+emhass_update_sliding_window`, `automation.emhass_mpc`, `script.
+run_mpc_optimization` - all `unavailable`, `restored: true`, no YAML
+backing anywhere in this project) cannot be removed by a doc edit and
+need manual deletion via the HA UI (Settings -> Devices & Services ->
+Entities, filter "unavailable"). A dead dashboard row referencing the
+removed `input_number.mpc_prediction_horizon` helper (the "EMHASS -
+Status" entities card) also needs manual removal in the HA UI/dashboard
+editor - this session has no live write access to Home Assistant,
+dashboards included, so neither the ghost-entity deletion nor the
+dashboard-row removal could be done directly.
+
+**HA Cleanup - Unused Manual-Override Booleans Removed** (found and
+removed 2026-11-02) - `input_boolean.battery_safety_override_active`,
+`battery_force_discharge`, `battery_force_charge`,
+`battery_discharge_blocked`, and `battery_charge_blocked`
+(`safety_and_watchdog_helpers.yaml`), flagged as possibly unused during
+the 2026-09-24 YAML header/hygiene audit (see the former "Possibly
+Unused Safety-Override Input Booleans" item, previously here in section
+2), were confirmed during the 2026-11-02 audit to have no read or write
+anywhere in the project (including `batterycontrol_automations.yaml`,
+not checked in the original 2026-09-24 pass) and no dashboard card
+reference either. Removed per the user's explicit choice.
+
 **Align Safety SOC Limits And EMHASS SOC Limits** (fixed 2026-09-03) -
 `battery_minimum_percent` and `battery_maximum_state_of_charge` were
 hardcoded separately from the safety layer's SOC helpers; both now read
@@ -775,13 +803,28 @@ Most files already followed this pattern from prior cleanup passes;
 genuinely new content extracted by the audit is a handful of Cleanup /
 Technical Debt items above (rest_command.publish_data,
 trigger_nordpool_forecast, the unused `ev` variable, the `effective_*`
-helper file placement, the possibly-unused safety-override booleans,
-and the leftover debug logging in `solaredge_modbusqueue.yaml`) plus one
-known_issues_and_fixes.md update (EV Charging Sensor Swap - stale
-trigger entity_id follow-up). No new known_issues_and_fixes.md,
-README.md, or architecture.md *entries* were needed beyond that one
-update - existing entries already covered essentially everything found
-inline.
+helper file placement, the possibly-unused safety-override booleans -
+removed 2026-11-02, see Resolved above, and the leftover debug logging
+in `solaredge_modbusqueue.yaml`) plus one known_issues_and_fixes.md
+update (EV Charging Sensor Swap - stale trigger entity_id follow-up).
+No new known_issues_and_fixes.md, README.md, or architecture.md
+*entries* were needed beyond that one update - existing entries already
+covered essentially everything found inline.
+
+### HA Cleanup Audit (2026-11-02)
+
+A project-wide audit for dead/unused entities, automations, scripts, and
+helpers, cross-checked against live HA state (read-only access) and both
+dashboards. Found: 4 pure registry "ghost" entities with no YAML backing
+(need manual HA UI deletion, not a doc edit); a dead sliding-window
+subsystem and 5 unused override booleans (both removed this pass - see
+Resolved above); a dead dashboard row; and several already-known
+possibly-dead items reconfirmed but not touched (`rest_command.
+publish_data`, `shell_command.trigger_nordpool_forecast`,
+`input_boolean.grid_export_limited`, the unused `ev` variable, and 7
+unused EMHASS forecast sensors - see their respective items above). The
+user scoped this round to the sliding-window subsystem and the override
+booleans only.
 
 ---
 
