@@ -9,13 +9,16 @@ This document verifies the SolarEdge Battery Control package layer by layer. A l
 ```text
 Layer 1   PARTIAL PASS 🟡
     ✅ 1.1 Minimum SOC Protection
-    ❌ 1.2 Maximum SOC Protection (downgraded 2026-11-01 - charge-stop doesn't function under live PV; two mode-switch fixes since then (2026-11-02, 2026-11-03) each found unsafe before the next, latest not yet verified live)
+    ❌ 1.2 Maximum SOC Protection (downgraded 2026-11-01 - charge-stop doesn't function under live PV; three mode-switch fixes since then (2026-11-02 x2, 2026-11-03), each found unsafe before the next, latest never independently re-verified against a real Hold cycle since 2026-11-03)
     🟡 1.3 Recovery Mode
+    ⏳ 1.4 Discharge-to-Maximize-Export AC-Output Suppression (new 2026-11-09, not verified)
+    🟡 1.5 Battery Control Drift Watchdog Diagnostics (new 2026-11-09 - today's fix confirmed deployed live, multi-tick suppression not yet exercised)
 
 Layer 2   PARTIAL PASS 🟡 (strong)
     ✅ 2.1 EMHASS Forecast Availability
     ✅ 2.2 SOC Target Generation
     🟡 2.3 Dynamic Charge / Discharge Power
+    ⏳ 2.4 ML Load Forecast Accuracy (new 2026-11-09, not verified)
 
 Layer 3   PARTIAL PASS 🟡 (strong)
     ✅ 3.1 Negative Price Curtailment
@@ -70,7 +73,7 @@ Open observation: dynamic charge/discharge limits (Layer 4A "dynamic" helpers) a
 
 # Layer 1 - Safety and Watchdog
 
-Layer 1 = PARTIAL PASS 🟡 — Verified: 1.1. Partial: 1.3. Failed: 1.2 (charge-stop doesn't function under live PV; see known_issues_and_fixes.md).
+Layer 1 = PARTIAL PASS 🟡 — Verified: 1.1. Partial: 1.3, 1.5. Failed: 1.2 (charge-stop doesn't function under live PV; see known_issues_and_fixes.md). Not verified: 1.4.
 
 ## Test 1.1 Minimum SOC Protection
 
@@ -125,6 +128,12 @@ The day branch of that split, Solar Power Only, was then itself checked live 202
 
 **Result:** still FAIL pending live re-verification. Not upgraded until a real Hold cycle is observed live under this design - the two previous fixes both looked sound on paper and both failed their first real test, so this one should be held to the same bar before any upgrade.
 
+### Update 2026-11-09 - still not independently re-verified; two unrelated 24h checks this week both happened to miss a real Hold cycle entirely
+
+Checked in response to the user's question about whether "remote control modes doing their job" concerns were resolved. This test's open risk from the 2026-11-03 Update above is unchanged: the current fix (Discharge to Maximize Export for both day and night, discharge limit 0 by day / dynamic by night) has never been independently re-confirmed against a real live Hold cycle since it was deployed. The two most recent live checks of this system (2026-11-06 and 2026-11-09, both done for an unrelated drift-watchdog question - see known_issues_and_fixes.md) each pulled a full 24h of `sensor.solaredge_b1_state_of_energy` history as a side effect, and in neither window did SOC come anywhere near the ≥Max-1% Hold-engage threshold (2026-11-06 window: roughly 40s-70s% most of the day, briefly higher during the post-outage recovery climb documented separately; 2026-11-09 window: roughly 43-76%). So this remains exactly where the 2026-11-03 Update left it - not disconfirmed, simply never re-exercised.
+
+**Result:** still FAIL pending live re-verification - no change. Needed test, specifically: capture the next real Hold-engage event (SOC crossing into the ≥Max-1% band) and confirm, for whichever time of day it occurs, (a) `input_select.effective_storage_mode`/live `select.solaredge_i1_storage_command_mode` both show `discharge_to_maximize_export` (not reverting to Maximize Self Consumption or Solar Power Only), (b) SOC growth actually halts/reverses rather than continuing to climb toward 100%, and (c) see Test 1.4 below - whether the AC-output-suppression anomaly recurs under the day leg's pinned-to-0 discharge limit during this same event.
+
 ---
 
 ## Test 1.3 Recovery Mode
@@ -148,9 +157,47 @@ The day branch of that split, Solar Power Only, was then itself checked live 202
 
 ---
 
+## Test 1.4 Discharge-to-Maximize-Export AC-Output Suppression at Low/Zero Discharge Limit
+
+**Status:** NOT VERIFIED (new 2026-11-09; underlying anomaly found 2026-11-03, not yet fixed)
+
+**Purpose:** verify that `discharge_to_maximize_export` with a low or zero discharge limit does not suppress measured AC production/export while still allowing uncontrolled DC-side charging - i.e. that this exact mode+limit combination, which Test 1.2's current fix design depends on for its daytime leg (discharge limit pinned to 0), behaves as documented rather than reproducing the anomaly found 2026-11-03.
+
+**Background:** found 2026-11-03 while diagnosing the High SOC Hold mode-switch saga (Test 1.2). The user's own live observation: under `discharge_to_maximize_export` with discharge limit 0, the battery kept charging AND the site's measured, exportable production (`sensor.solar_panel_production_w`/`sensor.solaredge_i1_ac_power`) appeared to disappear - confirmed live; switching to Maximize Self Consumption brought it back. A same-day follow-up test ruled out "specifically the value 0" as the mechanism: a separately-observed nonzero discharge limit (460W) under the same mode showed the identical AC-output-suppression pattern. Mechanism narrowed (something about the mode itself, possibly combined with SOC proximity to the ceiling) but never isolated or fixed. Full write-up: known_issues_and_fixes.md - High SOC Hold..., Updates 2026-11-03 (same day, later still) x2.
+
+**Why this is now its own test, not just a note under 1.2:** Test 1.2's current (third) fix design deliberately relies on exactly this mode+limit pairing - `discharge_to_maximize_export` with discharge limit 0 - for the daytime leg of High SOC Hold. If this anomaly recurs during a real Hold cycle, the Hold "fix" could be masking real production/export loss rather than correctly idling the battery, which would be a new, separate safety-relevant finding on top of whatever Test 1.2 itself finds.
+
+**Result:** NOT VERIFIED. Needs its own live observation, ideally captured alongside the next Test 1.2 Hold-cycle re-check so both are confirmed (or not) from the same real event.
+
+---
+
+## Test 1.5 Battery Control Drift Watchdog Diagnostics
+
+**Status:** PARTIAL PASS 🟡 (implemented and deployed 2026-11-09; single-tick behavior confirmed live same day; two sub-items still need a real event to close out)
+
+**Purpose:** verify three diagnostic fixes made 2026-11-09 to `battery_control_drift_watchdog` (known_issues_and_fixes.md - High SOC Hold..., Update 2026-11-09 "both fix candidates implemented in watchdog_automations.yaml"), made in response to two prior checks (2026-11-06, 2026-11-09) finding the watchdog under-reporting real drift:
+
+1. The automation still detects/logs/counts drift even while `sensor.solaredge_b1_state_of_energy` is unavailable (the SOC-unavailable guard that used to gate the whole automation - and that caused a confirmed ~38-hour total blackout of this diagnostic during the 2026-11-04/06 outage - has been removed from its `condition:` block entirely).
+2. `drift_reason` now reports every mismatched category per tick (mode/charge limit/discharge limit, joined with "; "), replacing the old `if/elif/elif` chain that only ever reported the single highest-priority category and silently hid the others during a compound incident.
+3. The mobile push (`notify.mobile_app_fp3_ms`) now fires once per new drift episode rather than once per 5-minute tick for the episode's whole duration, via a new edge-trigger helper, `input_boolean.battery_control_drift_active` (added to `safety_and_watchdog_helpers.yaml`) - per the user's explicit "report mismatch per tick, but dont send a message to my phone every time."
+
+**Evidence:** confirmed live same day via `ha_get_automation_traces`, immediately after the user deployed and reloaded:
+
+- The automation's `condition:` block now evaluates with only 2 conditions (killswitch on, inverter in Remote Control) - no SOC check present in the trace, confirming item 1 is live, not just written.
+- A real tick (2026-11-09T15:35:00 local) correctly rendered `drift_reason` as `"discharge limit: expected 162.0W, live 100.0W"` - a single-category mismatch this particular tick, so the multi-category join (item 2) wasn't exercised by this one trace, but the template executed without error and produced the expected text.
+- The same tick's trace shows `input_boolean.battery_control_drift_active` was `"off"` going in, the mobile push fired (`notify.mobile_app_fp3_ms` called with the matching message), and the boolean was then turned `"on"` immediately after - exactly the edge-trigger sequence item 3 is designed to produce.
+
+**Still open, needs a real event to close out:**
+- *(a)* Item 1 (SOC-guard removal) is implemented and logically sound - nothing in `mode_drift`/`charge_drift`/`discharge_drift` ever read the SOC entity, so removing the guard carries no real risk - but it hasn't yet been exercised against a real SOC-sensor-unavailable period live, since none occurred between deploy and this check.
+- *(b)* Item 3 (edge-triggered push) has only been observed firing on a single, isolated tick so far. The actual suppression behavior - the same episode continuing for 2+ more consecutive ticks without a repeat push, then the boolean clearing and one more push firing once a genuinely new episode starts - has not yet been observed against a real multi-tick incident, only inferred from the logic.
+
+**Result:** PARTIAL PASS - deployed, correctly exercised once, and no defects found in that one exercise, but both (a) and (b) above need one more real occurrence each (an SOC gap, and a multi-tick drift episode) before this can be upgraded to a full PASS.
+
+---
+
 # Layer 2 - Optimisation
 
-Layer 2 = PARTIAL PASS 🟡 (strong) — Verified: 2.1, 2.2. Outstanding: 2.3 (two items).
+Layer 2 = PARTIAL PASS 🟡 (strong) — Verified: 2.1, 2.2. Outstanding: 2.3 (two items). Not verified: 2.4.
 
 ## Test 2.1 EMHASS Forecast Availability
 
@@ -169,6 +216,8 @@ Layer 2 = PARTIAL PASS 🟡 (strong) — Verified: 2.1, 2.2. Outstanding: 2.3 (t
 **Purpose:** verify `input_number.soc_target` follows the smoothed EMHASS battery SOC forecast (`sensor.soc_batt_forecast_smooth`) and stays within min/max SOC.
 
 **Evidence:** Verified live 2026-08-06 - `soc_target` tracked `soc_batt_forecast_smooth` within ±0.5-1.6 points, which tracked raw MPC SOC closely, staying within the 20-90% configured range (chain: MPC SOC forecast → `soc_batt_forecast_smooth` → `soc_target`). Update 2026-08-27: observed the MPC plan itself swinging 10-40 points run-to-run - doesn't contradict the chain (still followed faithfully), logged as a separate follow-up in roadmap.md, not a regression.
+
+**Caveat (2026-11-09, not a regression of this PASS):** this test confirms `soc_target` faithfully *follows* `soc_batt_forecast_smooth` - it does not confirm `soc_batt_forecast_smooth` itself is a good prediction of where SOC will actually end up, which depends in part on the load forecast feeding EMHASS's MPC. See Test 2.4 below - that forecast was found 2026-11-03 to be no better than a flat-average guess. "SOC follows the target" (this test, PASS) and "the target is a good estimate" (Test 2.4, open) are separate claims; only the first is confirmed.
 
 ---
 
@@ -191,6 +240,18 @@ Layer 2 = PARTIAL PASS 🟡 (strong) — Verified: 2.1, 2.2. Outstanding: 2.3 (t
 ### Update 2026-11-02 - formula widened to a 3-point weighted lookahead, not yet re-verified
 
 Found while investigating a real price-spike discharge under-delivering against EMHASS's own multi-step power plan (today's `batt_fc` peaked at 2136W while the applied dynamic discharge limit only reached 932W): both sensors previously computed their target from only the single next EMHASS forecast point (`forecast[0]`), which naturally decays toward zero as SOC approaches that one checkpoint regardless of whether the underlying plan wants sustained discharge for 30-60+ minutes. Changed to a weighted blend of the next three future points (0.5/0.3/0.2, reusing `sensor.soc_batt_forecast_smooth`'s proven weighting) - see known_issues_and_fixes.md (Dynamic Discharge Limit Under-Delivers vs. EMHASS Plan During Sustained Price Spikes) and architecture.md (Layer 2) for the full rationale. None of the evidence above (gathered under the old single-point formula) has been re-collected against the new one yet - this item stays PARTIAL PASS, not upgraded, until a real sustained-discharge episode is observed live under the new formula.
+
+---
+
+## Test 2.4 ML Load Forecast Accuracy
+
+**Status:** NOT VERIFIED (new 2026-11-09; underlying issue found 2026-11-03, not yet fixed)
+
+**Purpose:** verify `sensor.p_load_forecast_ml_pv` (the ML-based house-load forecast feeding EMHASS's MPC/day-ahead optimization, and in turn `soc_batt_forecast_smooth` → `soc_target`, Test 2.2) predicts actual load meaningfully better than a flat average - i.e. that the forecast is actually informative, not just along-for-the-ride with Test 2.2's "SOC follows the target" result.
+
+**Background:** known_issues_and_fixes.md - ML Load Forecast Diverges Sharply From Actual Load - No Better Than a Flat-Average Guess (found 2026-11-03). Confirmed via direct, matched comparison against real load (973 matched samples per that entry's evidence) that the forecast underperforms a flat-average baseline.
+
+**Result:** NOT VERIFIED / open. Test 2.2 (SOC Target Generation) remains a valid PASS on its own narrower terms (`soc_target` faithfully follows whatever `soc_batt_forecast_smooth` says), but this issue means the forecast `soc_target` is chasing may itself be a poor predictor of real load - so "SOC follows the estimate" should not be read as "SOC follows a *good* estimate" until this is fixed and the chain is re-verified end to end.
 
 ---
 

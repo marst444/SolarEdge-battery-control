@@ -53,7 +53,7 @@ template:
           {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}
 
           {% set forecast = forecast_raw | selectattr('date', 'defined') | list %}
-          {% set forecast_future = forecast | selectattr('date', '>=', now() | string) | list %}
+          {% set forecast_future = forecast | selectattr('date', '>=', now().isoformat()) | list %}
 
           {% if forecast_future | length >= 3 %}
             {% set s1 = forecast_future[0].mpc_pv_batt_soc | float %}
@@ -87,7 +87,7 @@ template:
           {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}
 
           {% set forecast = forecast_raw | selectattr('date', 'defined') | list %}
-          {% set forecast_future = forecast | selectattr('date', '>=', now() | string) | list %}
+          {% set forecast_future = forecast | selectattr('date', '>=', now().isoformat()) | list %}
 
           {% if forecast_future | length >= 3 %}
             {% set s1 = forecast_future[0].mpc_pv_batt_soc | float %}
@@ -114,10 +114,9 @@ template:
         unit_of_measurement: "%"
         state: >
           {% set forecast_raw = state_attr('sensor.mpc_pv_batt_soc', 'battery_scheduled_soc') or [] %}
-          {% set now_ts = as_timestamp(now()) %}
           {# Keep only future entries #}
           {% set forecast = forecast_raw | selectattr('date', 'defined') | list %}
-          {% set forecast_future = forecast | selectattr('date', '>=', now() | string) | list %}
+          {% set forecast_future = forecast | selectattr('date', '>=', now().isoformat()) | list %}
 
           {% set soc_min = states('input_number.minimum_state_of_charge') | float(20) %}
           {% set soc_max = states('input_number.maximum_state_of_charge') | float(90) %}

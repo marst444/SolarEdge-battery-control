@@ -1,8 +1,8 @@
 # ── apply_effective_battery_control.yaml ──
-# Layer 4B/4D: sends effective mode/limits to SolarEdge via Modbus Queue scripts; Mode Command Guard skips redundant mode writes.
-# Sets: (via scripts) select.solaredge_i1_storage_command_mode, number.solaredge_i1_storage_*_limit; input_number.mode_command_skipped_count_total/_today
-# Deps: input_select.effective_storage_mode, input_number.effective_*_limit  ←  safety_limits_and_override.yaml  →  solaredge_modbusqueue.yaml
-# Fixes: known_issues_and_fixes.md (Write Pressure - Mode Command Guard)
+# Layer 4B/4D: sends effective mode/limits to SolarEdge via Modbus Queue scripts; Mode Command Guard skips redundant mode writes; re-applies after a Modbus-reconnect 5000/5000 limit reset; keeps a non-MSC command mode alive before the 3600s Remote Control command timeout expires.
+# Sets: (via scripts) number.solaredge_i1_storage_command_timeout, select.solaredge_i1_storage_command_mode, number.solaredge_i1_storage_*_limit; input_number.mode_command_skipped_count_total/_today
+# Deps: input_select.effective_storage_mode, input_number.effective_*_limit, number.solaredge_i1_storage_*_limit (reset detection)  ←  safety_limits_and_override.yaml  →  solaredge_modbusqueue.yaml
+# Fixes: known_issues_and_fixes.md (Write Pressure - Mode Command Guard; Remote Control Command Timeout Fallback, 2026-11-20; High SOC Hold mechanism #3 - Modbus reconnect resets limits, Update 2026-11-20)
 
 automation:
 
@@ -16,6 +16,28 @@ automation:
           - input_select.effective_storage_mode
           - input_number.effective_charge_limit
           - input_number.effective_discharge_limit
+        id: effective_change
+
+      # Added 2026-11-20 - Modbus reconnect reset. Twice a day (~03-04 and
+      # ~17-18) a reconnect resets the inverter to its own defaults: command
+      # mode Maximize Self Consumption, charge/discharge limits 5000/5000,
+      # command timeout 3600s. The effective_* helpers don't change, so the
+      # trigger above never fires and the reset can persist for hours (51 min
+      # and 1h39m on 2026-11-20). 5000 can also be a genuinely intended value,
+      # so fire only when live = 5000 while intended != 5000. The 2 min hold
+      # exceeds the ~70s integration poll lag plus queue delay, so a normal
+      # change away from an intended 5000 doesn't false-trigger. Detects the
+      # value itself rather than "from: unavailable", because some resets
+      # (e.g. 2026-11-19 16:22) jump straight to 5000 with no recorded
+      # unavailable state. See known_issues_and_fixes.md.
+      - platform: template
+        value_template: >-
+          {{ (states('number.solaredge_i1_storage_charge_limit') | float(-1) == 5000
+              and states('input_number.effective_charge_limit') | float(0) != 5000)
+             or (states('number.solaredge_i1_storage_discharge_limit') | float(-1) == 5000
+              and states('input_number.effective_discharge_limit') | float(0) != 5000) }}
+        for: "00:02:00"
+        id: limit_reset
 
     condition:
       - condition: state
@@ -47,6 +69,8 @@ automation:
           - condition: template
             value_template: "{{ not mode_guard_active }}"
         then:
+          # Writes the Remote Control command timeout (3600s as of
+          # 2026-11-20, was 900s) - see batterycontrol_scripts.yaml.
           - service: script.set_value_storage_command_timeout15m
           - delay: "00:00:02"
 
@@ -109,3 +133,55 @@ automation:
       - delay: "00:00:02"
 
       - service: script.set_effective_storage_discharge_limit
+
+  # Added 2026-11-20 - Remote Control command mode keepalive.
+  # The inverter runs a Remote Control command mode only for the command
+  # timeout (now 3600s); when it expires without a new command it falls back
+  # to its default mode (Maximize Self Consumption). The apply automation
+  # above only writes when an effective_* helper changes, so a non-MSC mode
+  # held unchanged longer than the timeout silently reverts - with the old
+  # 900s timeout this caused e.g. ~15h of MSC instead of grid charging on
+  # 2026-11-19 (EMHASS outage froze the effective values). Re-arms timeout +
+  # mode every 30 min (1800s, half the timeout) while a non-MSC mode is
+  # intended. Verified live: a new command takes effect immediately and
+  # restarts the timer - commands do not stack. Limits are NOT re-sent: they
+  # don't expire with the timeout (only a Modbus reconnect resets them, see
+  # the limit_reset trigger above). MSC needs no keepalive (fallback ==
+  # intended). See known_issues_and_fixes.md - Remote Control Command
+  # Timeout Fallback.
+  - id: solaredge_command_mode_keepalive
+    alias: "SolarEdge – Command Mode Keepalive"
+    mode: single
+
+    trigger:
+      - platform: time_pattern
+        minutes: "/30"
+
+    condition:
+      - condition: state
+        entity_id: input_boolean.effective_battery_control_enabled
+        state: "on"
+
+      - condition: state
+        entity_id: select.solaredge_i1_storage_control_mode
+        state: "Remote Control"
+
+      - condition: template
+        value_template: "{{ states('input_select.effective_storage_mode') != 'maximize_self_consumption' }}"
+
+    action:
+      - variables:
+          mode_script_map:
+            solar_power_only: script.solar_power_only_script
+            charge_from_clipped_solar: script.charge_from_clipped_solar_script
+            charge_from_solar_and_grid: script.charge_from_solar_power_and_grid_script
+            discharge_to_maximize_export: script.discharge_to_maximize_export_script
+            discharge_to_minimize_import: script.discharge_to_minimize_import_script
+          target_script: "{{ mode_script_map.get(states('input_select.effective_storage_mode'), '') }}"
+
+      - condition: template
+        value_template: "{{ target_script != '' }}"
+
+      - service: script.set_value_storage_command_timeout15m
+      - delay: "00:00:02"
+      - service: "{{ target_script }}"

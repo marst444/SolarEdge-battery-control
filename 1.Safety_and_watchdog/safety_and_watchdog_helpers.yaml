@@ -6,7 +6,9 @@
 # input_booleans (battery_safety_override_active, battery_force_discharge,
 # battery_force_charge, battery_discharge_blocked, battery_charge_blocked) -
 # defined with no logic anywhere referencing them; see known_issues_and_fixes.md
-# and roadmap.md Cleanup/Technical Debt.
+# and roadmap.md Cleanup/Technical Debt. 2026-11-09: added
+# battery_control_drift_active (edge-trigger tracking for the drift
+# watchdog's mobile push, see known_issues_and_fixes.md).
 
 input_number:
 
@@ -217,3 +219,15 @@ input_boolean:
   effective_battery_control_enabled:
     name: Effective Battery Control Enabled
     icon: mdi:battery-cog
+
+  # Enhanced Diagnostics (live inverter vs. intended-state drift) - added
+  # 2026-11-09. Tracks whether a drift episode is currently ongoing so
+  # watchdog_automations.yaml's battery_control_drift_watchdog can send
+  # its notify.mobile_app_fp3_ms push only on the first tick of a NEW
+  # episode (edge-triggered) instead of once per 5-minute tick for the
+  # episode's whole duration. Turned on by the watchdog on the first
+  # tick drift is seen, turned back off on the first tick it's gone -
+  # not meant to be toggled manually. See known_issues_and_fixes.md.
+  battery_control_drift_active:
+    name: Battery Control Drift Active
+    icon: mdi:alert-outline

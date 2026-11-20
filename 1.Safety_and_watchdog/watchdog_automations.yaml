@@ -1,8 +1,8 @@
 # ── watchdog_automations.yaml ──
-# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); detects live inverter drift from the intended effective battery control state and force-re-applies it; resets daily diagnostic counters at midnight.
-# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today/battery_control_drift_count_total/_today, input_text.battery_control_last_drift_reason, input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge_limit/_discharge_limit (fallback only)
-# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status, input_select.effective_storage_mode, input_number.effective_charge_limit/_discharge_limit, select.solaredge_i1_storage_command_mode/_control_mode, number.solaredge_i1_storage_charge_limit/_discharge_limit  →  hassio.addon_restart, notify.mobile_app_fp3_ms, battery_forecast_control.yaml (Layer 4A output entities, fallback only), apply_effective_battery_control.yaml (automation.trigger, drift re-apply only)
-# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard; High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Update 2026-11-02 - Battery Control Drift Watchdog); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
+# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); detects and LOGS live inverter drift from the intended effective battery control state (record-only as of 2026-11-03 - no longer force-re-applies, see known_issues_and_fixes.md); resets daily diagnostic counters at midnight.
+# Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today/battery_control_drift_count_total/_today, input_text.battery_control_last_drift_reason, input_boolean.battery_control_drift_active, input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge_limit/_discharge_limit (fallback only)
+# Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status, input_select.effective_storage_mode, input_number.effective_charge_limit/_discharge_limit, select.solaredge_i1_storage_command_mode/_control_mode, number.solaredge_i1_storage_charge_limit/_discharge_limit  →  hassio.addon_restart, notify.mobile_app_fp3_ms, battery_forecast_control.yaml (Layer 4A output entities, fallback only). NOTE: as of 2026-11-03 the drift watchdog NO LONGER calls automation.trigger on apply_effective_battery_control.yaml - it only records. See known_issues_and_fixes.md.
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard; High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Update 2026-11-02 - Battery Control Drift Watchdog; Update 2026-11-03 - Drift Watchdog Made Record-Only; Update 2026-11-09 - SOC-guard removed and drift_reason now reports every mismatched category per tick, mobile push now edge-triggered per episode); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
 
 automation:
 
@@ -178,11 +178,30 @@ automation:
   # correct apply, with no project-side trigger - see
   # known_issues_and_fixes.md - High SOC Hold - Charge Limit = 0 Does Not
   # Stop Charging While Maximize Self Consumption Stays Active, Update
-  # 2026-11-02). This automation periodically compares the live inverter
-  # registers against the intended effective_* values and, on a mismatch,
-  # counts/logs/notifies and force-re-applies via automation.trigger rather
-  # than duplicating apply_effective_battery_control.yaml's script-dispatch
-  # logic here. Not yet verified live against a real drift event.
+  # 2026-11-02).
+  #
+  # UPDATE 2026-11-03 - made RECORD-ONLY. This automation originally
+  # force-re-applied apply_effective_battery_control_to_solaredge_inverter
+  # via automation.trigger on every detected mismatch, every 5 minutes. The
+  # user identified this as a likely cause of the Modbus/mode thrashing seen
+  # all day 2026-11-03 (effective_storage_mode and the live inverter mode
+  # flapping back and forth, drift counters climbing fast) - the watchdog
+  # was repeatedly fighting the inverter back to the "intended" state every
+  # time it drifted, which, combined with whatever was causing the drift in
+  # the first place (see the AC-output-suppression investigation the same
+  # day), produced sustained oscillation rather than a stable state. After
+  # the user manually forced a discharge and the watchdog's re-apply call
+  # was removed, the inverter settled into a steady discharge under
+  # Maximize Self Consumption instead of the constant
+  # charge/preserve-charge swings that had been going on all day - strong
+  # live evidence that the forced re-apply, not just the underlying drift
+  # cause, was part of the thrashing. The watchdog now ONLY counts, logs,
+  # and notifies on drift - it no longer writes to the inverter in any way.
+  # Re-establishing the intended state after real drift is now a manual
+  # decision (re-trigger apply_effective_battery_control_to_solaredge_inverter
+  # yourself, or just let the next real effective_* state change pick it
+  # up) rather than an automatic one. See known_issues_and_fixes.md.
+  #
   # NOTE: Home Assistant derives this automation's entity_id by slugifying
   # `alias:` below, NOT this `id:` key - the real entity_id is
   # automation.watchdog_battery_control_drift, not
@@ -195,12 +214,39 @@ automation:
       Detects drift between the intended effective battery control state
       (input_select.effective_storage_mode, input_number.effective_charge_limit,
       input_number.effective_discharge_limit) and the live SolarEdge
-      inverter registers, and force-re-applies
-      apply_effective_battery_control_to_solaredge_inverter when they
-      disagree. Runs every 5 minutes; only acts while the killswitch is on
-      and the inverter is in Remote Control, mirroring that automation's
-      own condition (no point flagging - or trying to fix - drift it has
-      no authority to correct anyway).
+      inverter registers, and counts/logs/notifies when they disagree.
+      RECORD-ONLY as of 2026-11-03 - it no longer calls automation.trigger
+      on apply_effective_battery_control_to_solaredge_inverter or writes to
+      the inverter in any way (see Update above - the forced re-apply was
+      implicated in sustained mode-thrashing). Runs every 5 minutes; only
+      evaluates while the killswitch is on and the inverter is in Remote
+      Control, mirroring that automation's own condition (no point
+      flagging drift in a state it has no authority over anyway).
+
+      UPDATE 2026-11-09 - two fixes, per known_issues_and_fixes.md's
+      2026-11-06 and 2026-11-09 Updates (both watchdog gaps confirmed via
+      direct register-history reconstruction, not hypothetical):
+      (1) the SOC-sensor-unavailable guard that used to gate this whole
+      automation is REMOVED. None of mode_drift/charge_drift/
+      discharge_drift below actually read the SOC sensor, so the guard
+      was only ever blinding the watchdog during exactly the kind of
+      connectivity event (see the 2026-11-06 ~35h outage) it most needs
+      to catch - it never protected against a real dependency. (2)
+      drift_reason now lists EVERY mismatched category each tick (joined
+      with "; "), not just the highest-priority one from the old
+      if/elif/elif chain - the 2026-11-09 check found this hiding up to
+      two simultaneous real mismatches under a single "mode" entry.
+      Per-tick counting/logging (counters, last_drift_reason,
+      persistent_notification) is unchanged - still fires every 5-minute
+      tick drift is present, exactly as before, just with the fuller
+      drift_reason. The one thing that IS throttled: the
+      notify.mobile_app_fp3_ms push. A sustained drift episode used to
+      push once per 5-minute tick for its whole duration (e.g. 3-4 pushes
+      for a single ~16-20min incident) - it now pushes once per NEW
+      episode only (edge-triggered off input_boolean.
+      battery_control_drift_active), and goes quiet again once the
+      episode clears, so a long-running drift no longer spams the phone
+      while still being fully logged/counted every tick.
     mode: single
     trigger:
       - platform: time_pattern
@@ -212,13 +258,6 @@ automation:
       - condition: state
         entity_id: select.solaredge_i1_storage_control_mode
         state: "Remote Control"
-      - condition: not
-        conditions:
-          - condition: state
-            entity_id: sensor.solaredge_b1_state_of_energy
-            state:
-              - "unavailable"
-              - "unknown"
     variables:
       expected_mode: "{{ states('input_select.effective_storage_mode') }}"
       # Same mapping as script.modbus_queue's write_expected_value in
@@ -245,19 +284,32 @@ automation:
       mode_drift: "{{ live_mode_text != expected_mode_text and expected_mode_text != 'unknown' }}"
       charge_drift: "{{ (live_charge - expected_charge) | abs > tolerance }}"
       discharge_drift: "{{ (live_discharge - expected_discharge) | abs > tolerance }}"
-      drift_reason: >-
-        {% if mode_drift %}
-          mode: expected '{{ expected_mode_text }}', live '{{ live_mode_text }}'
-        {% elif charge_drift %}
-          charge limit: expected {{ expected_charge }}W, live {{ live_charge }}W
-        {% elif discharge_drift %}
-          discharge limit: expected {{ expected_discharge }}W, live {{ live_discharge }}W
-        {% else %}
-          none
-        {% endif %}
+      # UPDATE 2026-11-09: used to be an if/elif/elif chain that only ever
+      # reported ONE category per tick, in fixed mode > charge > discharge
+      # priority order - a compound incident (e.g. mode+charge+discharge
+      # all mismatched at once, seen live 2026-11-06 and again 2026-11-09)
+      # was logged as if only the highest-priority category were wrong,
+      # completely hiding the others. Now every mismatched category this
+      # tick is listed, joined with "; ".
+      drift_parts: >-
+        {%- set parts = [] -%}
+        {%- if mode_drift -%}
+          {%- set parts = parts + ["mode: expected '" ~ expected_mode_text ~ "', live '" ~ live_mode_text ~ "'"] -%}
+        {%- endif -%}
+        {%- if charge_drift -%}
+          {%- set parts = parts + ["charge limit: expected " ~ expected_charge ~ "W, live " ~ live_charge ~ "W"] -%}
+        {%- endif -%}
+        {%- if discharge_drift -%}
+          {%- set parts = parts + ["discharge limit: expected " ~ expected_discharge ~ "W, live " ~ live_discharge ~ "W"] -%}
+        {%- endif -%}
+        {{ parts | join('; ') }}
+      drift_reason: "{{ drift_parts if drift_parts | trim != '' else 'none' }}"
 
     action:
       - choose:
+          # Any drift this tick: count/log/notify-in-app every single
+          # time, exactly as before - this part is unchanged and still
+          # fires every 5-minute tick the drift persists.
           - conditions:
               - condition: template
                 value_template: "{{ mode_drift or charge_drift or discharge_drift }}"
@@ -282,17 +334,55 @@ automation:
                   title: "⚠️ Battery Control Drift Watchdog"
                   message: >
                     Live inverter state doesn't match the intended effective
-                    battery control state - re-applying.
+                    battery control state - logged only, NOT re-applying
+                    (record-only as of 2026-11-03, see
+                    known_issues_and_fixes.md).
                     {{ drift_reason | trim }}
-              - service: notify.mobile_app_fp3_ms
-                data:
-                  title: "⚠️ Battery control drift - re-applying"
-                  message: "{{ drift_reason | trim }}"
-              - service: automation.trigger
+              # UPDATE 2026-11-09: mobile push is now edge-triggered - only
+              # sent the first tick of a NEW drift episode (i.e. the
+              # episode-tracking boolean was still "off"), not on every
+              # 5-minute tick for as long as the same episode continues.
+              # Before this, a single 16-20min incident could push 3-4
+              # near-identical notifications to the phone; now it's one
+              # push per episode, while the in-app log/counters above
+              # keep recording every tick so nothing is lost for later
+              # analysis.
+              - choose:
+                  - conditions:
+                      - condition: state
+                        entity_id: input_boolean.battery_control_drift_active
+                        state: "off"
+                    sequence:
+                      - service: notify.mobile_app_fp3_ms
+                        data:
+                          title: "⚠️ Battery control drift (record-only)"
+                          message: "{{ drift_reason | trim }}"
+              - service: input_boolean.turn_on
                 target:
-                  entity_id: automation.apply_effective_battery_control_to_solaredge_inverter
-                data:
-                  skip_condition: false
+                  entity_id: input_boolean.battery_control_drift_active
+              # Removed 2026-11-03: this used to call automation.trigger on
+              # apply_effective_battery_control_to_solaredge_inverter here,
+              # forcing a re-apply every 5 minutes on any detected drift.
+              # Implicated in sustained Modbus/mode thrashing - see the
+              # Update note above this automation's `id:` and
+              # known_issues_and_fixes.md. If you want the old
+              # force-re-apply behavior back, the removed step was:
+              #   - service: automation.trigger
+              #     target:
+              #       entity_id: automation.apply_effective_battery_control_to_solaredge_inverter
+              #     data:
+              #       skip_condition: false
+          # No drift this tick: if an episode was active, it just cleared -
+          # turn the tracking boolean off so the NEXT new episode (whenever
+          # it starts) is treated as new and pushes to the phone again.
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.battery_control_drift_active
+                state: "on"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.battery_control_drift_active
 
   - id: reset_watchdog_daily_counters
     alias: "Watchdog – Reset Daily Diagnostic Counters"

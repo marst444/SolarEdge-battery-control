@@ -3,6 +3,46 @@
 # Sets: (HTTP calls only, no HA entities)
 # Deps: EMHASS addon (127.0.0.1:5000), InfluxDB (192.168.10.3:8086)  →  emhass_scripts.yaml
 # Fixes: known_issues_and_fixes.md; rest_command.publish_data possibly dead - see roadmap.md
+#
+# Auth fix 2026-11-19 (known_issues_and_fixes.md): the EMHASS add-on added
+# bearer-token authentication (see
+# https://emhass.readthedocs.io/en/latest/api_authentication.html), which is
+# the root cause behind this project's ~10-day intermittent 401 Unauthorized
+# outage. Every call below now sends `authorization: !secret emhass_bearer`.
+# That secret must be set in Home Assistant's own secrets.yaml (not a file
+# this project tracks) as the literal string "Bearer <token>" - EMHASS's own
+# secrets.yaml example is `emhass_bearer: "Bearer PASTE_THE_TOKEN_HERE"` -
+# the "Bearer " prefix is part of the required header value, not optional,
+# and the token itself comes from EMHASS_API_TOKEN / options.json /
+# secrets_emhass.yaml on the add-on side, or the one EMHASS auto-generates
+# and shows under the add-on's API-token key icon if none of those are set.
+# Update 2026-11-19 (same day, after live testing): the first version of
+# this fix kept each call's Content-Type via HA's own top-level
+# `content_type:` field and added a separate `headers:` map containing only
+# `authorization`, reasoning that the two would combine. Live testing showed
+# otherwise: a fresh HA rest_command error log (source
+# components/rest_command/__init__.py:208) showed emhass_dayahead_optim,
+# emhass_naive_mpc_optim, and emhass_publish_data - the three commands using
+# that content_type: + headers: combination - all failing with HTTP 415
+# Unsupported Media Type, while the other three commands below
+# (publish_data legacy, mlforecast_fit_load, mlforecast_predict_load), which
+# already had Content-Type living inside `headers:` from before this auth
+# fix, were not affected. Conclusion: on this HA version, giving a
+# rest_command both a top-level `content_type:` and a separate `headers:`
+# map causes the real Content-Type header to be dropped rather than merged -
+# EMHASS then sees a POST with no usable Content-Type and rejects it as 415.
+# Fix: Content-Type now lives inside `headers:` for all six commands below,
+# matching EMHASS's own documented rest_command example and the pattern the
+# other three commands already used successfully. No top-level
+# `content_type:` field is used anywhere in this file anymore.
+#
+# Update 2026-11-20: mlforecast_fit_load / mlforecast_predict_load (and the
+# legacy publish_data) switched from the LAN IP 192.168.10.3:5000 to
+# 127.0.0.1:5000, matching the three Siegen commands. Same add-on either way;
+# done for consistency while investigating predict failures (the actual
+# cause was a timing collision with MPC - see emhass_automations.yaml).
+# The InfluxDB host in the payloads (192.168.10.3:8086) is read by EMHASS
+# itself, not by HA, and is left unchanged.
 
 rest_command:
 
@@ -10,41 +50,50 @@ rest_command:
   emhass_dayahead_optim:
     url: http://127.0.0.1:5000/action/dayahead-optim
     method: POST
-    content_type: "application/json"
     timeout: 240
+    headers:
+      Content-Type: "application/json"
+      authorization: !secret emhass_bearer
     payload: "{{ payload }}"
   emhass_naive_mpc_optim:
     url: http://127.0.0.1:5000/action/naive-mpc-optim
     method: POST
-    content_type: "application/json"
     timeout: 240
+    headers:
+      Content-Type: "application/json"
+      authorization: !secret emhass_bearer
     payload: "{{ payload }}"
   emhass_publish_data:
     url: http://127.0.0.1:5000/action/publish-data
     method: POST
-    content_type: "application/json"
     timeout: 240
+    headers:
+      Content-Type: "application/json"
+      authorization: !secret emhass_bearer
     payload: "{{ payload }}"
 
-  # Note: uses 192.168.10.3 (LAN IP) rather than 127.0.0.1 like the three
-  # commands above, and is not currently called from emhass_scripts.yaml or
+  # Note: not currently called from emhass_scripts.yaml or
   # emhass_automations.yaml - listed in entities.md but not observed wired
   # into any automation in this audit's scope. Worth confirming whether it
-  # is still needed.
+  # is still needed. Auth header added anyway for consistency/safety in case
+  # it's ever reactivated - an unauthenticated call to this same add-on would
+  # otherwise silently 401 too.
   publish_data:
-    url: http://192.168.10.3:5000/action/publish-data
+    url: http://127.0.0.1:5000/action/publish-data
     method: POST
     headers:
       Content-Type: application/json
+      authorization: !secret emhass_bearer
     payload: '{}'
 
 
   mlforecast_fit_load:
-    url: "http://192.168.10.3:5000/action/forecast-model-fit"
+    url: "http://127.0.0.1:5000/action/forecast-model-fit"
     method: POST
     timeout: 300
     headers:
       Content-Type: "application/json"
+      authorization: !secret emhass_bearer
     payload: >
       {
         "historic_days_to_retrieve": 30,
@@ -65,11 +114,12 @@ rest_command:
       }
 
   mlforecast_predict_load:
-    url: "http://192.168.10.3:5000/action/forecast-model-predict"
+    url: "http://127.0.0.1:5000/action/forecast-model-predict"
     method: POST
     timeout: 60
     headers:
       Content-Type: "application/json"
+      authorization: !secret emhass_bearer
     payload: >
       {
         "model_type": "load_forecast",

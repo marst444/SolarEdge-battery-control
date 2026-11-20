@@ -2,7 +2,7 @@
 # Layer 4B: wrapper scripts, each forwarding one requested mode/limit to script.modbus_queue (Layer 4C).
 # Sets: (none directly - all effect via script.modbus_queue)
 # Deps: input_number.dynamic/effective_*_limit, script.modbus_queue  ←  apply_effective_battery_control.yaml
-# Fixes: known_issues_and_fixes.md
+# Fixes: known_issues_and_fixes.md (Remote Control Command Timeout Fallback, 2026-11-20 - timeout 900s -> 3600s)
 
 script:
 
@@ -62,13 +62,21 @@ script:
           queue_service: solar_power_only
           queue_value: 0
 
+  # UPDATE 2026-11-20: timeout raised 900s -> 3600s. The script id keeps its
+  # legacy "15m" name on purpose so existing references don't break. A
+  # 3600s timeout is the fail-safe window: if HA/Modbus dies, the inverter
+  # stays in the last commanded mode at most 1h before falling back to its
+  # default mode (MSC). A non-MSC mode held longer than that is re-armed by
+  # solaredge_command_mode_keepalive (apply_effective_battery_control.yaml,
+  # every 1800s). See known_issues_and_fixes.md - Remote Control Command
+  # Timeout Fallback.
   set_value_storage_command_timeout15m:
-    alias: Set storage command timeout 15 min
+    alias: Set storage command timeout (3600s)
     sequence:
       - service: script.modbus_queue
         data:
           queue_service: set_storage_command_timeout
-          queue_value: 900
+          queue_value: 3600
 
   set_storage_discharge_limit0:
     alias: Set storage discharge limit 0
