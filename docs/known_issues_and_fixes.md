@@ -16,7 +16,13 @@ conversation referenced detail that's no longer here, it was the
 process of getting to the conclusions below, not the conclusions
 themselves.
 
-Open issues, in brief (full detail below): the ML predict/MPC collision
+Open issues, in brief (full detail below): the dynamic charge/discharge
+limit unit error (SOC-delta energy in Wh sent as W, 2.5-2.8x under-
+delivery vs. the MPC plan; battery peaked 67.8% vs. a ~90% plan on
+2026-11-21) is fixed and deployed 2026-11-21, not yet verified against a
+charge night (check scheduled 2026-11-22 07:15); the drift-watchdog
+quarter-hour race false positives are fixed (180s settle window,
+deployed 2026-11-21); the ML predict/MPC collision
 fix (2026-11-20, forecast had gone stale) is confirmed working, but the
 ML load forecast's 6-9 kW blocks were a stale model trained on the
 with-EV sensor (refit 2026-11-21, forecast now plausible; model quality
@@ -26,16 +32,15 @@ the MPC/DH status-stuck-at-
 RUNNING and MPC/DH collision fix (2026-11-20) is deployed live but not
 yet verified against a real event;
 the compound EMHASS-outage
-incident from 2026-11-19/20 is closed (moved to Fixed Issues) except
-its `batterycontrol_sensors.yaml` date-filter fix, still unconfirmed
-deployed;
+incident from 2026-11-19/20 is closed (moved to Fixed Issues); its
+`batterycontrol_sensors.yaml` date-filter fix is now deployed (2026-11-21);
 the DST
 fall-back timestamp collision is root-caused but not fixed; PV trickle
 readings bypassing no-PV branch logic is fixed and deployed (confirmed
 2026-11-20), not yet verified against a real trickle night;
 High SOC Hold's core charge-limit-bypass mechanism is still unsolved
-(its Modbus-reconnect register-reset sub-issue now has a 5000/5000
-re-apply trigger, 2026-11-20, deployment unconfirmed); the Remote Control
+(its Modbus-reconnect register-reset sub-issue has a 5000/5000
+re-apply trigger, confirmed working live 2026-11-21); the Remote Control
 command timeout fallback (inverter silently reverting a non-MSC mode to
 MSC after 900s) is fixed and deployed (3600s timeout + 1800s keepalive,
 confirmed 2026-11-20), not yet verified against a non-MSC period;
@@ -44,6 +49,59 @@ two SOC/critical-recovery register-write issues remain open.
 ---
 
 # Open Issues
+
+## Dynamic Charge/Discharge Limit Unit Error - Wh Sent as W, Battery Never Reaches the Planned SOC
+
+Found 2026-11-21 ("the plan usually wants the battery charged to full,
+but do we reach that?"). Night charge 2026-11-21 03:30-06:30: SOC peaked
+at **67.8%** while MPC planned up to ~2.8 kW of charging; the next
+day-ahead plan targets 90% by 06:45. The battery DC power tracked the
+sent charge limit to within ~1 W the whole night - the inverter did
+exactly what it was told; the limit itself was 35-50% of the plan:
+
+| Time | MPC planned | Charge limit sent | Battery actual |
+|---|---|---|---|
+| 03:45 | 1943 W | 650 W | 650 W |
+| 04:30 | 2807 W | 1009 W | 1008 W |
+| 04:45 | 2825 W | 1152 W | 1151 W |
+| 05:15 | 2757 W | 1087 W | 1087 W |
+
+**Root cause (`batterycontrol_sensors.yaml`, Dynamic Storage Charge /
+Discharge Limit):** `power = (blended_target_soc - soc_now)/100 *
+4600` - the **energy in Wh** needed to reach a 0.5/0.3/0.2-blended SOC
+target ~1.5 steps ahead, sent as **power in W**. That spreads one
+15-min step's worth of energy over ~1 h, and the blended target is
+itself further away than one step: measured under-delivery 2.5-2.8x.
+Same formula in the discharge sensor - very likely the real cause of the
+2026-11-02 "932 W vs 1965 W" discharge shortfall (see Fixed Issues -
+Dynamic Discharge Limit Under-Delivers), which the 3-point blend was
+introduced to fix.
+
+**Verified against the live EMHASS plan (2026-11-21):** a
+`battery_scheduled_soc` entry's date is the START of a 15-min step and
+its value is the SOC at the END of that step; EMHASS's efficiencies are
+eta_charge 0.95, eta_discharge 0.90 (every non-zero step of the plan
+matched to 3 decimals).
+
+**Fix (2026-11-21, user requirement: keep the 3-point blend - running
+directly on MPC power gave swings):** each point is converted to a real
+average power over its own horizon, then the powers are blended:
+`P_i = (s_i - soc_now)/100 * capacity_Wh / eta_c / dt_i[h]` (discharge:
+`(soc_now - s_i) ... * eta_d`), `dt_i = date_i + 900s - now`, points
+<300s away skipped (no spike before a step boundary), `P = 0.5 P1 +
+0.3 P2 + 0.2 P3` (weights renormalised if fewer points), clamped
+0..battery max charge/discharge power. Capacity and max powers read
+from the same SolarEdge sensors EMHASS is given; SOC unavailable now
+falls back to last_*_limit instead of computing from SOC 0. The limit
+sensors no longer use the string date filter at all. Backtest 04:15
+2026-11-21: 1368 W (vs. 603 W sent, 1212 W MPC). Live 17:34: 34 W
+discharge, hand-computed identically.
+
+**Status: deployed live 2026-11-21 17:33, rendering correctly; not yet
+verified against a charge night** (check scheduled 2026-11-22 07:15:
+effective_charge_limit vs. mpc_pv_batt_power, peak SOC vs. ~90% plan).
+
+---
 
 ## ML Load Forecast Predict Fails When It Collides With MPC - Forecast Goes Stale
 
@@ -181,8 +239,12 @@ to MSC.
 **Status: deployed, confirmed 2026-11-20 21:50** (`number.solaredge_i1_
 storage_command_timeout` = 3600; `automation.solaredge_command_mode_
 keepalive` exists, not yet triggered - inverter has stayed in MSC).
-**Not yet verified:** no mode-drift ticks during a non-MSC period longer
-than 1h, and keepalive `last_triggered` advancing every 30 min in one.
+**Update 2026-11-21:** no mode fallback during the 3h charge period
+03:32-06:32 (Charge from Solar Power and Grid held throughout), but the
+keepalive itself wasn't exercised - the charge limit changed every MPC
+run, so the apply re-armed the timer every 15 min anyway. **Not yet
+verified:** keepalive `last_triggered` advancing every 30 min in a
+non-MSC period with flat values longer than 1h.
 
 ---
 
@@ -203,7 +265,10 @@ first 3 elements regardless of staleness, which (combined with bug #1's
 outage) pinned the discharge-limit formula to a stale, wrong blend all
 day. Fixed by changing to `now().isoformat()`, matching the already-
 correct pattern in `update_soc_target_from_next_forecast`. **Status:
-implemented in project docs, not yet confirmed deployed/verified live.**
+deployed 2026-11-21** (live with the `batterycontrol_sensors.yaml`
+deploy for the limit unit fix above). The two limit sensors have since
+replaced the string filter with timestamp arithmetic; only SOC Batt
+Forecast Smooth still uses `now().isoformat()`.
 
 ---
 
@@ -480,6 +545,18 @@ instead of just one; the mobile push was throttled to one per episode
 (new `input_boolean.battery_control_drift_active`) so the richer
 per-tick logging didn't become per-tick phone spam.
 
+**Update 2026-11-21 - watchdog settle window.** After the timeout and
+reconnect fixes, 28 of 29 drift ticks 2026-11-20 21:00 - 11-21 17:00
+were false positives: the /5 watchdog tick and the /15 MPC run fire in
+the same second, and the apply write (~60s via the queue) plus the
+integration's ~70s poll lag means the first tick after any `effective_*`
+change reads the previous live value (every one at :00/:15/:30/:45, live
+= previous intended). Fixed: drift evaluation skipped for 180s after any
+of the three `effective_*` entities last changed (`settling` variable);
+real drift that persists is still caught on the next tick, and real
+resets (e.g. 03:22) don't coincide with MPC ticks. **Deployed
+2026-11-21 17:33, not yet verified** (check scheduled 2026-11-22 07:15).
+
 **Update 2026-11-20 - mechanism #3 caught twice with the watchdog live;
 re-apply-on-reconnect fix proposed.** Two Modbus reconnects
 (`unavailable` 02:23:34-02:23:57 and 16:45:28-16:45:51) each brought the
@@ -511,14 +588,15 @@ reads 5000 while its intended value is not 5000, held 2 min (exceeds the
 resets (11-19 16:22) jump straight to 5000 with no recorded unavailable
 state, and because 5000 is sometimes a genuine intended value. The full
 apply also restores the mode and the timeout (reconnects reset the
-timeout to 3600s). Optional follow-up: a ~30s
-grace period in the watchdog to skip ticks that land during an in-flight
-apply (would suppress 08:10-type alerts).
+timeout to 3600s). The race-tick follow-up is done - see the settle
+window Update 2026-11-21 above.
 
 Also noted, not investigated: 2026-11-19 ~07:15-21:55 sustained mode
 drift (expected Charge from Solar Power and Grid, live Maximize Self
 Consumption) with no reconnect visible in the alert log - a different
-mechanism that the proposed reconnect trigger will not catch.
+mechanism that the proposed reconnect trigger will not catch. (Since
+explained: the Remote Control command timeout fallback, see its own
+entry above.)
 
 **Status: open. Mechanisms #1 and #2 (PV-surplus DC-side charging
 bypassing charge_limit; the same charging suppressing measured AC
@@ -945,4 +1023,10 @@ weighted-blend lookahead already used for `soc_target`.
 date-string bug tracked in the Date-String Filter No-Op entry under
 Open Issues - fixed there too.
 
-**Status: implemented, not yet confirmed deployed/verified live.**
+**Update 2026-11-21**: the under-delivery's main cause was most likely
+a unit error in the same formula (SOC-delta energy in Wh sent as W) -
+see Open Issues - Dynamic Charge/Discharge Limit Unit Error. The
+3-point blend stays (for smoothness), now with each point converted to
+a real power over its own horizon.
+
+**Status: superseded by the 2026-11-21 unit fix (deployed).**

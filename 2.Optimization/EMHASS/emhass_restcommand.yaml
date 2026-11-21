@@ -43,6 +43,10 @@
 # cause was a timing collision with MPC - see emhass_automations.yaml).
 # The InfluxDB host in the payloads (192.168.10.3:8086) is read by EMHASS
 # itself, not by HA, and is left unchanged.
+#
+# Update 2026-11-21: mlforecast_fit_load's perform_backtest is now driven by
+# a `backtest` variable passed from script.run_mlforecast_fit_load (default
+# true; the daily quick fit passes false).
 
 rest_command:
 
@@ -102,7 +106,7 @@ rest_command:
         "sklearn_model": "KNeighborsRegressor",
         "num_lags": 96,
         "split_date_delta": "48h",
-        "perform_backtest": true,
+        "perform_backtest": {{ 'false' if (backtest | default(true) | string | lower) in ['false', '0', 'no', 'off'] else 'true' }},
         "retrieve_method": "influxdb",
         "influxdb_host": "192.168.10.3",
         "influxdb_port": 8086,

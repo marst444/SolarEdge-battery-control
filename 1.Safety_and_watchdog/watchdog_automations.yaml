@@ -1,8 +1,8 @@
 # ── watchdog_automations.yaml ──
-# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); detects and LOGS live inverter drift from the intended effective battery control state (record-only as of 2026-11-03 - no longer force-re-applies, see known_issues_and_fixes.md); resets daily diagnostic counters at midnight.
+# Layer 1: notifies on missing day-ahead run; notifies AND forces Maximize Self Consumption fallback after 45 min MPC stall; auto-restarts EMHASS addon after 90 min stall (max 1/hr); detects and LOGS live inverter drift from the intended effective battery control state (record-only as of 2026-11-03 - no longer force-re-applies, see known_issues_and_fixes.md; 180s settle window after intended changes as of 2026-11-21); resets daily diagnostic counters at midnight.
 # Sets: input_datetime.emhass_addon_last_restart_attempt, input_number.modbus_write_success_count_today/_failure_count_today/mode_command_skipped_count_today/battery_control_drift_count_total/_today, input_text.battery_control_last_drift_reason, input_boolean.battery_control_drift_active, input_select.emhass_requested_storage_mode, input_number.emhass_requested_charge_limit/_discharge_limit (fallback only)
 # Deps: input_datetime.emhass_*_last_success, sensor.mpc_pv_optim_status, input_select.effective_storage_mode, input_number.effective_charge_limit/_discharge_limit, select.solaredge_i1_storage_command_mode/_control_mode, number.solaredge_i1_storage_charge_limit/_discharge_limit  →  hassio.addon_restart, notify.mobile_app_fp3_ms, battery_forecast_control.yaml (Layer 4A output entities, fallback only). NOTE: as of 2026-11-03 the drift watchdog NO LONGER calls automation.trigger on apply_effective_battery_control.yaml - it only records. See known_issues_and_fixes.md.
-# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard; High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Update 2026-11-02 - Battery Control Drift Watchdog; Update 2026-11-03 - Drift Watchdog Made Record-Only; Update 2026-11-09 - SOC-guard removed and drift_reason now reports every mismatched category per tick, mobile push now edge-triggered per episode); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
+# Fixes: known_issues_and_fixes.md (EMHASS Outage Fallback Guard; High SOC Hold - Charge Limit = 0 Does Not Stop Charging While Maximize Self Consumption Stays Active, Update 2026-11-02 - Battery Control Drift Watchdog; Update 2026-11-03 - Drift Watchdog Made Record-Only; Update 2026-11-09 - SOC-guard removed and drift_reason now reports every mismatched category per tick, mobile push now edge-triggered per episode; Update 2026-11-21 - settle window suppresses MPC-tick race false positives); roadmap.md (Improve EMHASS Optimisation Failure Handling, Update 2026-10-10)
 
 automation:
 
@@ -247,6 +247,15 @@ automation:
       battery_control_drift_active), and goes quiet again once the
       episode clears, so a long-running drift no longer spams the phone
       while still being fully logged/counted every tick.
+
+      UPDATE 2026-11-21 - settle window. This /5 tick and the /15 MPC run
+      fire on the same second; the apply write (~60s via the Modbus queue)
+      plus the integration's ~70s poll lag means the first tick after any
+      effective_* change always read the previous live value. 28 of 29
+      ticks on 2026-11-20/21 were this race. Drift evaluation is now
+      skipped for 180s after an intended change; a real drift that
+      persists is still caught on the next tick, and real resets (e.g. the
+      03:22 reconnect) don't coincide with MPC ticks anyway.
     mode: single
     trigger:
       - platform: time_pattern
@@ -281,9 +290,16 @@ automation:
       # Tolerance in watts - avoids flagging cosmetic rounding differences
       # the Modbus register's own resolution can introduce.
       tolerance: 50
-      mode_drift: "{{ live_mode_text != expected_mode_text and expected_mode_text != 'unknown' }}"
-      charge_drift: "{{ (live_charge - expected_charge) | abs > tolerance }}"
-      discharge_drift: "{{ (live_discharge - expected_discharge) | abs > tolerance }}"
+      # UPDATE 2026-11-21: settle window - see description. True for 180s
+      # after any of the three intended-state entities last changed.
+      settling: >-
+        {% set lc = [states.input_select.effective_storage_mode.last_changed,
+                     states.input_number.effective_charge_limit.last_changed,
+                     states.input_number.effective_discharge_limit.last_changed] | max %}
+        {{ (now() - lc).total_seconds() < 180 }}
+      mode_drift: "{{ not settling and live_mode_text != expected_mode_text and expected_mode_text != 'unknown' }}"
+      charge_drift: "{{ not settling and (live_charge - expected_charge) | abs > tolerance }}"
+      discharge_drift: "{{ not settling and (live_discharge - expected_discharge) | abs > tolerance }}"
       # UPDATE 2026-11-09: used to be an if/elif/elif chain that only ever
       # reported ONE category per tick, in fixed mode > charge > discharge
       # priority order - a compound incident (e.g. mode+charge+discharge

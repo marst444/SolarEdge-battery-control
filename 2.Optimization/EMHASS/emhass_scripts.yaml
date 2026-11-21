@@ -468,14 +468,24 @@ script:
   # 2026-11-21: both ML scripts now record OK/FAILED + last success
   # (helpers in emhass_ml_monitoring.yaml). continue_on_error so a
   # connection error still reaches the FAILED branch instead of aborting.
+  # 2026-11-21: `backtest` field (default true). The daily quick fit passes
+  # false (~1 s instead of ~50 s); the weekly Sunday fit keeps true.
   run_mlforecast_fit_load:
     alias: "Run ML load Forecast Fit load"
+    fields:
+      backtest:
+        name: Perform backtest
+        description: "Run EMHASS's backtest after fitting (~50 s). Default true."
+        default: true
+        selector:
+          boolean:
     sequence:
       - action: input_text.set_value
         target: { entity_id: input_text.emhass_ml_fit_status }
         data: { value: "RUNNING" }
       - action: rest_command.mlforecast_fit_load
-        data: {}
+        data:
+          backtest: "{{ backtest | default(true) }}"
         response_variable: fit_resp
         continue_on_error: true
       - if:

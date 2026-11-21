@@ -1,6 +1,6 @@
 # ── emhass_ml_monitoring.yaml ──
-# Layer 1 (diagnostics): tracks EMHASS ML fit/predict success and measures real ML load-forecast accuracy (daily R2/MAE/RMSE + 7-day quality stoplight).
-# Sets: input_text.emhass_ml_fit_status/_predict_status, input_datetime.emhass_ml_*_last_success, sensor.ml_load_r2_daily/_mae_daily/_rmse_daily, sensor.ml_load_forecast_quality
+# Layer 1 (safety & watchdog): tracks EMHASS ML fit/predict success and measures real ML load-forecast accuracy (daily R2/MAE/RMSE + 7-day quality stoplight).
+# Sets: input_text.emhass_ml_fit_status/_predict_status, input_datetime.emhass_ml_*_last_success, sensor.ml_load_r2_daily/_mae_daily/_rmse_daily, sensor.baseline_load_*_daily, sensor.ml_load_skill_vs_baseline, sensor.ml_load_forecast_quality
 # Deps: sensor.p_load_forecast_ml_pv, sensor.power_myhouse_load_no_var_loads_no_ev, script.run_mlforecast_fit_load/_predict_load (emhass_scripts.yaml)  →  dashboard
 # Fixes: known_issues_and_fixes.md; ML Load Forecast (2026-11-21: stale with-EV model went unnoticed - weekly fit had no success tracking)
 #
@@ -13,6 +13,13 @@
 # (meter freeze, Easee stall gate) or where no forecast existed are skipped.
 # R2 = 1 - SSE/SST over the day's 15-min slots: 1 = perfect, 0 = no better
 # than the day's own mean, < 0 = worse than that.
+#
+# Baseline (added 2026-11-21): "same slot yesterday" - the actual load of the
+# same 15-min slot 24 h earlier - is scored with the exact same method, so
+# the ML model can be judged against a trivial guess. Skill = 1 -
+# MAE_ML / MAE_baseline: > 0 means ML beats the baseline, < 0 means it is
+# worse than just repeating yesterday. Slot actuals are kept in a rolling
+# 100-slot buffer (timestamped, so restarts/gaps can't misalign it).
 
 input_text:
   emhass_ml_fit_status:
@@ -99,6 +106,57 @@ input_number:
     max: 1000
     step: 1
     mode: box
+  # Baseline ("same slot yesterday") running daily sums
+  ml_bacc_n:
+    name: "ML baseline acc n"
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+  ml_bacc_sse:
+    name: "ML baseline acc sum squared error"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  ml_bacc_sae:
+    name: "ML baseline acc sum abs error"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  ml_bacc_sy:
+    name: "ML baseline acc sum actual"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  ml_bacc_sy2:
+    name: "ML baseline acc sum actual squared"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  # Baseline daily results
+  ml_base_r2_daily_value:
+    name: "Baseline load R2 daily value"
+    min: -10
+    max: 1
+    step: 0.001
+    mode: box
+  ml_base_mae_daily_value:
+    name: "Baseline load MAE daily value"
+    min: 0
+    max: 100000
+    step: 0.1
+    mode: box
+    unit_of_measurement: "W"
+  ml_skill_daily_value:
+    name: "ML skill vs baseline daily value"
+    min: -100
+    max: 1
+    step: 0.001
+    mode: box
 
 sensor:
   # Time-weighted mean of the no-EV load over the last 15 min. Unavailable
@@ -123,6 +181,37 @@ sensor:
     sampling_size: 50
 
 template:
+  # Rolling buffer of the last 100 slot actuals as [slot_start_iso, W]
+  # (-1 = no valid actual). Fires 3 s after each quarter-hour, i.e. before
+  # the scoring automation (+5 s), and exposes the baseline for the slot that
+  # just ended = the actual of the same slot 24 h earlier.
+  - trigger:
+      - platform: time_pattern
+        minutes: "/15"
+        seconds: "3"
+    sensor:
+      - name: "ML baseline buffer"
+        unique_id: ml_baseline_buffer
+        icon: mdi:history
+        state: "{{ (this.attributes.slots | default([])) | length }}"
+        attributes:
+          slots: >
+            {% set n = now() %}
+            {% set T = n.replace(second=0, microsecond=0) - timedelta(minutes=n.minute % 15) %}
+            {% set prev = T - timedelta(minutes=15) %}
+            {% set a = states('sensor.ml_load_actual_15min_mean') %}
+            {% set v = (a | float | round(1)) if a | is_number else -1 %}
+            {{ ((this.attributes.slots | default([])) + [[prev.isoformat(), v]])[-100:] }}
+          baseline_last_slot: >
+            {% set n = now() %}
+            {% set T = n.replace(second=0, microsecond=0) - timedelta(minutes=n.minute % 15) %}
+            {% set key = as_timestamp(T - timedelta(minutes=15) - timedelta(days=1)) %}
+            {% set ns = namespace(v=-1) %}
+            {% for p in this.attributes.slots | default([]) %}
+              {% if as_timestamp(p[0]) == key %}{% set ns.v = p[1] %}{% endif %}
+            {% endfor %}
+            {{ ns.v }}
+
   - sensor:
       # Mirrors of the daily results with state_class -> long-term statistics,
       # so R2/MAE can be graphed over months.
@@ -148,6 +237,29 @@ template:
         state_class: measurement
         availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
         state: "{{ states('input_number.ml_load_rmse_daily_value') | float(0) | round(0) }}"
+
+      - name: "Baseline load R2 daily"
+        unique_id: ml_base_r2_daily
+        state_class: measurement
+        icon: mdi:chart-bell-curve
+        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        state: "{{ states('input_number.ml_base_r2_daily_value') | float(0) | round(3) }}"
+
+      - name: "Baseline load MAE daily"
+        unique_id: ml_base_mae_daily
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        state: "{{ states('input_number.ml_base_mae_daily_value') | float(0) | round(0) }}"
+
+      # > 0: ML beats "same slot yesterday"; < 0: ML is worse than it.
+      - name: "ML load skill vs baseline"
+        unique_id: ml_load_skill_daily
+        state_class: measurement
+        icon: mdi:scale-balance
+        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        state: "{{ states('input_number.ml_skill_daily_value') | float(0) | round(3) }}"
 
       # Stoplight: fit/predict health first, then 7-day R2.
       # Thresholds: good >= 0.5, modest >= 0.2, bad < 0.2.
@@ -179,6 +291,9 @@ template:
           r2_7d: "{{ states('sensor.ml_load_r2_7d_mean') }}"
           r2_yesterday: "{{ states('sensor.ml_load_r2_daily') }}"
           mae_yesterday: "{{ states('sensor.ml_load_mae_daily') }}"
+          baseline_r2_yesterday: "{{ states('sensor.baseline_load_r2_daily') }}"
+          baseline_mae_yesterday: "{{ states('sensor.baseline_load_mae_daily') }}"
+          skill_yesterday: "{{ states('sensor.ml_load_skill_vs_baseline') }}"
           slots_today: "{{ states('input_number.ml_acc_n') | int(0) }}"
           fit_status: "{{ states('input_text.emhass_ml_fit_status') }}"
           fit_last_success: "{{ states('input_datetime.emhass_ml_fit_last_success') }}"
@@ -231,6 +346,32 @@ automation:
           - action: input_number.set_value
             target: { entity_id: input_number.ml_acc_sy2 }
             data: { value: "{{ (states('input_number.ml_acc_sy2') | float(0) + y * y) | round(2) }}" }
+      # Baseline: same slot yesterday (from sensor.ml_baseline_buffer, which
+      # updated 2 s earlier)
+      - variables:
+          base: "{{ state_attr('sensor.ml_baseline_buffer', 'baseline_last_slot') | float(-1) }}"
+      - if:
+          - condition: template
+            value_template: "{{ base >= 0 and actual | is_number }}"
+        then:
+          - variables:
+              by: "{{ actual | float }}"
+              be: "{{ actual | float - base }}"
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_bacc_n }
+            data: { value: "{{ states('input_number.ml_bacc_n') | int(0) + 1 }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_bacc_sse }
+            data: { value: "{{ (states('input_number.ml_bacc_sse') | float(0) + be * be) | round(2) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_bacc_sae }
+            data: { value: "{{ (states('input_number.ml_bacc_sae') | float(0) + be | abs) | round(2) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_bacc_sy }
+            data: { value: "{{ (states('input_number.ml_bacc_sy') | float(0) + by) | round(2) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_bacc_sy2 }
+            data: { value: "{{ (states('input_number.ml_bacc_sy2') | float(0) + by * by) | round(2) }}" }
       - action: input_number.set_value
         target: { entity_id: input_number.ml_forecast_slot_w }
         data: { value: "{{ fc_new }}" }
@@ -267,6 +408,30 @@ automation:
           - action: input_number.set_value
             target: { entity_id: input_number.ml_load_slots_daily_value }
             data: { value: "{{ n }}" }
+      # Baseline + skill (needs the same 48-slot minimum)
+      - variables:
+          bn: "{{ states('input_number.ml_bacc_n') | int(0) }}"
+          bsse: "{{ states('input_number.ml_bacc_sse') | float(0) }}"
+          bsae: "{{ states('input_number.ml_bacc_sae') | float(0) }}"
+          bsy: "{{ states('input_number.ml_bacc_sy') | float(0) }}"
+          bsy2: "{{ states('input_number.ml_bacc_sy2') | float(0) }}"
+      - if:
+          - condition: template
+            value_template: "{{ bn >= 48 and (bsy2 - bsy * bsy / bn) > 0 and bsae > 0 }}"
+        then:
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_base_r2_daily_value }
+            data: { value: "{{ [[1 - bsse / (bsy2 - bsy * bsy / bn), -10] | max, 1] | min | round(3) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_base_mae_daily_value }
+            data: { value: "{{ (bsae / bn) | round(1) }}" }
+          - if:
+              - condition: template
+                value_template: "{{ n >= 48 }}"
+            then:
+              - action: input_number.set_value
+                target: { entity_id: input_number.ml_skill_daily_value }
+                data: { value: "{{ [[1 - (sae / n) / (bsae / bn), -100] | max, 1] | min | round(3) }}" }
       - action: input_number.set_value
         target:
           entity_id:
@@ -275,5 +440,10 @@ automation:
             - input_number.ml_acc_sae
             - input_number.ml_acc_sy
             - input_number.ml_acc_sy2
+            - input_number.ml_bacc_n
+            - input_number.ml_bacc_sse
+            - input_number.ml_bacc_sae
+            - input_number.ml_bacc_sy
+            - input_number.ml_bacc_sy2
         data: { value: 0 }
     mode: single
