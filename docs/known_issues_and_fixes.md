@@ -17,7 +17,11 @@ process of getting to the conclusions below, not the conclusions
 themselves.
 
 Open issues, in brief (full detail below): the ML predict/MPC collision
-fix (2026-11-20, forecast had gone stale) is deployed, not yet verified;
+fix (2026-11-20, forecast had gone stale) is confirmed working, but the
+ML load forecast's 6-9 kW blocks were a stale model trained on the
+with-EV sensor (refit 2026-11-21, forecast now plausible; model quality
+weak, R2 0.12; weekly fit has no success tracking yet); training sensor
+also gated against Easee stalls/meter freezes (2026-11-21);
 the MPC/DH status-stuck-at-
 RUNNING and MPC/DH collision fix (2026-11-20) is deployed live but not
 yet verified against a real event;
@@ -25,7 +29,7 @@ the compound EMHASS-outage
 incident from 2026-11-19/20 is closed (moved to Fixed Issues) except
 its `batterycontrol_sensors.yaml` date-filter fix, still unconfirmed
 deployed;
-the ML load forecast is confirmed weak but not root-caused; the DST
+the DST
 fall-back timestamp collision is root-caused but not fixed; PV trickle
 readings bypassing no-PV branch logic is fixed and deployed (confirmed
 2026-11-20), not yet verified against a real trickle night;
@@ -76,9 +80,14 @@ consistency with the Siegen commands (loopback avoids dependence on the
 host's LAN IP; InfluxDB host in the payloads stays 192.168.10.3, since
 EMHASS resolves it from inside its own container).
 
-**Status: deployed live 2026-11-20 23:57, not yet verified.** Verify:
-00:07 predict trace finishes and `sensor.p_load_forecast_ml_pv`
-last_reported advances (check via `ha_eval_template`).
+**Status: confirmed fixed live 2026-11-21** - the 00:07 and 06:07
+predicts ran clean and `sensor.p_load_forecast_ml_pv` refreshed each
+time.
+
+**But the fresh forecast is badly wrong** - tracked in the ML Load
+Forecast entry below (Update 2026-11-21): 7-9 kW forecast for
+00:15-06:15 on 11-21 vs. a typical ~200-300 W night, traced to EV
+charging leaking into the training sensor.
 
 ---
 
@@ -113,7 +122,9 @@ trigger at 00:00) and after every HA restart (both delay 5 min).
 - Lock is the script `current` attribute, deliberately not the
   `*_status` input_texts, which a failed run can leave stuck at RUNNING.
 
-**Status: deployed live 2026-11-20 21:20, not yet verified.** Verify:
+**Status: deployed live 2026-11-20 21:20. (b) verified 2026-11-21:
+00:00 DH trace waited 7.5s on the in-flight MPC run, then ran and
+wrote OK.** Still to verify: (a) and (c). Verify:
 (a) next publish-data failure -> trace continues past the script step
 and writes FAILED (if it still aborts there, `continue_on_error` doesn't
 cover this error type - fall back to writing FAILED before the script
@@ -226,9 +237,91 @@ Matters because `load_power_forecast` feeds directly into EMHASS's
 MPC/day-ahead solver - a weak forecast here plausibly degrades every
 optimization plan, though the impact isn't quantified.
 
-**Status: confirmed via direct comparison against 973 pairs; not
-root-caused; no fix proposed or implemented.** Worth re-checking against
-a calmer week before concluding this is a persistent problem.
+**Update 2026-11-21 - likely root cause found: EV charging leaks into
+the training/target sensor.** The first fresh forecast after the
+predict-collision fix (00:07 11-21) predicts 7-9 kW hourly means for
+00:15-06:15, against an actual overnight load of ~150-300 W on normal
+nights (10-day hourly stats). The model's target,
+`sensor.power_myhouse_load_no_var_loads_no_ev`, is computed in
+`emhass_sensors.yaml` as house load minus `sensor.ev_charging_power_w`,
+clamped at 0. On the EV-charging night of 2026-11-16 the two inputs were
+clearly out of phase (hourly means, house load / EV power / resulting
+"no EV"): 01:00 4967 / 0 / **4967**; 02:00 7873 / 2620 / **5253**;
+04:00 132 / 2137 / **0**; 05:00 0 / 2947 / **0**; 06:00 4601 / 1806 /
+**3566**. I.e. EV draw is sometimes not subtracted at all (EV sensor
+reading 0 while the car charges) and sometimes subtracted when the
+house load doesn't contain it, driving the result to the 0 clamp.
+Similar 0-hour blocks on 11-19 04:00-06:00. The KNN model (30-day,
+num_lags 96) learns these multi-kW overnight blocks as "house load"
+and reproduces them. This also likely explains the 2026-11-03 finding
+(MAE worse than a flat average). Not yet established: why the EV power
+sensor and house load are misaligned (EV sensor update lag/cloud
+polling vs. local, or the EV sensor dropping to 0 while charging).
+
+Impact: EMHASS MPC/DH plan against phantom multi-kW night load whenever
+the model reproduces an EV night.
+
+**Update 2026-11-21 08:20 - ACTUAL root cause of the 6-9 kW forecast:
+stale model trained on the wrong sensor.** EMHASS logged on every
+predict: "The saved model was trained on
+sensor.power_myhouse_load_no_var_loads but
+sensor.power_myhouse_load_no_var_loads_no_ev was retrieved". The saved
+`/data/load_forecast_mlf.pkl` was trained on the WITH-EV sensor (age
+unknown - possibly months); the weekly Sunday 19:00 fit has no HA-side
+success tracking, and the 2026-11-15 fit fell in the 401 outage. The
+forecast turned bad from 2026-11-20 00:00 (also changed from 96 to 288
+points) - coincides with the 18 hourly add-on restarts/rebuilds on
+11-19, so an EMHASS-side behaviour change is suspected but unproven.
+The training-data contamination below was real but NOT the driver
+(11-18/19 forecasts were normal despite it). **Fixed 2026-11-21 08:18:**
+manual forecast-model-fit (no_ev sensor, 30 days, 2910 points; backtest
+MAE 266 W, RMSE 549 W, R2 0.12; test R2 -0.30 - weak) then predict:
+96 points, mean 428 W, max 1.19 kW - plausible. Follow-up done 2026-11-21 08:35: `emhass_ml_monitoring.yaml` (Layer 1,
+safety & watchdog folder) - fit/predict OK/FAILED + last success (set by
+run_mlforecast_* scripts in emhass_scripts.yaml), measured operational
+forecast accuracy per 15-min slot -> daily R2/MAE/RMSE (long-term stats),
+and stoplight `sensor.ml_load_forecast_quality` on 7-day R2 (good >= 0.5,
+modest >= 0.2, bad < 0.2; purple for fit/predict failed or fit > 8 days
+old). Deployed live. Note: the new last-success input_datetimes default to
+"today 00:00" until the first real run overwrites them. Still open: tune
+the model once clean history accumulates.
+
+**Update 2026-11-21 01:00 - refined root cause (two independent data
+faults, not a systematic EV misalignment).** 10-day hour-by-hour check
+of grid import + inverter output vs. Easee-reported EV power across all
+8 EV sessions:
+1. **Easee cloud data stall (rare)** - only one real stall: 11-16
+   00:12-02:39, Easee reported 0 W / `awaiting_start` while the M1 meter
+   showed a flat 7.80-7.90 kW for 85 min (EV signature; not the washing
+   machine or pellet boiler, which are short ~2 kW bursts). Session
+   energy then batch-jumped (4.4 -> 16.7 kWh in <1s at 03:13). All other
+   sessions matched within a few hundred W, with ~1 kW mismatches only
+   at session start/end hours.
+2. **SolarEdge M1 meter freeze (recurring)** - after a brief
+   `unavailable` the meter sat at exactly `-0.0` for 2-3h: 11-16
+   03:54-06:10 and 11-19 04:00-06:59, both inside the nightly Modbus
+   reconnect window. This is the source of the 0 W training blocks.
+`sensor.ev_charging_power_w` itself is a faithful x1000 copy of the
+Easee power source - not a template bug.
+
+**Fix (2026-11-21, `emhass_sensors.yaml`):** `availability:` added to
+`sensor.power_myhouse_load_no_var_loads_no_ev` - unavailable (and so not
+written to InfluxDB / not used for training) when (1)
+`binary_sensor.solaredge_modbus_data_fresh` is off (~5% of time over 10
+days, incl. the two freezes), (2) car connected
+(`sensor.ev_charger_status_normalized_source` != disconnected) AND result
+> 4000 W (Easee stall signature), or (3) raw result < -200 W (delayed EV
+value subtracted from an interval without it; previously clamped to a
+fake 0). Household loads (washing machine, pellet boiler) deliberately
+stay in. Chosen over a blanket "car plugged in" exclusion, which would
+discard all hours the car sits connected (sometimes days).
+
+**Status: deployed live 2026-11-21 01:13, not yet verified.** Past
+contaminated history remains in InfluxDB until it ages out of the
+30-day fit window (~mid-December) unless 11-16 00:00-07:00 and 11-19
+04:00-07:00 are deleted manually. Verify: sensor goes unavailable during
+the next nightly meter freeze / Easee stall; re-run the accuracy
+comparison once clean history dominates.
 
 ---
 
@@ -432,9 +525,29 @@ bypassing charge_limit; the same charging suppressing measured AC
 output) are the core unsolved problem, and no command mode tested is
 free of them - the current Hold design is the best available
 mitigation given that, not a real fix. Mechanism #3 (reconnect resetting
-registers) now has a 5000/5000 re-apply trigger (2026-11-20; deployment
-unconfirmed - not live during the 16:45 episode, which drifted until
-18:24; the next nightly reconnect will show whether it is now). The 2026-11-09 watchdog fixes are confirmed working
+registers) now has a 5000/5000 re-apply trigger - **confirmed working
+live 2026-11-21**: reconnect 03:22:55-03:23:18 reset limits to
+5000/5000, re-applied to the intended 147/0 at 03:26:17 (~3 min, vs.
+51 min-1h39m drift before).
+
+**Update 2026-11-21 - reconnect cause narrowed to the inverter side.**
+With solaredge_modbus_multi at debug: the integration opens and closes
+a TCP connection on every poll (~7s cycle, normal). At 03:22:55 a
+connect attempt failed ("could not connect to 192.168.10.4:1502"),
+entities went unavailable ~22s until the next successful connect. The
+inverter's storage-control registers came back at its own defaults
+(MSC/5000/5000) - an HA-side or network-side connection failure alone
+would not change inverter registers, so the inverter's Modbus/control
+subsystem itself restarted. Schedule: twice daily, ~03:20-04:05 and
+~17:15-18:05 (10-day list 11-11..11-20, plus odd extras 11-15 22:01,
+11-17 01:12), ~22s each. Web research 2026-11-21: matches widely reported
+SolarEdge behaviour - other HA users see the same twice-daily inverter
+reset (e.g. ~05:00/~19:00, <1 min, register settings lost), and SolarEdge
+support reportedly confirmed it as expected behaviour; community
+workaround is a re-apply trigger on recovery from unavailable, same as
+limit_reset. Not fixable from HA - limit_reset is the mitigation.
+Sources: community.home-assistant.io thread 464084 (pages 27, 37,
+post 545). The 2026-11-09 watchdog fixes are confirmed working
 live 2026-11-20.**
 
 ---

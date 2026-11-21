@@ -2,7 +2,7 @@
 # Layer 2: shapes EMHASS inputs - house load (with/without EV), merged Nordpool+EPEX price forecasts, Solcast PV blocks.
 # Sets: sensor.power_myhouse_load_no_var_loads(_no_ev), sensor.merged_total_costs/revenue_*_forecast, sensor.solcast_pv_forecast_*_intervals
 # Deps: Nordpool/EPEX/Solcast source sensors, input_number.grid_fee/vat/export_compensation  →  emhass_scripts.yaml
-# Fixes: known_issues_and_fixes.md
+# Fixes: known_issues_and_fixes.md; ML Load Forecast (2026-11-21: no_ev sensor availability gate)
 
 template:
   - sensor:
@@ -19,13 +19,36 @@ template:
           {% set grid_to_house_w = states('sensor.solar_grid_to_house_w') | float(0) %}
           {% set total_power = panel_to_house_w + battery_to_house_w + grid_to_house_w %}
           {{ [total_power, 0.0] | max }}
-          
+
+      # ML training target (rest_command.mlforecast_fit/predict var_model).
+      # Fix 2026-11-21: goes unavailable instead of writing a wrong value when
+      # its inputs can't be trusted. HA's InfluxDB integration does not store
+      # unavailable states, so these samples are simply absent from EMHASS's
+      # training data. Excluded when:
+      #  1. SolarEdge Modbus data is stale - the M1 meter froze at -0.0 for
+      #     2-3h after nightly reconnects (11-16 and 11-19, 04-06).
+      #  2. Car is plugged in AND result > 4000 W - Easee cloud data stalled
+      #     (11-16 00:12-02:39: reported 0 W while the meter showed a flat
+      #     7.8 kW), leaving EV draw in the "no EV" value.
+      #  3. Raw result < -200 W - delayed EV values subtracted from intervals
+      #     that didn't contain them (was clamped to a fake 0 before).
+      # Only consumer besides ML: the "now" point of load_power_forecast in
+      # emhass_scripts.yaml, which falls back to 0 via float(0).
       - name: "Power myhouse load no var loads no EV"
         unique_id: power_myhouse_load_no_var_loads_no_ev
         unit_of_measurement: "W"
         device_class: "power"
         state_class: "measurement"
         icon: mdi:home
+        availability: >
+          {% set raw = states('sensor.solar_panel_to_house_w') | float(0)
+                     + states('sensor.solar_battery_to_house_w') | float(0)
+                     + states('sensor.solar_grid_to_house_w') | float(0)
+                     - states('sensor.ev_charging_power_w') | float(0) %}
+          {% set car_connected = states('sensor.ev_charger_status_normalized_source') != 'disconnected' %}
+          {{ is_state('binary_sensor.solaredge_modbus_data_fresh', 'on')
+             and not (car_connected and raw > 4000)
+             and raw >= -200 }}
         state: >
           {% set panel_to_house_w = states('sensor.solar_panel_to_house_w') | float(0) %}
           {% set battery_to_house_w = states('sensor.solar_battery_to_house_w') | float(0) %}
@@ -117,14 +140,14 @@ template:
             {% endfor %}
             ]
 
-          
-          
+
+
 ########################################################
 # EPEX priceprediction sensors for EMHASS
 #
 ########################################################
 
-# EPEX IMPORT price sensor 
+# EPEX IMPORT price sensor
       - name: "EPEX Total Costs Import Forecast"
         unique_id: epex_total_costs_import
         unit_of_measurement: "SEK/kWh"
@@ -170,13 +193,13 @@ template:
             []
             {% endif %}
 
-# EPEX EXPORT price sensor 
+# EPEX EXPORT price sensor
       - name: "EPEX Total Revenue Export Forecast"
         unique_id: epex_total_revenue_export
         unit_of_measurement: "SEK/kWh"
         availability: >
           {{ state_attr('sensor.epex_structured_forecast', 'forecast') is not none
-             and states('sensor.eur_to_ore_factor') | is_number }}        
+             and states('sensor.eur_to_ore_factor') | is_number }}
         state: >
           {% set forecast = state_attr('sensor.epex_structured_forecast', 'forecast') or [] %}
           {% set eur_to_ore = states('sensor.eur_to_ore_factor') | float(0) %}

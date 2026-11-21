@@ -1,7 +1,7 @@
 # ── emhass_scripts.yaml ──
 # Layer 2: builds EMHASS MPC/day-ahead optimisation payloads from live sensors, calls the addon, publishes forecast sensors back into HA.
-# Sets: sensor.mpc_pv_*/dh_pv_*
-# Deps: SolarEdge/Solcast/merged price sensors, rest_command.emhass_*  →  emhass_automations.yaml, battery_forecast_control.yaml
+# Sets: sensor.mpc_pv_*/dh_pv_*, input_text.emhass_ml_fit_status/_predict_status (+ last_success)
+# Deps: SolarEdge/Solcast/merged price sensors, rest_command.emhass_*  →  emhass_automations.yaml, battery_forecast_control.yaml, emhass_ml_monitoring.yaml
 # Fixes: known_issues_and_fixes.md. 2026-11-02: removed dead pre-refactor
 # sliding-window scripts (emhass_update_sliding_window, set_mpc_soc_final_target)
 # - unused since the MPC/day-ahead redesign, confirmed dead (last_triggered
@@ -15,6 +15,9 @@
 # script.run_mpc_optimization) have no YAML backing in this project at all
 # and must be deleted manually via the HA UI (Settings > Devices & Services
 # > Entities, filter "unavailable").
+# 2026-11-21: run_mlforecast_fit_load / _predict_load now record OK/FAILED +
+# last success (helpers in emhass_ml_monitoring.yaml) - a failing weekly fit
+# had gone unnoticed and left a stale with-EV model in use.
 
 # Sensors used by the MPC and day-ahead scripts below: energy capacity (kWh),
 # charging/discharging power (W), battery SOC (%), house load excl. variable
@@ -462,14 +465,61 @@ script:
         alias: Publish Energy Plan to HA
 
 
+  # 2026-11-21: both ML scripts now record OK/FAILED + last success
+  # (helpers in emhass_ml_monitoring.yaml). continue_on_error so a
+  # connection error still reaches the FAILED branch instead of aborting.
   run_mlforecast_fit_load:
     alias: "Run ML load Forecast Fit load"
     sequence:
-      - service: rest_command.mlforecast_fit_load
+      - action: input_text.set_value
+        target: { entity_id: input_text.emhass_ml_fit_status }
+        data: { value: "RUNNING" }
+      - action: rest_command.mlforecast_fit_load
         data: {}
+        response_variable: fit_resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ fit_resp is defined and fit_resp.status == 200 }}"
+        then:
+          - action: input_text.set_value
+            target: { entity_id: input_text.emhass_ml_fit_status }
+            data: { value: "OK" }
+          - action: input_datetime.set_datetime
+            target: { entity_id: input_datetime.emhass_ml_fit_last_success }
+            data: { datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}" }
+        else:
+          - action: input_text.set_value
+            target: { entity_id: input_text.emhass_ml_fit_status }
+            data: { value: "FAILED" }
 
+  # Predict success additionally requires that EMHASS actually re-published
+  # the forecast sensor (last_reported < 120 s) - HTTP 200 alone doesn't
+  # prove the publish happened (same lesson as the MPC/DH health check).
   run_mlforecast_predict_load:
     alias: "Run ML load Forecast predict load"
     sequence:
-      - service: rest_command.mlforecast_predict_load
+      - action: input_text.set_value
+        target: { entity_id: input_text.emhass_ml_predict_status }
+        data: { value: "RUNNING" }
+      - action: rest_command.mlforecast_predict_load
         data: {}
+        response_variable: predict_resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: >
+              {{ predict_resp is defined and predict_resp.status == 200
+                 and states.sensor.p_load_forecast_ml_pv is not none
+                 and (now() - states.sensor.p_load_forecast_ml_pv.last_reported).total_seconds() < 120 }}
+        then:
+          - action: input_text.set_value
+            target: { entity_id: input_text.emhass_ml_predict_status }
+            data: { value: "OK" }
+          - action: input_datetime.set_datetime
+            target: { entity_id: input_datetime.emhass_ml_predict_last_success }
+            data: { datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}" }
+        else:
+          - action: input_text.set_value
+            target: { entity_id: input_text.emhass_ml_predict_status }
+            data: { value: "FAILED" }

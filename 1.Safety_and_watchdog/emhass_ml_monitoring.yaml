@@ -1,0 +1,279 @@
+# ── emhass_ml_monitoring.yaml ──
+# Layer 1 (diagnostics): tracks EMHASS ML fit/predict success and measures real ML load-forecast accuracy (daily R2/MAE/RMSE + 7-day quality stoplight).
+# Sets: input_text.emhass_ml_fit_status/_predict_status, input_datetime.emhass_ml_*_last_success, sensor.ml_load_r2_daily/_mae_daily/_rmse_daily, sensor.ml_load_forecast_quality
+# Deps: sensor.p_load_forecast_ml_pv, sensor.power_myhouse_load_no_var_loads_no_ev, script.run_mlforecast_fit_load/_predict_load (emhass_scripts.yaml)  →  dashboard
+# Fixes: known_issues_and_fixes.md; ML Load Forecast (2026-11-21: stale with-EV model went unnoticed - weekly fit had no success tracking)
+#
+# How accuracy is measured: at every quarter-hour boundary (+5 s) the
+# forecast value for the slot that is starting is snapshotted. At the next
+# boundary it is compared with the actual time-weighted mean of the no-EV
+# load over that slot, and the error is added to running daily sums. At
+# 00:00:30 the day's R2 / MAE / RMSE are computed from the sums and the sums
+# are reset. Slots where the load sensor was unavailable for the whole slot
+# (meter freeze, Easee stall gate) or where no forecast existed are skipped.
+# R2 = 1 - SSE/SST over the day's 15-min slots: 1 = perfect, 0 = no better
+# than the day's own mean, < 0 = worse than that.
+
+input_text:
+  emhass_ml_fit_status:
+    name: "EMHASS ML fit status"
+    max: 32
+  emhass_ml_predict_status:
+    name: "EMHASS ML predict status"
+    max: 32
+
+input_datetime:
+  emhass_ml_fit_last_success:
+    name: "EMHASS ML fit last success"
+    has_date: true
+    has_time: true
+  emhass_ml_predict_last_success:
+    name: "EMHASS ML predict last success"
+    has_date: true
+    has_time: true
+
+input_number:
+  # Snapshot of the forecast for the slot currently running (-1 = none)
+  ml_forecast_slot_w:
+    name: "ML forecast current slot"
+    min: -1
+    max: 100000
+    step: 0.01
+    mode: box
+    unit_of_measurement: "W"
+  # Running daily sums (reset at midnight)
+  ml_acc_n:
+    name: "ML acc n"
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+  ml_acc_sse:
+    name: "ML acc sum squared error"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  ml_acc_sae:
+    name: "ML acc sum abs error"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  ml_acc_sy:
+    name: "ML acc sum actual"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  ml_acc_sy2:
+    name: "ML acc sum actual squared"
+    min: 0
+    max: 1000000000000
+    step: 0.01
+    mode: box
+  # Daily results (written at midnight)
+  ml_load_r2_daily_value:
+    name: "ML load R2 daily value"
+    min: -10
+    max: 1
+    step: 0.001
+    mode: box
+  ml_load_mae_daily_value:
+    name: "ML load MAE daily value"
+    min: 0
+    max: 100000
+    step: 0.1
+    mode: box
+    unit_of_measurement: "W"
+  ml_load_rmse_daily_value:
+    name: "ML load RMSE daily value"
+    min: 0
+    max: 100000
+    step: 0.1
+    mode: box
+    unit_of_measurement: "W"
+  ml_load_slots_daily_value:
+    name: "ML load slots scored daily"
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+
+sensor:
+  # Time-weighted mean of the no-EV load over the last 15 min. Unavailable
+  # periods are ignored, so gated samples don't count.
+  - platform: statistics
+    name: "ML load actual 15min mean"
+    unique_id: ml_load_actual_15min_mean
+    entity_id: sensor.power_myhouse_load_no_var_loads_no_ev
+    state_characteristic: average_step
+    max_age:
+      minutes: 15
+    sampling_size: 2000
+
+  # 7-day mean of the daily R2 values (drives the stoplight)
+  - platform: statistics
+    name: "ML load R2 7d mean"
+    unique_id: ml_load_r2_7d_mean
+    entity_id: sensor.ml_load_r2_daily
+    state_characteristic: mean
+    max_age:
+      days: 7
+    sampling_size: 50
+
+template:
+  - sensor:
+      # Mirrors of the daily results with state_class -> long-term statistics,
+      # so R2/MAE can be graphed over months.
+      - name: "ML load R2 daily"
+        unique_id: ml_load_r2_daily
+        state_class: measurement
+        icon: mdi:chart-bell-curve
+        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        state: "{{ states('input_number.ml_load_r2_daily_value') | float(0) | round(3) }}"
+
+      - name: "ML load MAE daily"
+        unique_id: ml_load_mae_daily
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        state: "{{ states('input_number.ml_load_mae_daily_value') | float(0) | round(0) }}"
+
+      - name: "ML load RMSE daily"
+        unique_id: ml_load_rmse_daily
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        state: "{{ states('input_number.ml_load_rmse_daily_value') | float(0) | round(0) }}"
+
+      # Stoplight: fit/predict health first, then 7-day R2.
+      # Thresholds: good >= 0.5, modest >= 0.2, bad < 0.2.
+      - name: "ML load forecast quality"
+        unique_id: ml_load_forecast_quality
+        icon: mdi:traffic-light
+        state: >
+          {% set fit_last = states('input_datetime.emhass_ml_fit_last_success') %}
+          {% set fit_age_d = ((now().timestamp() - as_timestamp(fit_last, 0)) / 86400) if fit_last not in ('unknown','unavailable','') else 999 %}
+          {% set pred_last = states('input_datetime.emhass_ml_predict_last_success') %}
+          {% set pred_age_h = ((now().timestamp() - as_timestamp(pred_last, 0)) / 3600) if pred_last not in ('unknown','unavailable','') else 999 %}
+          {% set r2 = states('sensor.ml_load_r2_7d_mean') %}
+          {% if is_state('input_text.emhass_ml_fit_status', 'FAILED') %}
+            fit_failed
+          {% elif is_state('input_text.emhass_ml_predict_status', 'FAILED') or pred_age_h > 13 %}
+            predict_failed
+          {% elif fit_age_d > 8 %}
+            fit_stale
+          {% elif not r2 | is_number %}
+            no_data
+          {% elif r2 | float >= 0.5 %}
+            good
+          {% elif r2 | float >= 0.2 %}
+            modest
+          {% else %}
+            bad
+          {% endif %}
+        attributes:
+          r2_7d: "{{ states('sensor.ml_load_r2_7d_mean') }}"
+          r2_yesterday: "{{ states('sensor.ml_load_r2_daily') }}"
+          mae_yesterday: "{{ states('sensor.ml_load_mae_daily') }}"
+          slots_today: "{{ states('input_number.ml_acc_n') | int(0) }}"
+          fit_status: "{{ states('input_text.emhass_ml_fit_status') }}"
+          fit_last_success: "{{ states('input_datetime.emhass_ml_fit_last_success') }}"
+          predict_status: "{{ states('input_text.emhass_ml_predict_status') }}"
+          predict_last_success: "{{ states('input_datetime.emhass_ml_predict_last_success') }}"
+
+automation:
+  - id: ml_forecast_slot_scoring
+    alias: "ML forecast - score slot"
+    description: >
+      Every quarter-hour: score the slot that just ended (snapshot forecast
+      vs actual 15-min mean), then snapshot the forecast for the new slot.
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+        seconds: "5"
+    action:
+      - variables:
+          fc_prev: "{{ states('input_number.ml_forecast_slot_w') | float(-1) }}"
+          actual: "{{ states('sensor.ml_load_actual_15min_mean') }}"
+          fc_new: >
+            {% set n = now() %}
+            {% set slot = n.replace(second=0, microsecond=0) - timedelta(minutes=n.minute % 15) %}
+            {% set ns = namespace(v=-1) %}
+            {% for item in state_attr('sensor.p_load_forecast_ml_pv', 'scheduled_forecast') or [] %}
+              {% if as_timestamp(item.date) == as_timestamp(slot) %}
+                {% set ns.v = item.p_load_forecast_ml_pv | float(-1) %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.v }}
+      - if:
+          - condition: template
+            value_template: "{{ fc_prev >= 0 and actual | is_number }}"
+        then:
+          - variables:
+              y: "{{ actual | float }}"
+              e: "{{ actual | float - fc_prev }}"
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_acc_n }
+            data: { value: "{{ states('input_number.ml_acc_n') | int(0) + 1 }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_acc_sse }
+            data: { value: "{{ (states('input_number.ml_acc_sse') | float(0) + e * e) | round(2) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_acc_sae }
+            data: { value: "{{ (states('input_number.ml_acc_sae') | float(0) + e | abs) | round(2) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_acc_sy }
+            data: { value: "{{ (states('input_number.ml_acc_sy') | float(0) + y) | round(2) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_acc_sy2 }
+            data: { value: "{{ (states('input_number.ml_acc_sy2') | float(0) + y * y) | round(2) }}" }
+      - action: input_number.set_value
+        target: { entity_id: input_number.ml_forecast_slot_w }
+        data: { value: "{{ fc_new }}" }
+    mode: queued
+
+  - id: ml_forecast_daily_summary
+    alias: "ML forecast - daily accuracy summary"
+    description: >
+      Computes yesterday's R2 / MAE / RMSE from the running sums (needs at
+      least 48 scored slots = half a day), writes them, resets the sums.
+    trigger:
+      - platform: time
+        at: "00:00:30"
+    action:
+      - variables:
+          n: "{{ states('input_number.ml_acc_n') | int(0) }}"
+          sse: "{{ states('input_number.ml_acc_sse') | float(0) }}"
+          sae: "{{ states('input_number.ml_acc_sae') | float(0) }}"
+          sy: "{{ states('input_number.ml_acc_sy') | float(0) }}"
+          sy2: "{{ states('input_number.ml_acc_sy2') | float(0) }}"
+      - if:
+          - condition: template
+            value_template: "{{ n >= 48 and (sy2 - sy * sy / n) > 0 }}"
+        then:
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_load_r2_daily_value }
+            data: { value: "{{ [[1 - sse / (sy2 - sy * sy / n), -10] | max, 1] | min | round(3) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_load_mae_daily_value }
+            data: { value: "{{ (sae / n) | round(1) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_load_rmse_daily_value }
+            data: { value: "{{ (sse / n) | sqrt | round(1) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_load_slots_daily_value }
+            data: { value: "{{ n }}" }
+      - action: input_number.set_value
+        target:
+          entity_id:
+            - input_number.ml_acc_n
+            - input_number.ml_acc_sse
+            - input_number.ml_acc_sae
+            - input_number.ml_acc_sy
+            - input_number.ml_acc_sy2
+        data: { value: 0 }
+    mode: single
