@@ -2,7 +2,7 @@
 # Layer 4B/4D: sends effective mode/limits to SolarEdge via Modbus Queue scripts; Mode Command Guard skips redundant mode writes; re-applies after a Modbus-reconnect 5000/5000 limit reset; keeps a non-MSC command mode alive before the 3600s Remote Control command timeout expires.
 # Sets: (via scripts) number.solaredge_i1_storage_command_timeout, select.solaredge_i1_storage_command_mode, number.solaredge_i1_storage_*_limit; input_number.mode_command_skipped_count_total/_today
 # Deps: input_select.effective_storage_mode, input_number.effective_*_limit, number.solaredge_i1_storage_*_limit (reset detection)  ←  safety_limits_and_override.yaml  →  solaredge_modbusqueue.yaml
-# Fixes: known_issues_and_fixes.md (Write Pressure - Mode Command Guard; Remote Control Command Timeout Fallback, 2026-11-20; High SOC Hold mechanism #3 - Modbus reconnect resets limits, Update 2026-11-20)
+# Fixes: known_issues_and_fixes.md (Write Pressure - Mode Command Guard; Remote Control Command Timeout Fallback, 2026-11-20, keepalive race fix 2026-11-22; High SOC Hold mechanism #3 - Modbus reconnect resets limits, Update 2026-11-20)
 
 automation:
 
@@ -153,9 +153,21 @@ automation:
     alias: "SolarEdge – Command Mode Keepalive"
     mode: single
 
+    # UPDATE 2026-11-22 - race fix. With minutes "/30" the keepalive fired
+    # at :00/:30, the same second Layer 4A changes effective_storage_mode.
+    # It read the OLD mode, and because every Modbus queue write takes ~30s,
+    # its mode command landed AFTER the apply automation's new one and
+    # overwrote it (live: 06:00/06:30/07:00 2026-11-22 MSC intended, inverter
+    # kept Charge from Solar Power and Grid until 07:17; 23:30 Charge from
+    # grid intended, Solar Power Only re-sent). Three guards: (1) run at
+    # :07/:37, off the :00/:15/:30/:45 MPC/Layer 4A grid; (2) skip if the
+    # apply automation is running or the intended mode changed <300s ago;
+    # (3) re-check the intended mode right before the mode write.
     trigger:
       - platform: time_pattern
-        minutes: "/30"
+        minutes: "7"
+      - platform: time_pattern
+        minutes: "37"
 
     condition:
       - condition: state
@@ -168,6 +180,11 @@ automation:
 
       - condition: template
         value_template: "{{ states('input_select.effective_storage_mode') != 'maximize_self_consumption' }}"
+
+      - condition: template
+        value_template: >-
+          {{ (state_attr('automation.apply_effective_battery_control_to_solaredge_inverter', 'current') | int(0)) == 0
+             and (now() - states.input_select.effective_storage_mode.last_changed).total_seconds() > 300 }}
 
     action:
       - variables:
@@ -184,4 +201,10 @@ automation:
 
       - service: script.set_value_storage_command_timeout15m
       - delay: "00:00:02"
+
+      # Guard (3): abort if the intended mode changed while the timeout
+      # write was queued - never re-send a stale mode.
+      - condition: template
+        value_template: "{{ mode_script_map.get(states('input_select.effective_storage_mode'), '') == target_script }}"
+
       - service: "{{ target_script }}"

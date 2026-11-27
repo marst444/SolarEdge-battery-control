@@ -19,10 +19,12 @@ themselves.
 Open issues, in brief (full detail below): the dynamic charge/discharge
 limit unit error (SOC-delta energy in Wh sent as W, 2.5-2.8x under-
 delivery vs. the MPC plan; battery peaked 67.8% vs. a ~90% plan on
-2026-11-21) is fixed and deployed 2026-11-21, not yet verified against a
-charge night (check scheduled 2026-11-22 07:15); the drift-watchdog
-quarter-hour race false positives are fixed (180s settle window,
-deployed 2026-11-21); the ML predict/MPC collision
+2026-11-21) is fixed and **confirmed live 2026-11-22** (SOC 88.9% vs. a
+90% plan); the drift-watchdog quarter-hour race false positives are
+fixed and confirmed (180s settle window); the command-mode keepalive
+race (keepalive re-sending a stale mode over the apply's new one at
+:00/:30) is fixed and deployed 2026-11-22 23:45, not yet verified (check
+scheduled 2026-11-23 07:20); the ML predict/MPC collision
 fix (2026-11-20, forecast had gone stale) is confirmed working, but the
 ML load forecast's 6-9 kW blocks were a stale model trained on the
 with-EV sensor (refit 2026-11-21, forecast now plausible; model quality
@@ -43,12 +45,48 @@ High SOC Hold's core charge-limit-bypass mechanism is still unsolved
 re-apply trigger, confirmed working live 2026-11-21); the Remote Control
 command timeout fallback (inverter silently reverting a non-MSC mode to
 MSC after 900s) is fixed and deployed (3600s timeout + 1800s keepalive,
-confirmed 2026-11-20), not yet verified against a non-MSC period;
+confirmed 2026-11-20; keepalive exercised 2026-11-22);
 two SOC/critical-recovery register-write issues remain open.
 
 ---
 
 # Open Issues
+
+## Command-Mode Keepalive Re-Sends a Stale Mode Over the Apply's New One
+
+Found 2026-11-22 23:40 during the scheduled night-charge check. Drift
+ticks 06:05/06:10, 06:35/06:40, 07:05/07:10 (intended Maximize Self
+Consumption, live Charge from Solar Power and Grid until 07:17), and
+live at 23:31 (intended Charge from Solar Power and Grid at 1992 W,
+inverter in Solar Power Only - battery not charging).
+
+**Root cause (`apply_effective_battery_control.yaml`,
+`solaredge_command_mode_keepalive`):** the keepalive ran on
+`minutes: "/30"`, i.e. at :00/:30 - the same second Layer 4A changes
+`input_select.effective_storage_mode`. It read the OLD mode at :00:00.1
+(the change landed at ~:00:00.8), and since every Modbus queue command
+takes ~30s, its mode write was serialised AFTER the apply's new one and
+overwrote it. Queue log, 23:30: keepalive `set_storage_command_timeout`
+23:30:00 -> apply `charge_from_solar_power_and_grid` 23:30:30 ->
+keepalive `solar_power_only` 23:31:00 (stale). Same pattern at 06:00,
+06:30, 07:00. The inverter kept the stale mode until the next apply that
+re-sent the mode (07:15) - up to ~77 min. Side effect: write-verify
+logged the apply's mode write as FAILED (readback saw the overwrite).
+
+**Fix (2026-11-22):** three guards on the keepalive: (1) triggers at
+:07/:37, off the :00/:15/:30/:45 Layer 4A grid; (2) skip if the apply
+automation is running (`current` > 0) or the intended mode changed
+<300s ago; (3) re-check the intended mode right after the timeout write,
+before sending the mode - never re-send a stale mode. Interval stays
+30 min against the 3600s timeout.
+
+**Status: deployed live 2026-11-22 23:45.** Manual apply trigger at
+23:45:48 restored Charge from Solar Power and Grid / 2825 W, battery
+charging from 23:46:34. Not yet verified across a night (check
+scheduled 2026-11-23 07:20: keepalive traces, no stale mode writes
+after any effective_storage_mode change, no mode mismatch >3 min).
+
+---
 
 ## Dynamic Charge/Discharge Limit Unit Error - Wh Sent as W, Battery Never Reaches the Planned SOC
 
@@ -97,9 +135,15 @@ sensors no longer use the string date filter at all. Backtest 04:15
 2026-11-21: 1368 W (vs. 603 W sent, 1212 W MPC). Live 17:34: 34 W
 discharge, hand-computed identically.
 
-**Status: deployed live 2026-11-21 17:33, rendering correctly; not yet
-verified against a charge night** (check scheduled 2026-11-22 07:15:
-effective_charge_limit vs. mpc_pv_batt_power, peak SOC vs. ~90% plan).
+**Status: deployed live 2026-11-21 17:33; confirmed live on the
+2026-11-22 night charge.** SOC 20% -> 80% by 05:50, peak **88.9%**
+(~07:05) vs. the 90% plan (sensor resolution ~1.1%, so 88.9 is the last
+step below 90) - vs. 67.8% the night before. Battery DC power tracked
+the sent limit within ~1 W (843/843, 1787/1786, 2546/2547, 1970/1970,
+877/877); the battery's real ceiling is ~2730 W against the 2825 W
+`max_charge_power` sensor. Remaining step-to-step mismatches vs.
+`mpc_pv_batt_power` (e.g. 05:45 limit 1233 W, MPC 0 W) are MPC re-planning
+between runs, not the formula.
 
 ---
 
@@ -242,9 +286,9 @@ keepalive` exists, not yet triggered - inverter has stayed in MSC).
 **Update 2026-11-21:** no mode fallback during the 3h charge period
 03:32-06:32 (Charge from Solar Power and Grid held throughout), but the
 keepalive itself wasn't exercised - the charge limit changed every MPC
-run, so the apply re-armed the timer every 15 min anyway. **Not yet
-verified:** keepalive `last_triggered` advancing every 30 min in a
-non-MSC period with flat values longer than 1h.
+run, so the apply re-armed the timer every 15 min anyway. **Update 2026-11-22:** keepalive exercised during the night charge, but
+it raced the apply and re-sent stale modes - see Command-Mode Keepalive
+Re-Sends a Stale Mode (Open Issues, fixed 2026-11-22).
 
 ---
 
@@ -554,8 +598,12 @@ change reads the previous live value (every one at :00/:15/:30/:45, live
 = previous intended). Fixed: drift evaluation skipped for 180s after any
 of the three `effective_*` entities last changed (`settling` variable);
 real drift that persists is still caught on the next tick, and real
-resets (e.g. 03:22) don't coincide with MPC ticks. **Deployed
-2026-11-21 17:33, not yet verified** (check scheduled 2026-11-22 07:15).
+resets (e.g. 03:22) don't coincide with MPC ticks. **Confirmed live
+2026-11-22:** no quarter-hour race ticks 2026-11-21 17:30 - 11-22 23:30;
+the remaining ticks were one real reset (17:50) and the keepalive race
+(see its own entry). limit_reset also fired correctly 3 more times
+(11-21 17:49, 11-22 03:50 with no recorded `unavailable`, 11-22 17:51),
+each restored in ~3 min.
 
 **Update 2026-11-20 - mechanism #3 caught twice with the watchdog live;
 re-apply-on-reconnect fix proposed.** Two Modbus reconnects

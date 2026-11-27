@@ -18,6 +18,11 @@
 # 2026-11-21: run_mlforecast_fit_load / _predict_load now record OK/FAILED +
 # last success (helpers in emhass_ml_monitoring.yaml) - a failing weekly fit
 # had gone unnoticed and left a stale with-EV model in use.
+# 2026-11-24: day-ahead load_power_forecast now drops past ML timestamps and
+# repeats the 24 h ML profile +1 day to cover the 48 h horizon - unfiltered
+# stale entries after now_iso made the 00:00 dayahead-optim fail nightly.
+# 2026-11-27: operating_hours_of_each_deferrable_load (MPC + DH) capped at the
+# remaining EV window - over-long EV requests made MPC infeasible.
 
 # Sensors used by the MPC and day-ahead scripts below: energy capacity (kWh),
 # charging/discharging power (W), battery SOC (%), house load excl. variable
@@ -120,8 +125,20 @@ script:
               {{ [states(sensors.ev.nominal_power) | int(0)] }}
             minimum_power_of_deferrable_loads: >
               {{ [states(sensors.ev.minimum_power) | int(0)] }}
+            # Fix 2026-11-27 (known_issues_and_fixes.md): cap the EV hours at
+            # the remaining window (end - start timesteps). Uncapped, the EV
+            # package can request more hours than are left before departure
+            # (car charging below nominal power), making the joint solve
+            # infeasible and taking the battery plan down with it - all 5 MPC
+            # FAILED runs 11-25/26 were this. EMHASS then plans full EV power
+            # for the whole window; the EV package's infeasible-boost path
+            # (2026-09-21) is unaffected. end_timestep 0 = no deadline -> no cap.
             operating_hours_of_each_deferrable_load: >
-              {{ [states('sensor.ev_deferrable_total_hours') | float(0)] }}
+              {% set h = states('sensor.ev_deferrable_total_hours') | float(0) %}
+              {% set s = states('sensor.ev_deferrable_start_timestep') | int(0) %}
+              {% set e = states('sensor.ev_deferrable_end_timestep') | int(0) %}
+              {% set cap = ((e - s) * optimization_time_step | int / 60) if e > s else h %}
+              {{ [[h, cap] | min | round(2)] }}
             start_timesteps_of_each_deferrable_load: >
               {{ [states('sensor.ev_deferrable_start_timestep') | int(0)] }}
             end_timesteps_of_each_deferrable_load: >
@@ -339,8 +356,20 @@ script:
               {{ [states(sensors.ev.nominal_power) | int(0)] }}
             minimum_power_of_deferrable_loads: >
               {{ [states(sensors.ev.minimum_power) | int(0)] }}
+            # Fix 2026-11-27 (known_issues_and_fixes.md): cap the EV hours at
+            # the remaining window (end - start timesteps). Uncapped, the EV
+            # package can request more hours than are left before departure
+            # (car charging below nominal power), making the joint solve
+            # infeasible and taking the battery plan down with it - all 5 MPC
+            # FAILED runs 11-25/26 were this. EMHASS then plans full EV power
+            # for the whole window; the EV package's infeasible-boost path
+            # (2026-09-21) is unaffected. end_timestep 0 = no deadline -> no cap.
             operating_hours_of_each_deferrable_load: >
-              {{ [states('sensor.ev_deferrable_total_hours') | float(0)] }}
+              {% set h = states('sensor.ev_deferrable_total_hours') | float(0) %}
+              {% set s = states('sensor.ev_deferrable_start_timestep') | int(0) %}
+              {% set e = states('sensor.ev_deferrable_end_timestep') | int(0) %}
+              {% set cap = ((e - s) * optimization_time_step | int / 60) if e > s else h %}
+              {{ [[h, cap] | min | round(2)] }}
             start_timesteps_of_each_deferrable_load: >
               {{ [states('sensor.ev_deferrable_start_timestep') | int(0)] }}
             end_timesteps_of_each_deferrable_load: >
@@ -383,14 +412,29 @@ script:
                 {% set ns.output = ns.output | combine({ key: value }) %}
               {% endfor %}
               {{ ns.output }}
+            # Fix 2026-11-24 (known_issues_and_fixes.md): previously copied
+            # every ML entry unfiltered. At 00:00 the ML forecast is from the
+            # 18:07 predict (18:15 -> 18:00 next day), so ~23 past timestamps
+            # followed now_iso (time running backwards) and only ~18 h of the
+            # 48 h horizon was covered -> dayahead-optim "Client error" every
+            # night. Now: drop entries <= now (same as pv_power_forecast) and
+            # repeat the 24 h ML profile +1 day to fill the 48 h horizon.
+            # Pairs with the 23:52 ML predict in emhass_automations.yaml.
             load_power_forecast: |-
-              {% set ml = state_attr('sensor.p_load_forecast_ml_pv', 'scheduled_forecast') or [] %}
+              {% set ml = (state_attr('sensor.p_load_forecast_ml_pv', 'scheduled_forecast') or [])
+                          | selectattr('date', '>', now_iso) | list %}
               {% set ns = namespace(output={
                 now_iso: (states(sensors.consumed_power) | float(0)) | round(0)
               }) %}
               {% for item in ml %}
                 {% set ns.output = ns.output | combine({
                   item.date: (item.p_load_forecast_ml_pv | float(0)) | round(0)
+                }) %}
+              {% endfor %}
+              {% for item in ml %}
+                {% set ns.output = ns.output | combine({
+                  ((item.date | as_datetime) + timedelta(days=1)).isoformat():
+                    (item.p_load_forecast_ml_pv | float(0)) | round(0)
                 }) %}
               {% endfor %}
               {{ ns.output }}

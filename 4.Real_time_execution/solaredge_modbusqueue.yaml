@@ -2,7 +2,7 @@
 # Layer 4C: serializes every SolarEdge Modbus write behind a single busy-lock so writes never overlap, with queue + write-outcome telemetry.
 # Sets: input_boolean.modbus_busy; input_number/input_text.modbus_queue_*; select/number.solaredge_i1_* (via queue_service dispatch); writes into Layer 1 helpers in safety_and_watchdog_helpers.yaml (modbus_write_*, modbus_queue_pending_count, modbus_queue_last_command_delta), via the async script.modbus_write_verify for anything but an unmatched queue_service
 # Deps: queue_service/queue_value from callers  ←  apply_effective_battery_control.yaml, negative_price_curtailment.yaml
-# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap, Write-Outcome Telemetry Is Readback-Based, Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout); leftover debug logging - see roadmap.md
+# Fixes: known_issues_and_fixes.md (Modbus Queue Lock Release Not Exception-Safe, Negative Price Curtailment - Site Limit Restore Gap, Write-Outcome Telemetry Is Readback-Based (verify window 10s -> 32s, 2026-11-24), Modbus Queue Pending-Count Counter Leaks On Lock-Wait Timeout); leftover debug logging - see roadmap.md
 
 input_boolean:
   modbus_busy:
@@ -569,9 +569,15 @@ script:
     description: >
       Enhanced Diagnostics: classifies one script.modbus_queue write as
       success/failure by waiting for write_target_entity to actually reach
-      write_expected_value (up to 8s beyond the 2s pacing delay already
-      elapsed, ~10s total from dispatch - matches the settle time observed
-      live 2026-10-07), instead of a single fixed-delay readback. Started
+      write_expected_value (up to 30s beyond the 2s pacing delay already
+      elapsed, ~32s total from dispatch), instead of a single fixed-delay
+      readback. UPDATE 2026-11-24: was 8s (~10s total, the settle time
+      observed 2026-10-07). After sleep_after_write was lowered 15s -> 3s
+      in the SolarEdge Modbus Multi options, a written value takes ~20s to
+      show in HA (write -> 3s sleep -> next poll -> refresh), so the 10s
+      readback flagged ~60 good writes/day as failed. 30s covers it with
+      margin; max raised 10 -> 20 so the longer waits can't overflow the
+      queue during a full apply (up to 5 writes) plus a keepalive. Started
       fire-and-forget (script.turn_on) from script.modbus_queue so this
       wait never blocks the next queued command - see
       known_issues_and_fixes.md - Write-Outcome Telemetry Is
@@ -595,7 +601,7 @@ script:
                if (write_target_entity.split('.')[0] in ['select', 'switch'])
              else
                (((states(write_target_entity) | float(-999999999)) - (write_expected_value | float(-999999998))) | abs < 1) }}
-        timeout: "00:00:08"
+        timeout: "00:00:30"
         continue_on_timeout: true
 
       - variables:
@@ -654,7 +660,7 @@ script:
               entity_id: input_text.modbus_last_failed_reason
             data:
               value: >-
-                {{ 'Entity ' + write_target_entity + ' expected ' + (write_expected_value | string) + ' but reads ' + states(write_target_entity) + ' (after ~10s)' }}
+                {{ 'Entity ' + write_target_entity + ' expected ' + (write_expected_value | string) + ' but reads ' + states(write_target_entity) + ' (after ~32s)' }}
 
           - service: input_number.set_value
             target:
@@ -675,7 +681,7 @@ script:
               value: "{{ (states('input_number.modbus_write_consecutive_failures') | int(0)) + 1 }}"
 
     mode: queued
-    max: 10
+    max: 20
 
 automation:
 

@@ -151,6 +151,15 @@ input_number:
     step: 0.1
     mode: box
     unit_of_measurement: "W"
+  # Fix 2026-11-22: baseline/skill sensors need their own slot count -
+  # gating them on the ML count showed the helpers' defaults (-10 / 0 / -100)
+  # before any baseline value had been computed.
+  ml_base_slots_daily_value:
+    name: "Baseline load slots scored daily"
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
   ml_skill_daily_value:
     name: "ML skill vs baseline daily value"
     min: -100
@@ -170,15 +179,6 @@ sensor:
       minutes: 15
     sampling_size: 2000
 
-  # 7-day mean of the daily R2 values (drives the stoplight)
-  - platform: statistics
-    name: "ML load R2 7d mean"
-    unique_id: ml_load_r2_7d_mean
-    entity_id: sensor.ml_load_r2_daily
-    state_characteristic: mean
-    max_age:
-      days: 7
-    sampling_size: 50
 
 template:
   # Rolling buffer of the last 100 slot actuals as [slot_start_iso, W]
@@ -212,6 +212,46 @@ template:
             {% endfor %}
             {{ ns.v }}
 
+  # Fix 2026-11-24: 7-day R2 mean, appended once per night from the daily
+  # value. Replaces a `statistics` sensor that re-counted the same daily value
+  # after every HA restart (unavailable -> value = new sample), which dragged
+  # the stoplight down (-0.92 shown vs a true mean of about -0.48). Only
+  # appends when the midnight summary actually wrote a new day (slot count
+  # written today, n >= 48). Seeded with the three days measured before this
+  # change. Keyed by date, so a re-trigger can't duplicate a day.
+  - trigger:
+      - platform: time
+        at: "00:00:45"
+    sensor:
+      - name: "ML load R2 7d"
+        unique_id: ml_load_r2_7d
+        state_class: measurement
+        icon: mdi:chart-bell-curve-cumulative
+        state: >
+          {% set seed = [['2026-11-21', -0.151], ['2026-11-22', -1.335], ['2026-11-23', 0.058]] %}
+          {% set old = this.attributes.days | default(seed) %}
+          {% set slots = states.input_number.ml_load_slots_daily_value %}
+          {% set fresh = slots is not none and states('input_number.ml_load_slots_daily_value') | int(0) > 0
+                         and (slots.last_reported | as_local).date() == now().date() %}
+          {% set day = (now() - timedelta(days=1)).date().isoformat() %}
+          {% set ns = namespace(l=[]) %}
+          {% for d in old %}{% if d[0] != day %}{% set ns.l = ns.l + [d] %}{% endif %}{% endfor %}
+          {% if fresh %}{% set ns.l = ns.l + [[day, states('input_number.ml_load_r2_daily_value') | float(0)]] %}{% endif %}
+          {% set vals = ns.l[-7:] | map(attribute=1) | list %}
+          {{ (vals | sum / vals | length) | round(3) if vals else none }}
+        attributes:
+          days: >
+            {% set seed = [['2026-11-21', -0.151], ['2026-11-22', -1.335], ['2026-11-23', 0.058]] %}
+            {% set old = this.attributes.days | default(seed) %}
+            {% set slots = states.input_number.ml_load_slots_daily_value %}
+            {% set fresh = slots is not none and states('input_number.ml_load_slots_daily_value') | int(0) > 0
+                           and (slots.last_reported | as_local).date() == now().date() %}
+            {% set day = (now() - timedelta(days=1)).date().isoformat() %}
+            {% set ns = namespace(l=[]) %}
+            {% for d in old %}{% if d[0] != day %}{% set ns.l = ns.l + [d] %}{% endif %}{% endfor %}
+            {% if fresh %}{% set ns.l = ns.l + [[day, states('input_number.ml_load_r2_daily_value') | float(0)]] %}{% endif %}
+            {{ ns.l[-7:] }}
+
   - sensor:
       # Mirrors of the daily results with state_class -> long-term statistics,
       # so R2/MAE can be graphed over months.
@@ -242,7 +282,7 @@ template:
         unique_id: ml_base_r2_daily
         state_class: measurement
         icon: mdi:chart-bell-curve
-        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        availability: "{{ states('input_number.ml_base_slots_daily_value') | int(0) > 0 }}"
         state: "{{ states('input_number.ml_base_r2_daily_value') | float(0) | round(3) }}"
 
       - name: "Baseline load MAE daily"
@@ -250,7 +290,7 @@ template:
         unit_of_measurement: "W"
         device_class: power
         state_class: measurement
-        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        availability: "{{ states('input_number.ml_base_slots_daily_value') | int(0) > 0 }}"
         state: "{{ states('input_number.ml_base_mae_daily_value') | float(0) | round(0) }}"
 
       # > 0: ML beats "same slot yesterday"; < 0: ML is worse than it.
@@ -258,7 +298,7 @@ template:
         unique_id: ml_load_skill_daily
         state_class: measurement
         icon: mdi:scale-balance
-        availability: "{{ states('input_number.ml_load_slots_daily_value') | int(0) > 0 }}"
+        availability: "{{ states('input_number.ml_base_slots_daily_value') | int(0) > 0 }}"
         state: "{{ states('input_number.ml_skill_daily_value') | float(0) | round(3) }}"
 
       # Stoplight: fit/predict health first, then 7-day R2.
@@ -271,7 +311,7 @@ template:
           {% set fit_age_d = ((now().timestamp() - as_timestamp(fit_last, 0)) / 86400) if fit_last not in ('unknown','unavailable','') else 999 %}
           {% set pred_last = states('input_datetime.emhass_ml_predict_last_success') %}
           {% set pred_age_h = ((now().timestamp() - as_timestamp(pred_last, 0)) / 3600) if pred_last not in ('unknown','unavailable','') else 999 %}
-          {% set r2 = states('sensor.ml_load_r2_7d_mean') %}
+          {% set r2 = states('sensor.ml_load_r2_7d') %}
           {% if is_state('input_text.emhass_ml_fit_status', 'FAILED') %}
             fit_failed
           {% elif is_state('input_text.emhass_ml_predict_status', 'FAILED') or pred_age_h > 13 %}
@@ -288,7 +328,7 @@ template:
             bad
           {% endif %}
         attributes:
-          r2_7d: "{{ states('sensor.ml_load_r2_7d_mean') }}"
+          r2_7d: "{{ states('sensor.ml_load_r2_7d') }}"
           r2_yesterday: "{{ states('sensor.ml_load_r2_daily') }}"
           mae_yesterday: "{{ states('sensor.ml_load_mae_daily') }}"
           baseline_r2_yesterday: "{{ states('sensor.baseline_load_r2_daily') }}"
@@ -425,6 +465,9 @@ automation:
           - action: input_number.set_value
             target: { entity_id: input_number.ml_base_mae_daily_value }
             data: { value: "{{ (bsae / bn) | round(1) }}" }
+          - action: input_number.set_value
+            target: { entity_id: input_number.ml_base_slots_daily_value }
+            data: { value: "{{ bn }}" }
           - if:
               - condition: template
                 value_template: "{{ n >= 48 }}"
