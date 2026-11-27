@@ -23,6 +23,9 @@
 # stale entries after now_iso made the 00:00 dayahead-optim fail nightly.
 # 2026-11-27: operating_hours_of_each_deferrable_load (MPC + DH) capped at the
 # remaining EV window - over-long EV requests made MPC infeasible.
+# 2026-11-27b: same field also floored - requests below one minimum EV session
+# (minimum_power x ev_min_on_steps) are sent as 0; tiny leftovers made MPC
+# infeasible 18:00-19:45.
 
 # Sensors used by the MPC and day-ahead scripts below: energy capacity (kWh),
 # charging/discharging power (W), battery SOC (%), house load excl. variable
@@ -56,6 +59,9 @@ script:
           sensor_prefix: mpc_pv_
           sensor_name_prefix: 'MPC_PV '
           number_of_deferrable_loads: 1
+          # 2026-11-27: single source for the EV minimum on-time (15-min steps),
+          # used by def_minimum_on_time and the operating-hours energy floor.
+          ev_min_on_steps: 4
         alias: Configure secondary settings
       - variables:
 
@@ -138,7 +144,16 @@ script:
               {% set s = states('sensor.ev_deferrable_start_timestep') | int(0) %}
               {% set e = states('sensor.ev_deferrable_end_timestep') | int(0) %}
               {% set cap = ((e - s) * optimization_time_step | int / 60) if e > s else h %}
-              {{ [[h, cap] | min | round(2)] }}
+              {% set h = [h, cap] | min %}
+              {# Fix 2026-11-27b: minimum-energy floor. Once on, the EV must run
+                 >= ev_min_on_steps at >= minimum power, so any request below
+                 minimum_power x ev_min_on_steps x step is unschedulable and makes
+                 the whole solve infeasible (MPC 18:00-19:45 2026-11-27: 0.13 h /
+                 0.06 h leftover vs a 1700 Wh minimum session). Send 0 instead. #}
+              {% set nom = states(sensors.ev.nominal_power) | float(0) %}
+              {% set minp = states(sensors.ev.minimum_power) | float(0) %}
+              {% set floor_wh = minp * ev_min_on_steps * optimization_time_step | int / 60 %}
+              {{ [(h if h * nom >= floor_wh else 0) | round(2)] }}
             start_timesteps_of_each_deferrable_load: >
               {{ [states('sensor.ev_deferrable_start_timestep') | int(0)] }}
             end_timesteps_of_each_deferrable_load: >
@@ -146,7 +161,7 @@ script:
             treat_deferrable_load_as_semi_cont: "{{ [false] }}"
             set_deferrable_load_single_constant: "{{ [false] }}"
             set_deferrable_startup_penalty: "{{ [0.5] }}"
-            def_minimum_on_time: "{{ [4] }}"
+            def_minimum_on_time: "{{ [ev_min_on_steps] }}"
             def_minimum_off_time: "{{ [2] }}"
             set_deferrable_max_startups: "{{ [2] }}"
 
@@ -287,6 +302,9 @@ script:
           sensor_prefix: dh_pv_
           sensor_name_prefix: 'DH_PV '
           number_of_deferrable_loads: 1
+          # 2026-11-27: DH sends no def_minimum_on_time, so the floor is one
+          # step at minimum power.
+          ev_min_on_steps: 1
         alias: Configure secondary settings
       - variables:
 
@@ -369,7 +387,16 @@ script:
               {% set s = states('sensor.ev_deferrable_start_timestep') | int(0) %}
               {% set e = states('sensor.ev_deferrable_end_timestep') | int(0) %}
               {% set cap = ((e - s) * optimization_time_step | int / 60) if e > s else h %}
-              {{ [[h, cap] | min | round(2)] }}
+              {% set h = [h, cap] | min %}
+              {# Fix 2026-11-27b: minimum-energy floor. Once on, the EV must run
+                 >= ev_min_on_steps at >= minimum power, so any request below
+                 minimum_power x ev_min_on_steps x step is unschedulable and makes
+                 the whole solve infeasible (MPC 18:00-19:45 2026-11-27: 0.13 h /
+                 0.06 h leftover vs a 1700 Wh minimum session). Send 0 instead. #}
+              {% set nom = states(sensors.ev.nominal_power) | float(0) %}
+              {% set minp = states(sensors.ev.minimum_power) | float(0) %}
+              {% set floor_wh = minp * ev_min_on_steps * optimization_time_step | int / 60 %}
+              {{ [(h if h * nom >= floor_wh else 0) | round(2)] }}
             start_timesteps_of_each_deferrable_load: >
               {{ [states('sensor.ev_deferrable_start_timestep') | int(0)] }}
             end_timesteps_of_each_deferrable_load: >
